@@ -2,6 +2,7 @@
 
 import { api } from './api.js';
 import { h, clear, toast, debounce, songName, field } from './ui.js';
+import { readId3, planAutofill } from './id3.js';
 
 const PARAM_KEYS = ['whisper_model', 'language', 'compute_type', 'batch_size', 'align_model',
   'vad_onset', 'vad_offset', 'demucs_model', 'keep_debug'];
@@ -13,6 +14,13 @@ let dupId = null; // song_id совпавшей песни
 let submitting = false;
 let alignTouched = false;
 let existsSeq = 0;
+// G07: теги mp3 — значения, подставленные из тегов (их можно заменить тегами другого mp3),
+// и обложка из тегов (уходит в «Обложку», если своя не выбрана).
+let autoVals = {};
+let tagCover = null;
+let tagsSeq = 0;
+let previewUrl = null;
+const COVER_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 
 export function mount(section) {
   root = section;
@@ -66,6 +74,12 @@ async function build() {
 
   f.cover = h('input', { type: 'file', name: 'cover', accept: '.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp' });
   f.coverErr = h('div', { class: 'field-error', hidden: true });
+  f.tagsHint = h('div', { class: 'small muted', hidden: true });
+  f.coverImg = h('img', { alt: 'Превью обложки', style: 'width:72px;height:72px;object-fit:cover;border-radius:6px;border:1px solid var(--border)' });
+  f.coverNote = h('span', { class: 'small muted' });
+  f.coverPreview = h('div', { class: 'cover-preview', hidden: true, style: 'display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap' },
+    f.coverImg, f.coverNote,
+    h('button', { type: 'button', onclick: removeCover }, 'Убрать'));
 
   f.whisper_model = select('whisper_model', d.whisper_models.map((m) => [m, m]));
   f.language = select('language', d.languages.map((l) => [l.code, `${l.name} (${l.code})`]));
@@ -88,14 +102,14 @@ async function build() {
       h('div', {}, field('Исполнитель', f.artist), f.artistErr),
       h('div', {}, field('Название', f.title), f.titleErr)),
     f.dup,
-    field('Аудио mp3', f.audio, d.max_upload_mb ? `до ${d.max_upload_mb} МБ` : null), f.audioHint, f.audioErr,
+    field('Аудио mp3', f.audio, d.max_upload_mb ? `до ${d.max_upload_mb} МБ` : null), f.audioHint, f.audioErr, f.tagsHint,
     h('div', { class: 'field' },
       h('span', {}, 'Текст песни', h('span', { class: 'hint' }, ' (можно оставить пустым)')),
       f.lyrics,
       h('div', { class: 'inline-file' }, h('span', { class: 'small muted' }, 'или файл:'), f.lyricsFile),
       f.lyricsErr),
     f.lyricsWarn,
-    field('Обложка', f.cover, d.max_cover_mb ? `jpg, png или webp до ${d.max_cover_mb} МБ, необязательно` : 'jpg, png или webp, необязательно'), f.coverErr,
+    field('Обложка', f.cover, d.max_cover_mb ? `jpg, png или webp до ${d.max_cover_mb} МБ, необязательно` : 'jpg, png или webp, необязательно'), f.coverErr, f.coverPreview,
     h('div', { class: 'row2' }, field('Модель Whisper', f.whisper_model), field('Язык песни', f.language)),
     h('details', { class: 'more' }, h('summary', {}, 'Дополнительно'),
       h('div', { class: 'row2' },
@@ -122,8 +136,10 @@ async function build() {
   }
   f.lyrics.addEventListener('input', updateLyricsState);
   f.lyricsFile.addEventListener('change', onLyricsFile);
-  f.audio.addEventListener('change', () => checkAudio());
-  f.cover.addEventListener('change', () => checkCover());
+  f.audio.addEventListener('change', async () => {
+    if (await checkAudio()) autofillFromTags(f.audio.files[0]);
+  });
+  f.cover.addEventListener('change', async () => { await checkCover(); updateCoverPreview(); });
   f.language.addEventListener('change', () => {
     if (!alignTouched) f.align_model.value = (defaults?.align_models || {})[f.language.value] || '';
   });
@@ -156,6 +172,11 @@ function resetForm() {
   f.regenBanner.hidden = true;
   f.cancelRegen.hidden = true;
   f.audioHint.textContent = '';
+  autoVals = {};
+  tagCover = null;
+  tagsSeq++;
+  f.tagsHint.hidden = true;
+  updateCoverPreview();
   for (const e of [f.audioErr, f.coverErr, f.lyricsErr, f.artistErr, f.titleErr]) e.hidden = true;
   for (const e of [f.artist, f.title]) e.classList.remove('invalid');
   document.getElementById('new-title').textContent = 'Новая песня';
@@ -288,6 +309,64 @@ async function checkCover() {
   return !msg;
 }
 
+// ---------------------------------------------------------------- теги mp3 (G07)
+
+async function autofillFromTags(file) {
+  const my = ++tagsSeq;
+  tagCover = null;
+  f.tagsHint.hidden = true;
+  if (!file) { updateCoverPreview(); return; }
+  let tags;
+  try {
+    tags = await readId3(file);
+  } catch {
+    tags = { artist: '', title: '', cover: null }; // нечитаемые теги — просто без автозаполнения
+  }
+  if (my !== tagsSeq) return;
+  const plan = planAutofill({ artist: f.artist.value, title: f.title.value }, tags, autoVals);
+  const filled = [];
+  for (const [k, v] of Object.entries(plan)) {
+    f[k].value = v;
+    f[k].classList.remove('invalid');
+    (k === 'artist' ? f.artistErr : f.titleErr).hidden = true;
+    filled.push(k === 'artist' ? 'исполнитель' : 'название');
+  }
+  autoVals = { ...autoVals, ...plan };
+  const c = tags.cover;
+  const max = defaults?.max_cover_mb;
+  if (c && COVER_EXT[c.mime] && !(max && c.data.length > max * 1024 * 1024)) {
+    tagCover = new File([c.data], `cover.${COVER_EXT[c.mime]}`, { type: c.mime });
+    filled.push('обложка');
+  }
+  f.tagsHint.textContent = filled.length ? `Из тегов mp3: ${filled.join(', ')} — можно поправить` : '';
+  f.tagsHint.hidden = !filled.length;
+  updateCoverPreview();
+  if (plan.artist || plan.title) {
+    replace = false;
+    checkExists();
+  }
+}
+
+/** Превью обложки: своя из формы важнее обложки из тегов mp3. */
+function updateCoverPreview() {
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = null;
+  const own = f.cover.files[0] && f.coverErr.hidden ? f.cover.files[0] : null;
+  const file = own || tagCover;
+  f.coverPreview.hidden = !file;
+  if (!file) { f.coverImg.removeAttribute('src'); return; }
+  previewUrl = URL.createObjectURL(file);
+  f.coverImg.src = previewUrl;
+  f.coverNote.textContent = own ? 'Своя обложка' : 'Обложка из тегов mp3 — выберите файл выше, чтобы заменить';
+}
+
+function removeCover() {
+  f.cover.value = '';
+  f.coverErr.hidden = true;
+  tagCover = null;
+  updateCoverPreview();
+}
+
 async function onLyricsFile() {
   const file = f.lyricsFile.files[0];
   f.lyricsErr.hidden = true;
@@ -376,6 +455,7 @@ async function onSubmit(ev) {
   if (f.audio.files[0]) fd.append('audio', f.audio.files[0]);
   fd.append('lyrics', f.lyrics.value);
   if (f.cover.files[0]) fd.append('cover', f.cover.files[0]);
+  else if (tagCover) fd.append('cover', tagCover);
   fd.append('params', JSON.stringify(collectParams()));
   if (regen) fd.append('song_id', regen.song_id);
   fd.append('replace', replace ? 'true' : 'false');

@@ -6,8 +6,8 @@ import * as newSong from './new-song.js';
 import * as songs from './songs.js';
 import * as trash from './trash.js';
 import * as settings from './settings.js';
-// Редакторы (таск 07): подключить модуль, который вызывает registerSongEditor(), например
-// import './editors/index.js';
+// Редакторы (таск 07): модуль вызывает registerSongEditor().
+import './editors/index.js';
 
 const VIEWS = { queue, new: newSong, songs, trash, settings };
 const STATUS_EVERY_MS = 15000;

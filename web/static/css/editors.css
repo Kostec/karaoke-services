@@ -1,0 +1,91 @@
+/* Редакторы текста и строк (таск 07). Подключается из js/editors/shell.js. */
+
+dialog.editor {
+  width: min(900px, calc(100vw - 24px));
+  max-width: none;
+  height: min(92dvh, 900px);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+dialog.editor:not([open]) { display: none; }
+dialog.editor > .banner { margin: 8px 16px 0; }
+
+.ed-head {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+}
+.ed-titles { flex: 1; min-width: 0; }
+.ed-titles h3 { margin: 0; font-size: 1.1rem; }
+.ed-titles .small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-close { min-width: 40px; min-height: 40px; }
+
+.ed-body { flex: 1; min-height: 0; overflow: auto; padding: 8px 16px; display: flex; flex-direction: column; gap: 8px; }
+.ed-footer {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px;
+  padding: 10px 16px; border-top: 1px solid var(--border); margin: 0;
+}
+.ed-footer .small { margin-right: auto; }
+
+/* ---------- редактор текста ---------- */
+
+.ed-textwrap {
+  --ed-lh: 1.5em;
+  flex: 1; min-height: 240px;
+  display: grid; grid-template-columns: auto 1fr;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 14px; line-height: var(--ed-lh);
+  background: var(--surface);
+}
+.ed-gutter {
+  overflow: hidden; padding: 8px 6px 8px 8px; text-align: right;
+  color: var(--muted); background: var(--surface-2); user-select: none; min-width: 3ch;
+}
+.ed-gutter > div { height: var(--ed-lh); }
+.ed-gutter > .marker { color: var(--warn); font-weight: 700; }
+.ed-textarea { position: relative; min-width: 0; }
+.ed-backdrop, .ed-text {
+  position: absolute; inset: 0; margin: 0; padding: 8px;
+  font: inherit; line-height: inherit; letter-spacing: normal;
+  white-space: pre; overflow: auto; tab-size: 4;
+  border: 0; border-radius: 0;
+}
+.ed-backdrop { color: transparent; pointer-events: none; overflow: hidden; }
+.ed-backdrop > span { display: block; min-height: var(--ed-lh); }
+.ed-backdrop > .marker { background: var(--warn-bg); }
+.ed-backdrop > .marker::after { content: attr(data-note); color: var(--warn); font-style: italic; }
+.ed-text { background: transparent; color: var(--text); resize: none; width: 100%; height: 100%; caret-color: var(--text); }
+.ed-text:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ---------- редактор строк ---------- */
+
+.ed-help { margin: 0; }
+.ed-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ed-line { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: var(--surface); }
+.ed-line.playing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.ed-line-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ed-num { font-weight: 700; min-width: 2ch; text-align: right; }
+.ed-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.ed-play { min-width: 40px; min-height: 36px; padding: 0 8px; }
+.ed-syls { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 2px; }
+.ed-syl {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 15px;
+  min-width: 2ch; max-width: 100%; padding: 4px 3px; min-height: 34px; box-sizing: content-box;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); color: var(--text);
+  white-space: pre;
+}
+.ed-syl.golden { border-color: var(--warn); }
+.ed-syl.free { font-style: italic; }
+.ed-syl.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: var(--surface); }
+.ed-syl[readonly] { background: transparent; }
+.ed-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.small-btn { font-size: .85rem; padding: 4px 8px; min-height: 32px; }
+
+@media (max-width: 639px) {
+  dialog.editor { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; border: 0; margin: 0; }
+  .ed-body { padding: 8px 10px; }
+  .ed-head, .ed-footer { padding-left: 10px; padding-right: 10px; }
+  .ed-footer > button { flex: 1 1 auto; }
+}
