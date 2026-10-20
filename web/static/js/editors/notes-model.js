@@ -231,9 +231,12 @@ export function setText(state, id, text) {
   return { ...state, notes, created: [] };
 }
 
-/** Текст строки для панели: слоги подряд без «~» (пробелы — внутри слогов, как в .txt). */
+/**
+ * Текст строки для панели: слоги подряд, «~» убраны (и свободные ноты «~ », и склейки «~w »);
+ * пробелы слогов — в начале или в конце, как у UltraSinger, — остаются границами слов.
+ */
 export function lineText(line) {
-  return line.filter((x) => String(x.text).trim() !== '~').map((x) => x.text).join('').trim();
+  return line.map((x) => String(x.text).replace(/~/g, '')).join('').replace(/\s+/g, ' ').trim();
 }
 
 /**
@@ -326,7 +329,10 @@ export function joinNext(state, id) {
   const nx = state.notes[i + 1];
   if (!nx) throw new Error('Это последняя нота — сливать не с чем');
   if (nx.ls) throw new Error('Следующая нота в другой строке — сливать нельзя');
-  const text = String(nx.text).trim() === '~' ? x.text : x.text + nx.text;
+  // «~» (с любыми пробелами) при слиянии отбрасывается с любой стороны, пробелы-границы слов остаются
+  const drop = (t) => (String(t).trim() === '~' ? String(t).replace('~', '') : String(t));
+  const both = drop(x.text) + drop(nx.text);
+  const text = both.trim() ? both : x.text;
   const notes = [...state.notes.slice(0, i), { ...x, length: nx.start + nx.length - x.start, text }, ...state.notes.slice(i + 2)];
   return { ...state, notes, created: [] };
 }

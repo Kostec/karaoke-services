@@ -310,3 +310,36 @@ test('удалена нота-начало строки: прежний бит �
   const out = M.deleteNotes(st, [byText(st, 'Sec').id]);
   assert.deepEqual(M.toPayload(out).lines.map((l) => l.break_beat), [10, 22, null]);
 });
+
+// Строка в стиле UltraSinger: пробел — в конце слога, «~» тоже бывает с пробелом («~ »).
+function usPayload() {
+  nid = 0;
+  return {
+    editable: true, bpm: 300, gap: 0, headers: [],
+    lines: [
+      { break_beat: null, notes: [n(0, 2, 'In'), n(2, 2, 'to '), n(4, 2, 'my'), n(6, 2, '~ '), n(8, 2, 'eyes ')] },
+    ],
+  };
+}
+
+test('UltraSinger: «~» с пробелами — свободная нота, текст строки сохраняет пробелы между словами', () => {
+  const st = M.fromPayload(usPayload());
+  assert.equal(M.isFree('~ '), true);
+  assert.equal(M.isFree(' ~'), true);
+  assert.equal(M.lineText(M.lines(st)[0]), 'Into my eyes');
+  // «~» внутри слога (склейка UltraSinger «~w ») в тексте панели не показывается
+  assert.equal(M.lineText([{ text: 'Ho' }, { text: '~w ' }, { text: 'can ' }, { text: 'you' }]), 'How can you');
+  // сдвиг текста узнаёт «~ » справа свободной
+  const my = byText(st, 'my').id;
+  assert.deepEqual(texts(M.shiftText(M.setText(st, 4, '~ '), my, 1))[0], ['In', 'to ', '~', 'my', '~ ']);
+});
+
+test('слить с «~»-нотой: «~» отбрасывается с любой стороны, пробелы-границы слов остаются', () => {
+  const st = M.fromPayload(usPayload());
+  const my = byText(st, 'my').id;
+  assert.equal(M.joinNext(st, my).notes.find((x) => x.id === my).text, 'my ');
+  const tl = byText(st, '~ ').id;
+  const out = M.joinNext(st, tl);
+  assert.equal(out.notes.find((x) => x.id === tl).text, ' eyes ');
+  assert.equal(M.lineText(M.lines(out)[0]), 'Into my eyes');
+});

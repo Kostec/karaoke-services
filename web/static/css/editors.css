@@ -160,8 +160,43 @@ dialog.editor.wide > .banner { margin: 6px 14px 0; }
 .ne-marquee { position: absolute; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); pointer-events: none; z-index: 6; }
 .ne-hint { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 6px 14px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
 .ne kbd { font: 12px ui-monospace, Consolas, monospace; background: var(--surface-2); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
-.ne-panel { width: 320px; border-left: 1px solid var(--border); min-height: 0; background: var(--surface); }
+.ne-panel { width: 320px; border-left: 1px solid var(--border); min-height: 0; background: var(--surface);
+  display: grid; grid-template-rows: auto 1fr auto; transition: width .15s; }
 .ne-panel[hidden] { display: none; }
+.ne-panel.closed { width: 40px; }
+.ne-ph { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.ne-ph h4 { margin: 0; font-size: 14px; flex: 1; }
+.ne-panel.closed .ne-ph h4, .ne-panel.closed .ne-plist, .ne-panel.closed .ne-pfoot { display: none; }
+.ne-panel.closed .ne-ph { flex-direction: column; padding: 6px 2px; border: 0; }
+.ne-vlabel { display: none; writing-mode: vertical-rl; font-size: 13px; color: var(--muted); background: none; border: 0; padding: 6px 0; min-height: 0; cursor: pointer; }
+.ne-panel.closed .ne-vlabel { display: block; }
+.ne-plist { overflow: auto; padding: 6px 8px; margin: 0; list-style: none; min-height: 0; }
+.ne-plist .pl { display: grid; grid-template-columns: 22px 1fr; gap: 2px 6px; padding: 5px 6px; border-radius: 8px; align-items: start; cursor: pointer; }
+.ne-plist .pl.cur { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.ne-plist .pl.live { box-shadow: inset 3px 0 0 var(--ne-playhead); }
+.ne-plist .n { font-size: 12px; color: var(--muted); padding-top: 6px; text-align: right; }
+.ne-plist input { width: 100%; margin: 0; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; min-height: 0; }
+.ne-plist input:hover { border-color: var(--border); }
+.ne-plist input:focus { border-color: var(--accent); background: var(--surface); outline: none; }
+.ne-plist .st { grid-column: 2; font-size: 12px; padding-left: 7px; color: var(--muted); }
+.ne-plist .st.warn { color: var(--warn); }
+.ne-plist .st button { min-height: 24px; padding: 1px 7px; font-size: 12px; margin-left: 6px; }
+.ne-pfoot { padding: 8px 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+.ne-brk b.click { pointer-events: auto; cursor: pointer; }
+.ne-brk b.click:hover { background: var(--accent); }
+.ne-tapbanner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; background: var(--warn-bg); color: var(--warn);
+  padding: 6px 14px; font-size: 13px; border-bottom: 1px solid var(--border); }
+.ne-tapbanner[hidden] { display: none; }
+.ne-tapbanner > span:first-child { flex: 1 1 320px; }
+.ne-tapinfo { font-weight: 600; }
+.ne-tapbanner button { min-height: 34px; padding: 4px 12px; }
+.ne-hold { touch-action: none; user-select: none; }
+.ne-hold.on { background: var(--ne-playhead); color: #fff; border-color: var(--ne-playhead); }
+dialog.ne-help { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); max-width: min(560px, calc(100vw - 24px)); }
+dialog.ne-help h3 { margin-top: 0; }
+.ne-help-table { border-collapse: collapse; font-size: 14px; }
+.ne-help-table td { padding: 4px 10px 4px 0; vertical-align: top; }
+.ne-help kbd { font: 12px ui-monospace, Consolas, monospace; background: var(--surface-2); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; white-space: nowrap; }
 .ne-toast {
   position: absolute; left: 50%; bottom: 44px; transform: translateX(-50%); background: var(--text); color: var(--surface);
   padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 50; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90%;
@@ -179,4 +214,11 @@ dialog.editor.wide > .banner { margin: 6px 14px 0; }
   .ne-time { min-width: 0; }
   .ne-selinfo, .ne-hint { display: none; }
   .ne-panel { width: 100vw; }
+  .ne-panel.closed { width: 36px; }
+  .ne-main:has(> .ne-panel:not(.closed):not([hidden])) { grid-template-columns: 1fr; }
+  .ne-main:has(> .ne-panel:not(.closed):not([hidden])) > .ne-center { display: none; }
+  .ne-panel:not(.closed) { width: auto; border-left: 0; }
+  dialog.editor.wide .ed-head { gap: 4px; padding: 6px 8px; }
+  dialog.editor.wide .ed-titles h3, dialog.editor.wide .ed-titles .small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  dialog.editor.wide .ed-head .ne-status { display: none; }
 }

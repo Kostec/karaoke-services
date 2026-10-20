@@ -18,7 +18,8 @@ const RULER_H = 24;
 const WAVE_H = 44;
 const WAVE_OFF_H = 20;
 const ZOOM_KEY = 'notesEditor.ppb';
-const VIEW_BPM = 300; // без #BPM ноты всё равно рисуются (только просмотр)
+const VIEW_BPM = 300;
+const NO_BPM_PLAY = 'В песне нет #BPM — время нот неизвестно'; // без #BPM ноты всё равно рисуются (только просмотр)
 
 const plugins = [];
 
@@ -376,6 +377,7 @@ export async function openNotesEditor(song, { reload } = {}) {
 
   function playReason() {
     if (audioError) return audioError;
+    if (state && !(Number(state.bpm) > 0)) return NO_BPM_PLAY;
     return '';
   }
 
@@ -457,8 +459,11 @@ export async function openNotesEditor(song, { reload } = {}) {
 
   // ------------------------------------------------------------ правка
 
-  /** Применить операцию модели: история, выделение созданных нот, перерисовка; ошибка — сообщение. */
-  function apply(fn, okText) {
+  /**
+   * Применить операцию модели: история, выделение созданных нот, перерисовка; ошибка — сообщение.
+   * amend — дописать в последний шаг отмены (правка строки в панели, сессия отстукивания).
+   */
+  function apply(fn, okText, { amend = false } = {}) {
     if (!editable()) return false;
     let next;
     try {
@@ -468,7 +473,7 @@ export async function openNotesEditor(song, { reload } = {}) {
       return false;
     }
     if (!next || next === state) return false;
-    hist.push(state);
+    if (!amend) hist.push(state);
     state = next;
     if (state.created.length) {
       sel = new Set(state.created);
@@ -537,10 +542,13 @@ export async function openNotesEditor(song, { reload } = {}) {
     toast('Выделены все ноты: ←/→ сдвигают песню по времени, ↑/↓ меняют тональность');
   }
 
+  /** Tab по нотам; на крайней ноте — false: фокус уходит дальше по обычному порядку. */
   function stepSel(dir) {
     const i = state.notes.findIndex((x) => x.id === lastSel);
+    if (i >= 0 && (i + dir < 0 || i + dir >= state.notes.length)) return false;
     const j = Math.max(0, Math.min(state.notes.length - 1, i < 0 ? 0 : i + dir));
     select([state.notes[j].id], { reveal: true });
+    return true;
   }
 
   function newAfter() {
@@ -906,6 +914,8 @@ export async function openNotesEditor(song, { reload } = {}) {
     get lastSel() { return lastSel; },
     get posMs() { return posMs; },
     get playing() { return playing; },
+    /** Причина, по которой нельзя играть (нет звука, нет #BPM), иначе ''. */
+    playReason,
     editable, apply, select, revealNote, editChip, render, renderSel, toast, play, stopPlay, seekMs, playLine,
     msOf, beatOf, bx, xBeat, py,
     onRender: (f) => hooks.render.push(f),
