@@ -11,7 +11,7 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-19T23:17:21+03:00",
-  "updatedAt": "2026-10-20T08:53:45+03:00",
+  "updatedAt": "2026-10-20T09:09:12+03:00",
   "finishedAt": null,
   "stages": [
     {
@@ -49,13 +49,13 @@ window.STATE =
       "id": "build",
       "status": "active",
       "startedAt": "2026-10-20T07:15:36+03:00",
-      "note": "4 из 8 тасков готовы"
+      "note": "5 из 8 тасков готовы"
     },
     {
       "id": "review",
       "status": "active",
       "startedAt": "2026-10-20T07:27:48+03:00",
-      "note": "проверено 4 из 8"
+      "note": "проверено 6 из 8"
     },
     {
       "id": "final",
@@ -178,9 +178,9 @@ window.STATE =
         "worker",
         "docker-compose.yml"
       ],
-      "status": "done",
+      "status": "repair",
       "retries": 0,
-      "repairs": 1,
+      "repairs": 2,
       "handoffs": 0,
       "startedAt": "2026-10-20T07:30:26+03:00",
       "commit": "4a59012",
@@ -192,7 +192,8 @@ window.STATE =
         "проверка флагов по реальному списку getopt",
         "одно правило Pascal (runnable_arch)",
         "тесты check() на фейках",
-        "__main__ не глотает ImportError внутри runner"
+        "__main__ не глотает ImportError внутри runner",
+        "D02: swift-f0 0.3.0 несовместим — фиксировать версии по uv.lock UltraSinger"
       ],
       "finishedAt": "2026-10-20T08:39:04+03:00"
     },
@@ -229,11 +230,19 @@ window.STATE =
         "selfcheck.py",
         "tests/worker/"
       ],
-      "status": "in-progress",
+      "status": "repair",
       "retries": 0,
-      "repairs": 0,
+      "repairs": 1,
       "handoffs": 0,
-      "startedAt": "2026-10-20T08:30:44+03:00"
+      "startedAt": "2026-10-20T08:30:44+03:00",
+      "repairFindings": [
+        "эвристика зависания без тишины",
+        "замена: восстановление из корзины при сбое выкладки",
+        "отмена сохраняет in/",
+        "отладка вне папки задания",
+        "claim_next(types)",
+        "мелочи: константы, storage.close, read_song"
+      ]
     },
     {
       "id": "05",
@@ -320,12 +329,12 @@ window.STATE =
       "zone": [
         "web/static/"
       ],
-      "status": "repair",
+      "status": "done",
       "retries": 0,
       "repairs": 2,
       "handoffs": 0,
       "startedAt": "2026-10-20T08:30:44+03:00",
-      "commit": "81e318e",
+      "commit": "57ce7b4",
       "repairFindings": [
         "закрытие EventSource при смене раздела",
         "догрузка начала лога (история 19)",
@@ -334,7 +343,12 @@ window.STATE =
         "ё=е в exists",
         "машиночитаемое поле ошибки",
         "match_key слишком широкий (пунктуация), markField вне details, logFrom/CRLF"
-      ]
+      ],
+      "finishedAt": "2026-10-20T08:57:19+03:00",
+      "tests": {
+        "passed": 252,
+        "failed": 0
+      }
     },
     {
       "id": "07",
@@ -354,10 +368,23 @@ window.STATE =
         "web/static/",
         "web/static/js/new-song.js"
       ],
-      "status": "pending",
+      "status": "repair",
       "retries": 0,
-      "repairs": 0,
-      "handoffs": 0
+      "repairs": 1,
+      "handoffs": 0,
+      "startedAt": "2026-10-20T08:57:19+03:00",
+      "commit": "958ff23",
+      "tests": {
+        "passed": 18,
+        "failed": 0
+      },
+      "repairFindings": [
+        "обложка из тегов только по распознанной сигнатуре",
+        "флаг группировки ID3",
+        "тесты веток parseV2",
+        "PARAM_KEYS и сборка multipart в одном месте",
+        "▶ неактивна без BPM"
+      ]
     },
     {
       "id": "08",
@@ -390,7 +417,7 @@ window.STATE =
   ],
   "singlePass": null,
   "tests": {
-    "passed": 264,
+    "passed": 252,
     "failed": 0
   },
   "debt": {
@@ -435,7 +462,13 @@ window.STATE =
     "история 56: флаги ищутся разбором исходника, а не по справке (допустимое отклонение)",
     "selfcheck: getopt принимает уникальный префикс — флаг надо сверять точно со списком long options",
     "__main__ run: нет юнит-теста на проброс ImportError",
-    "web/static: дубли field()/songName, литералы-плейсхолдеры 192.168.0.129, ui.h() пропускает нефункциональные on*"
+    "web/static: дубли field()/songName, литералы-плейсхолдеры 192.168.0.129, ui.h() пропускает нефункциональные on*",
+    "queue.js:222 — после обрезки лога сверху (>5000 строк) «Показать начало» оставляет разрыв",
+    "путь «готово → песня в списке» проверяется в приёмке (T08) с настоящим воркером",
+    "worker без GPU берёт выкладку, только если она первая в очереди (нужен Jobs.claim_next(types))",
+    "отмена новой песни удаляет in/ — «Перезапустить» отменённую без source/ невозможно",
+    "songs.js: title кнопки подменяет её доступное имя (неактивные кнопки редакторов читаются причиной)",
+    "фикстурные сохранения T07 положили 3 версии тестовой песни в корзину тома data"
   ],
   "reviewers": {
     "manifestSpec": "a489e47ea70f9876b",

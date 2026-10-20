@@ -47,10 +47,15 @@ COPY worker/build/check_torch_arch.py worker/karaoke_worker/gpucheck.py /tmp/arc
 RUN python /tmp/archcheck/check_torch_arch.py
 
 # 2) Зависимости UltraSinger из его pyproject.toml (без -e: исходники кладём отдельно).
-#    Ограничения держат torch на сборке cu126; numba требует numpy<2.5.
-COPY --from=ultrasinger pyproject.toml /app/UltraSinger/pyproject.toml
+#    Версии фиксируются по uv.lock UltraSinger (uv export), кроме наших пинов:
+#    torch/torchaudio/torchvision cu126 (+ их nvidia-*, triton) и numpy<2.5 — см. lock_constraints.py.
+COPY --from=ultrasinger pyproject.toml uv.lock /app/UltraSinger/
+COPY worker/build/lock_constraints.py /tmp/archcheck/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    printf 'torch==2.8.0+cu126\ntorchaudio==2.8.0+cu126\ntorchvision==0.23.0+cu126\nnumpy<2.5\n' > /etc/uv-constraints.txt \
+    cd /app/UltraSinger \
+    && uv export --frozen --no-hashes --no-dev --no-emit-project --no-header --no-annotate \
+        -o /tmp/us-lock.txt \
+    && python /tmp/archcheck/lock_constraints.py /tmp/us-lock.txt /etc/uv-constraints.txt \
     && uv pip install -r /app/UltraSinger/pyproject.toml "numpy<2.5" \
         --constraint /etc/uv-constraints.txt \
         --extra-index-url "${TORCH_INDEX}" --index-strategy unsafe-best-match \

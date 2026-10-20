@@ -122,3 +122,21 @@ GET    /api/defaults                    → модели, языки, значе
 - **Контракт этапа**: `Job.stage` — русское название этапа по таблице §5 спеки; на этапе выкладки — `db.STAGE_PUBLISH` (UI переводит в «Выкладка»). UI показывает stage как есть.
 - (доработка 06) Ошибки проверки: `{"detail", "field"}` (поля: artist, title, audio, cover, lyrics, whisper_model, compute_type, batch_size, language, vad_onset, vad_offset, demucs_model, params; настройки: kind, host, share, path, password); 422 тоже с `field`. `/api/defaults` содержит `trash_days`. Ключ дубля — `context.match_key(artist, title)`. js: `api.js` — `JOB_ACTIVE`, `JOB_FINAL`, `STAGE_PUBLISH`, `canRepublish(job)`, `getDefaults()` (кэш), `api.logFrom(id, from)`; `ui.js` — `field()`, `songName()`.
 - (доработка 06-2) Ключ дубля `match_key(artist, title)` = safe_name(strip → casefold → ё→е) для обеих частей; пробелы и пунктуация значимы. SSE лога первым шлёт `event: start` с байтовым смещением начала первой отданной строки; догрузка начала — `?from=0` до этого смещения. `api.js request(method, url, body, {binary})` — общий разбор ошибок.
+
+### Из таска 04 — воркер
+
+- `runner`: `handlers: dict[str, Handler]`, `run_forever(ctx=None, *, gpu_check=None, poll=1.0, until=None) -> int`, `run_job(ctx, job)`, `startup(ctx, gpu_check) -> bool` (пишет статус GPU, `fail_interrupted`, чистит `.new-*` старше часа и логи старше `LOG_DAYS`).
+- `base`: `JobContext(paths=None, *, storage_factory=None, trash=None, env=None)` с `.run_command/.log/.progress/.check_cancel/.fatal_grace`; `JobFailed(reason, user_message)`, `JobCancelled`; `run_command(cmd, *, on_line, should_cancel, cwd, env, poll, term_grace, fatal_grace) -> int` (группа процессов; трасса «in <module>» + 30 с тишины → SIGTERM/SIGKILL); `explain_failure(tail, rc, what) -> (reason, msg)`.
+- `handlers`: `Handler{needs_gpu; run(job, ctx)}`, `HANDLERS` (generate, instrumental, publish), `prepare_lyrics(text)`, `ultrasinger_args(params, in_mp3, out_dir, lyrics, env)`.
+- `progress`: `ProgressTracker.feed(line) -> (stage, percent)|None`, `.set(stage, pct)`, `clean_line(raw)`, `LineSplitter`, `STAGES`.
+- Подмена внешних команд: `ULTRASINGER_CMD`, `DEMUCS_CMD`, `FFMPEG_CMD`. Фейки — `tests/worker/fixtures/`.
+- Поведение: stage — русские названия §5; выкладка — `state=publishing`, `stage=STAGE_PUBLISH`; error = причина + последние 5 строк лога; успех → `in/` в `source/` + `params.json`, обновление Songs и Library, удаление `jobs/<id>/`. Отмена удаляет `jobs/<id>/` вместе с `in/`.
+
+### Из таска 07 — редакторы и теги mp3
+
+- Тесты фронта: `node --test tests/frontend/` (`tests/frontend/index.js` подгружает все `*.test.mjs`; только встроенный node:test).
+- `editors/lines.js` (чистые функции): `beatToMs(beat,gap,bpm)`, `lineRange(line,gap,bpm)->{start,end}`, `lineText`, `setSyllable`, `mergeWithNext`, `splitBefore` (новый разрыв = конец последней ноты части), `deleteNote`, `toPayload(lines)`, `isDirty`.
+- `editors/lyrics-text.js`: `isMarker`, `analyzeLyrics(text)`, `regenFields(song,text,defaults)` → поля multipart для перегенерации.
+- `id3.js`: `id3v2Size(head10)`, `parseId3(head,tail)->{artist,title,cover|null}`, `planAutofill(current,tags,prevAuto)`, `readId3(file)`.
+- `editors/shell.js`: `openShell({title,subtitle,isDirty})`, `fmtTime`. Подключение — `editors/index.js` одной строкой в `app.js`.
+- (доработка 03, D02) Версии зависимостей UltraSinger фиксируются по его `uv.lock`: `uv export --frozen --no-hashes --no-dev --no-emit-project` → `worker/build/lock_constraints.py` → `/etc/uv-constraints.txt`; наши пины важнее: torch/torchaudio/torchvision cu126 и `numpy<2.5`, пины nvidia-*/triton отброшены. selfcheck — 4 проверки, включая сигнатуру `SwiftF0(fmin, fmax, confidence_threshold)`. В образе: swift-f0 0.1.2, ctranslate2 4.7.1, whisperx 3.8.1.

@@ -64,13 +64,28 @@ MIDI_CREATOR_UPSTREAM = MIDI_CREATOR_FIXED.replace(
     "        if seg.end <= seg.start:\n            continue\n", "")
 
 
+SWIFT_F0_LOCKED = '''
+class SwiftF0:  # swift-f0 0.1.2 из uv.lock UltraSinger
+    def __init__(self, fmin=46.875, fmax=2093.75, confidence_threshold=0.9):
+        raise RuntimeError("selfcheck не должен загружать модель")
+'''
+
+# swift-f0 0.3.0 с PyPI: другая сигнатура, вызов из pitcher.py падает с TypeError.
+SWIFT_F0_030 = '''
+class SwiftF0:
+    def __init__(self, threads=1, spin=False):
+        pass
+'''
+
+
 def make_ultrasinger(tmp_path: Path, *, arg_options=ARG_OPTIONS_OK, lyrics_alignment=LYRICS_ALIGNMENT_OK,
-                     midi_creator=MIDI_CREATOR_FIXED) -> Path:
+                     midi_creator=MIDI_CREATOR_FIXED, swift_f0=SWIFT_F0_LOCKED) -> Path:
     src = tmp_path / "UltraSinger" / "src"
     files = {
         "UltraSinger.py": "import sys\n" + arg_options,
         "modules/Midi/MidiSegment.py": MIDI_SEGMENT,
         "modules/Midi/midi_creator.py": midi_creator,
+        "swift_f0/__init__.py": swift_f0,  # src/ стоит первым в PYTHONPATH проверки
     }
     if lyrics_alignment is not None:
         files["modules/Speech_Recognition/lyrics_alignment.py"] = lyrics_alignment
@@ -101,7 +116,7 @@ def test_intact_branch_passes_all_checks(tmp_path):
     results = selfcheck.run_checks(us)
 
     assert failed(results) == []
-    assert len(results) == 3
+    assert len(results) == 4
     assert selfcheck.main(us) == 0
 
 
@@ -157,3 +172,13 @@ def arg_options():
     assert len(bad) == 1
     for flag in ("--lyrics", "--vad_onset", "--vad_offset"):
         assert flag in bad[0].message
+
+
+def test_incompatible_swift_f0_signature_is_reported(tmp_path):
+    us = make_ultrasinger(tmp_path, swift_f0=SWIFT_F0_030)
+
+    bad = failed(selfcheck.run_checks(us))
+
+    assert len(bad) == 1
+    assert "пропала совместимость" in bad[0].message
+    assert "SwiftF0" in bad[0].message and "confidence_threshold" in bad[0].message

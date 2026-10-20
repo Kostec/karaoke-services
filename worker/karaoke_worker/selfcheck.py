@@ -4,7 +4,8 @@
 - флаги --lyrics, --vad_onset, --vad_offset принимает getopt со списком UltraSinger.arg_options()
   (тот же вызов, что в init_settings);
 - модуль modules.Speech_Recognition.lyrics_alignment импортируется;
-- midi_creator не падает на сегменте нулевой длины и не пишет такую ноту в MIDI.
+- midi_creator не падает на сегменте нулевой длины и не пишет такую ноту в MIDI;
+- swift-f0 принимает SwiftF0(fmin, fmax, confidence_threshold), как его вызывает pitcher.
 
 Импорты UltraSinger выполняются в отдельном процессе с рабочей папкой src/ — так, как его
 запускает воркер; процесс самой проверки модули UltraSinger не загружает.
@@ -123,9 +124,34 @@ def check_midi_zero_length(src: Path) -> CheckResult:
     return CheckResult(name, True, "сегмент нулевой длины пропущен, MIDI записан")
 
 
+_SWIFT_F0_CODE = """
+import inspect, sys
+from swift_f0 import SwiftF0
+try:
+    inspect.signature(SwiftF0).bind(fmin=46.875, fmax=2093.75, confidence_threshold=0.9)
+except TypeError as exc:
+    print("SIGNATURE:" + str(inspect.signature(SwiftF0)))
+    sys.exit(3)
+"""
+
+
+def check_swift_f0(src: Path) -> CheckResult:
+    """pitcher.py вызывает SwiftF0(fmin, fmax, confidence_threshold); проверяется сигнатура, модель не грузится."""
+    name = "swift-f0: SwiftF0(fmin, fmax, confidence_threshold)"
+    ok, out = _run_in_ultrasinger(src, _SWIFT_F0_CODE)
+    if ok:
+        return CheckResult(name, True, "сигнатура совместима с pitcher UltraSinger")
+    sig = [ln[len("SIGNATURE:"):] for ln in out.splitlines() if ln.startswith("SIGNATURE:")]
+    detail = f"у установленного SwiftF0 сигнатура {sig[-1]}" if sig else _last_line(out)
+    return CheckResult(name, False, "пропала совместимость swift-f0 с UltraSinger: pitcher вызывает "
+                                    "SwiftF0(fmin, fmax, confidence_threshold), а " + detail
+                                    + ". Версия swift-f0 должна совпадать с uv.lock UltraSinger.")
+
+
 def run_checks(us_dir: Path | str | None = None) -> list[CheckResult]:
     src = Path(us_dir or ultrasinger_dir()) / "src"
-    return [check_flags(src), check_lyrics_alignment(src), check_midi_zero_length(src)]
+    return [check_flags(src), check_lyrics_alignment(src), check_midi_zero_length(src),
+            check_swift_f0(src)]
 
 
 def main(us_dir: Path | str | None = None) -> int:
