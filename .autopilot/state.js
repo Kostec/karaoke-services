@@ -494,7 +494,9 @@ window.STATE =
     "lock_constraints.py: фильтр nvidia- слишком широкий (нужен nvidia-.*-cu12); версии torch в двух местах; нет теста преобразования",
     "ui.js:128 runAction считает текст ошибки сам — перевести на api.errorText",
     "при замене в другую папку неудачный перенос старой в корзину даёт done с предупреждением в логе",
-    "нет функции paths для папки отладки (song_at/debug)"
+    "нет функции paths для папки отладки (song_at/debug)",
+    "README: «четыре проверки» selfcheck — теперь пять (NLTK); итоговая строка selfcheck не нейтральна",
+    "список языков punkt дублируется в Dockerfile и selfcheck.PUNKT_LANGS"
   ],
   "reviewers": {
     "manifestSpec": "a489e47ea70f9876b",
