@@ -3,7 +3,8 @@
 // Модуль редактора регистрирует себя:
 //   import { registerSongEditor } from '../extensions.js';
 //   registerSongEditor('lyrics', { label: 'Редактировать текст', open(song, { reload }) { … } });
-//   registerSongEditor('notes',  { label: 'Редактировать слова', open(song, { reload }) { … } });
+//   registerSongEditor('notes',  { label: 'Редактор нот', open(song, { reload }) { … } });
+// Расширения самого редактора нот — addNotesEditorPlugin(fn) из editors/notes-editor.js.
 // и подключается одной строкой импорта в app.js (см. комментарий «Редакторы»).
 // song — элемент из GET /api/songs (song_id, artist, title, own, …);
 // reload() — перечитать список песен после сохранения.

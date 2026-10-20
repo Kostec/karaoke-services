@@ -12,20 +12,22 @@ function addCss() {
 }
 
 /**
- * openShell({title, subtitle, isDirty}) → {dlg, body, footer, message(text, kind), close(force)}.
+ * openShell({title, subtitle, isDirty, wide}) → {dlg, head, body, footer, message(text, kind), close(force)}.
  * isDirty() → true, если закрытие потеряет правки (спросим подтверждение).
+ * wide — широкое окно (почти весь экран на ПК, весь экран на телефоне), без нижней панели.
  */
-export function openShell({ title, subtitle, isDirty = () => false }) {
+export function openShell({ title, subtitle, isDirty = () => false, wide = false }) {
   addCss();
   const msg = h('div', { class: 'banner', hidden: true, role: 'status' });
   const body = h('div', { class: 'ed-body' });
   const footer = h('div', { class: 'actions ed-footer' });
   const closeBtn = h('button', { type: 'button', class: 'ed-close', 'aria-label': 'Закрыть' }, '✕');
-  const dlg = h('dialog', { class: 'editor' },
-    h('div', { class: 'ed-head' },
+  const head = h('div', { class: 'ed-head' },
       h('div', { class: 'ed-titles' }, h('h3', {}, title), subtitle ? h('div', { class: 'small muted' }, subtitle) : null),
-      closeBtn),
-    msg, body, footer);
+      closeBtn);
+  const dlg = h('dialog', { class: wide ? 'editor wide' : 'editor' }, head, msg, body, footer);
+  footer.hidden = wide;
+  closeBtn.title = 'Закрыть (Esc)';
 
   const beforeUnload = (e) => {
     if (isDirty()) { e.preventDefault(); e.returnValue = ''; }
@@ -59,7 +61,7 @@ export function openShell({ title, subtitle, isDirty = () => false }) {
     msg.setAttribute('role', kind === 'err' ? 'alert' : 'status');
     msg.append(text);
   }
-  return { dlg, body, footer, message, close };
+  return { dlg, head, closeBtn, body, footer, message, close };
 }
 
 /** «1:05.3» для мс. */

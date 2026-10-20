@@ -2,7 +2,7 @@
 
 import { registerSongEditor } from '../extensions.js';
 import { openLyricsEditor, lyricsEnabled } from './lyrics-editor.js';
-import { openLinesEditor } from './lines-editor.js';
+import { openNotesEditor } from './notes-editor.js';
 
 registerSongEditor('lyrics', {
   label: 'Править текст',
@@ -11,6 +11,6 @@ registerSongEditor('lyrics', {
 });
 
 registerSongEditor('notes', {
-  label: 'Править слова',
-  open: (song, opts) => openLinesEditor(song, opts),
+  label: 'Редактор нот',
+  open: (song, opts) => openNotesEditor(song, opts),
 });
