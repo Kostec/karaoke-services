@@ -5,3 +5,8 @@ node_modules/
 __pycache__/
 .DS_Store
 .autopilot/serve.*
+# karaoke-services
+*.egg-info/
+.pytest_cache/
+*.pyc
+/output/

@@ -11,7 +11,7 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-19T23:17:21+03:00",
-  "updatedAt": "2026-10-19T23:55:52+03:00",
+  "updatedAt": "2026-10-20T07:27:48+03:00",
   "finishedAt": null,
   "stages": [
     {
@@ -40,17 +40,20 @@ window.STATE =
     },
     {
       "id": "plan",
-      "status": "active",
+      "status": "done",
       "startedAt": "2026-10-19T23:49:53+03:00",
-      "note": "8 тасков, ярус T2, 6 волн — утверждён"
+      "note": "8 тасков, ярус T2, 6 волн — утверждён",
+      "finishedAt": "2026-10-20T07:15:36+03:00"
     },
     {
       "id": "build",
-      "status": "pending"
+      "status": "active",
+      "startedAt": "2026-10-20T07:15:36+03:00"
     },
     {
       "id": "review",
-      "status": "pending"
+      "status": "active",
+      "startedAt": "2026-10-20T07:27:48+03:00"
     },
     {
       "id": "final",
@@ -94,10 +97,11 @@ window.STATE =
         "docker-compose.yml",
         "scripts/compose.ps1"
       ],
-      "status": "pending",
+      "status": "review",
       "retries": 0,
       "repairs": 0,
-      "handoffs": 0
+      "handoffs": 0,
+      "startedAt": "2026-10-20T07:15:49+03:00"
     },
     {
       "id": "02",
@@ -345,8 +349,8 @@ window.STATE =
   },
   "concerns": [],
   "reviewers": {
-    "manifestSpec": null,
-    "craft": null
+    "manifestSpec": "a489e47ea70f9876b",
+    "craft": "acc007efbffd7f351"
   },
   "blind": null
 }

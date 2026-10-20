@@ -1,0 +1,30 @@
+#VERSION:1.2.0
+#ARTIST:Тестовая Группа
+#TITLE:Песня Ёлки
+#YEAR:2001
+#LANGUAGE:Russian
+#GENRE:Pop
+#COVER:Тестовая Группа - Песня Ёлки [CO].jpg
+#MP3:Тестовая Группа - Песня Ёлки.mp3
+#AUDIO:Тестовая Группа - Песня Ёлки.mp3
+#VOCALS:Тестовая Группа - Песня Ёлки [Vocals].mp3
+#INSTRUMENTAL:Тестовая Группа - Песня Ёлки [Instrumental].mp3
+#BPM:369.23
+#GAP:12340
+#CREATOR:UltraSinger [GitHub]
+#COMMENT:UltraSinger [GitHub] v0.0.13
+: 0 4 5 Ла 
+: 5 3 7 ла 
+: 8 0 7 сло
+: 8 4 9 ги 
+: 13 6 4 тест 
+- 20
+: 24 3 2 Вто
+: 27 0 2 ра
+: 27 2 3 я 
+: 29 5 0 строч
+: 34 0 0 ка 
+- 34
+: 40 4 5 Ко
+: 44 6 5 нец 
+E
