@@ -17,7 +17,7 @@ from .base import JobContext, JobFailed, remove_tree
 from .progress import PUBLISH, STAGE_POSTPROCESS, STAGE_PREPARE, ProgressTracker
 
 __all__ = ["Handler", "GenerateHandler", "InstrumentalHandler", "PublishHandler", "HANDLERS",
-           "prepare_lyrics", "ultrasinger_args"]
+           "prepare_lyrics", "ultrasinger_args", "audio_only_copy"]
 
 
 
@@ -63,6 +63,24 @@ def ultrasinger_args(params: dict, in_mp3: Path, out_dir: Path, lyrics: Path | N
     if params.get("keep_debug"):
         args += ["--keep_cache"]  # lyrics_debug.json лежит в cache/
     return args + ["--format_version", postprocess.FORMAT_VERSION]
+
+
+AUDIO_ONLY_MESSAGE = ("Не удалось прочитать звук из mp3 — файл повреждён или это не mp3; "
+                      "загрузите другой файл")
+
+
+def audio_only_copy(ctx: JobContext, job_id: int, src: Path, dest: Path) -> None:
+    """Копия mp3 только с первым аудиопотоком, без перекодирования. Обложка в тегах (ID3 APIC)
+    для ffmpeg — видеопоток «attached pic», и UltraSinger принимает такой mp3 за видео."""
+    try:
+        ctx.run_command(job_id, ctx.ffmpeg_cmd() + [
+            "-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-i", str(src),
+            "-map", "0:a:0", "-c:a", "copy", "-map_metadata", "0", str(dest)], what="ffmpeg")
+    except JobFailed as e:
+        tail = e.user_message.partition("\n\n")[2]  # «Последние строки лога: …»
+        raise JobFailed("input", f"{AUDIO_ONLY_MESSAGE}\n\n{tail}" if tail else AUDIO_ONLY_MESSAGE) from None
+    if not dest.is_file():
+        raise JobFailed("input", AUDIO_ONLY_MESSAGE)
 
 
 def _storage(ctx: JobContext) -> Storage:
@@ -212,7 +230,7 @@ class GenerateHandler:
         work.mkdir(parents=True)
         out.mkdir()
         us_in = work / f"{naming.base_name(job.artist, job.title)}.mp3"  # имя нужно MusicBrainz
-        shutil.copyfile(audio, us_in)
+        audio_only_copy(ctx, job.id, audio, us_in)
         lyrics = None
         if inputs.get("lyrics") and ctx.paths.abs(inputs["lyrics"]).is_file():
             text = prepare_lyrics(ultrastar.decode(ctx.paths.abs(inputs["lyrics"]).read_bytes())[0])

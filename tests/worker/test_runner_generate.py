@@ -96,3 +96,34 @@ def test_alignment_debug_is_kept_in_song_folder_of_data_volume(world):
     assert world.jobs.get(job.id).state == "done"
     assert (world.paths.song_at(DIR) / "debug" / "lyrics_debug.json").is_file()
     assert not list(world.out.rglob("lyrics_debug.json"))
+
+
+def test_ultrasinger_gets_audio_only_copy_of_input(world, tmp_path, monkeypatch):
+    """mp3 с обложкой (APIC → поток mjpeg) UltraSinger принимает за видео — ему отдаётся копия
+    только с аудиопотоком; исходный input.mp3 в source/ не меняется."""
+    got = tmp_path / "us_input.mp3"
+    monkeypatch.setenv("FAKE_US_INPUT", str(got))
+    args_file = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_US_ARGS", str(args_file))
+    mp3 = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x00" * 64  # = conftest.MP3
+
+    job = world.enqueue_generate(ARTIST, TITLE)
+    world.run()
+
+    assert world.jobs.get(job.id).state == "done"
+    assert got.read_bytes() == b"AUDIO-ONLY " + mp3
+    argv = json.loads(args_file.read_text("utf-8"))
+    assert argv[argv.index("-i") + 1].endswith(f"/{BASE}.mp3")  # имя нужно MusicBrainz
+    assert (world.paths.source(DIR) / "input.mp3").read_bytes() == mp3
+
+
+def test_audio_only_step_failure_is_explained(world, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_FFMPEG_MODE", "fail")
+    trace = tmp_path / "trace.txt"
+    monkeypatch.setenv("FAKE_US_TRACE", str(trace))
+    job = world.enqueue_generate()
+    world.run()
+    failed = world.jobs.get(job.id)
+    assert failed.state == "failed"
+    assert failed.error.startswith("Не удалось прочитать звук из mp3")
+    assert not trace.exists()  # до UltraSinger дело не дошло

@@ -14,6 +14,7 @@
   child_traceback  трассировка упавшего дочернего процесса, затем работа продолжается
 FAKE_US_TRACE — файл, куда дописываются «start <time>» / «end <time>» (проверка очереди).
 FAKE_US_ARGS — файл, куда пишутся аргументы командной строки (JSON).
+FAKE_US_INPUT — файл, куда копируется вход ``-i`` (что именно получил UltraSinger).
 """
 
 import json
@@ -53,6 +54,8 @@ def main(argv: list[str]) -> int:
     args = dict(zip(argv[::1], argv[1::1]))
     if os.environ.get("FAKE_US_ARGS"):
         Path(os.environ["FAKE_US_ARGS"]).write_text(json.dumps(argv, ensure_ascii=False), "utf-8")
+    if os.environ.get("FAKE_US_INPUT"):
+        shutil.copyfile(args["-i"], os.environ["FAKE_US_INPUT"])
     if "--interactive" in argv:
         print("interactive mode is not allowed in tests", flush=True)
         return 2
