@@ -83,6 +83,54 @@ def _parent(rel: str) -> str:
     return rel.rsplit("/", 1)[0] if "/" in rel else ""
 
 
+def is_song_txt_name(name: str) -> bool:
+    """Кандидат в .txt песни: ``*.txt``, но не ``*.lyrics.txt`` и не скрытый файл."""
+    low = name.lower()
+    return low.endswith(".txt") and not low.endswith(LYRICS_SUFFIX) and not name.startswith(".")
+
+
+class GuardedFile:
+    """Открытый файл хранилища: ошибки посреди чтения/записи/закрытия переводятся
+    в ``StorageError`` тем же правилом, что и остальные операции."""
+
+    def __init__(self, f, errors, rel: str):
+        self._f, self._errors, self._rel = f, errors, rel
+
+    def read(self, *a):
+        with self._errors(self._rel):
+            return self._f.read(*a)
+
+    def write(self, b):
+        with self._errors(self._rel):
+            return self._f.write(b)
+
+    def close(self):
+        with self._errors(self._rel):
+            self._f.close()
+
+    def __getattr__(self, name):  # seek, tell, readinto… — с тем же переводом ошибок
+        attr = getattr(self._f, name)
+        if not callable(attr):
+            return attr
+
+        def call(*a, **kw):
+            with self._errors(self._rel):
+                return attr(*a, **kw)
+        return call
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if exc[0] is None:
+            self.close()
+        else:
+            try:
+                self._f.close()
+            except Exception:
+                pass
+
+
 class Storage(ABC):
     """Папка результата. Все пути — относительные, через ``/``."""
 
@@ -116,6 +164,10 @@ class Storage(ABC):
     def _makedirs(self, rel: str) -> None: ...
 
     @abstractmethod
+    def _errors(self, rel: str):
+        """Контекст, переводящий ошибки реализации в ``StorageError``."""
+
+    @abstractmethod
     def _check_root(self) -> None:
         """Проверить, что корень папки результата доступен (иначе ``StorageError``)."""
 
@@ -133,6 +185,10 @@ class Storage(ABC):
 
     def exists(self, rel: str) -> bool:
         return self._stat(norm(rel, allow_root=True)) is not None
+
+    def stat(self, rel: str) -> Entry | None:
+        """Сведения о файле или папке (``size``, ``is_dir``, ``mtime``); нет — ``None``."""
+        return self._stat(norm(rel, allow_root=True))
 
     def listdir(self, rel_dir: str = "") -> list[Entry]:
         return self._scandir(norm(rel_dir, allow_root=True))
@@ -202,9 +258,17 @@ class Storage(ABC):
         return got
 
     def delete_dir(self, rel_dir: str) -> None:
-        """Удалить папку целиком (корень папки результата удалить нельзя)."""
+        """Удалить папку целиком (корень папки результата удалить нельзя).
+        Если после этого папка исполнителя (родитель) опустела — удаляется и она."""
         base = norm(rel_dir)
         self._delete_tree(base)
+        parent = _parent(base)
+        if parent:
+            try:
+                if not self._scandir(parent):
+                    self._rmdir(parent)
+            except StorageError:
+                pass  # пустая папка исполнителя — не повод считать удаление неудачным
 
     def _delete_tree(self, rel: str) -> None:
         for e in self._scandir(rel):
@@ -227,10 +291,24 @@ class Storage(ABC):
         try:
             if self.read(name) != payload:
                 raise StorageError("Пробный файл прочитан с ошибкой")
-        finally:
-            self._remove(name)
+        except BaseException:
+            try:
+                self._remove(name)
+            except Exception:
+                pass  # первая ошибка важнее ошибки уборки
+            raise
+        self._remove(name)
 
     # ----------------------------------------------------------------- сканирование
+
+    def read_song(self, rel_dir: str) -> SongEntry | None:
+        """Песня в одной папке (без вложенных) или ``None``, если её там нет."""
+        rel = norm(rel_dir)
+        try:
+            entries = self._scandir(rel)
+        except StorageNotFound:
+            return None
+        return self._song_in(rel, entries)
 
     def list_songs(self, max_depth: int = 4) -> list[SongEntry]:
         """Все песни: папки с ``*.txt``, где есть ``#TITLE`` и строки нот, на
@@ -247,23 +325,23 @@ class Storage(ABC):
             if rel == "":
                 raise
             return  # папку удалили во время сканирования
-        names = {e.name for e in entries if not e.is_dir}
-        txts = sorted((e for e in entries if not e.is_dir and self._is_song_txt_name(e.name)),
-                      key=lambda e: e.name)
-        for e in txts:
-            song = self._read_song(join(rel, e.name), e)
-            if song is not None:
-                out.append(self._entry(rel, e, song, names))
-                break
+        entry = self._song_in(rel, entries)
+        if entry is not None:
+            out.append(entry)
         if depth < max_depth:
             for e in sorted((e for e in entries if e.is_dir), key=lambda e: e.name):
                 if not e.name.startswith("."):
                     self._scan(join(rel, e.name), depth + 1, max_depth, out)
 
-    @staticmethod
-    def _is_song_txt_name(name: str) -> bool:
-        low = name.lower()
-        return low.endswith(".txt") and not low.endswith(LYRICS_SUFFIX) and not name.startswith(".")
+    def _song_in(self, rel: str, entries: list[Entry]) -> SongEntry | None:
+        """Первый по имени .txt папки с ``#TITLE`` и нотами."""
+        names = {e.name for e in entries if not e.is_dir}
+        for e in sorted((e for e in entries if not e.is_dir and is_song_txt_name(e.name)),
+                        key=lambda e: e.name):
+            song = self._read_song(join(rel, e.name), e)
+            if song is not None:
+                return self._entry(rel, e, song, names)
+        return None
 
     def _read_song(self, rel: str, e: Entry):
         if e.size > MAX_TXT_BYTES:

@@ -12,7 +12,8 @@ import logging
 import stat as stat_mod
 from contextlib import contextmanager
 
-from .base import Entry, Storage, StorageError, StorageNotFound
+from ..db import smb_label, smb_target_id
+from .base import Entry, GuardedFile, Storage, StorageError, StorageNotFound
 
 log = logging.getLogger(__name__)
 
@@ -40,8 +41,8 @@ class SmbStorage(Storage):
         self.port = port
         self.timeout = timeout
         base = "/".join(self.base_parts)
-        self.target_id = target_id or f"smb://{self.host}/{self.share}/{base}".rstrip("/")
-        self.label = label or f"//{self.host}/{self.share}/{base}".rstrip("/")
+        self.target_id = target_id or smb_target_id(self.host, self.share, base)
+        self.label = label or smb_label(self.host, self.share, base)
         if client is None:
             import smbclient as client  # noqa: PLC0415 — тяжёлый импорт только для SMB
         self._c = client
@@ -163,10 +164,12 @@ class SmbStorage(Storage):
         return Entry(name, is_dir, 0 if is_dir else st.st_size, st.st_mtime)
 
     def _open_read(self, rel):
-        return self._call(rel, self._c.open_file, self._unc(rel), mode="rb")
+        return GuardedFile(self._call(rel, self._c.open_file, self._unc(rel), mode="rb"),
+                           self._errors, rel)
 
     def _open_write(self, rel):
-        return self._call(rel, self._c.open_file, self._unc(rel), mode="wb")
+        return GuardedFile(self._call(rel, self._c.open_file, self._unc(rel), mode="wb"),
+                           self._errors, rel)
 
     def _replace(self, src, dst):
         self._call(dst, self._c.replace, self._unc(src), self._unc(dst))

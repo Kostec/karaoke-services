@@ -250,6 +250,24 @@ class Jobs:
 LOCAL_OUTPUT_MOUNT = "/output"
 
 
+# Единственное место, где задан формат идентификатора и подписи папки результата:
+# OutputTarget и реализации karaoke_core.storage берут их отсюда.
+def smb_target_id(host: str, share: str, path: str = "") -> str:
+    return f"smb://{host}/{share}/{path}".rstrip("/")
+
+
+def smb_label(host: str, share: str, path: str = "") -> str:
+    return f"//{host}/{share}/{path}".rstrip("/")
+
+
+def local_target_id(root: str) -> str:
+    return f"local:{local_label(root)}"
+
+
+def local_label(root: str) -> str:
+    return str(root).replace("\\", "/").rstrip("/") or "/"
+
+
 @dataclass
 class OutputTarget:
     """Папка результата: Samba-шара или подпапка примонтированного ``/output``."""
@@ -279,8 +297,8 @@ class OutputTarget:
     @property
     def target_id(self) -> str:
         if self.kind == "local":
-            return f"local:{self.local_root}"
-        return f"smb://{self.host}/{self.share}/{self.path}".rstrip("/")
+            return local_target_id(self.local_root)
+        return smb_target_id(self.host, self.share, self.path)
 
     @property
     def local_root(self) -> str:
@@ -289,8 +307,8 @@ class OutputTarget:
     @property
     def label(self) -> str:
         if self.kind == "local":
-            return self.local_root
-        return f"//{self.host}/{self.share}/{self.path}".rstrip("/")
+            return local_label(self.local_root)
+        return smb_label(self.host, self.share, self.path)
 
     def public(self) -> dict:
         """Для API: без пароля, только признак его наличия."""

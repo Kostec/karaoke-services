@@ -24,7 +24,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import ultrastar
 from .storage import Storage, StorageError, StorageNotFound
 from .storage.base import norm
 
@@ -121,19 +120,13 @@ class Trash:
         return item
 
     @staticmethod
-    def _song_names(folder: Path, rel_dir: str) -> tuple[str, str]:
-        for txt in sorted(folder.glob("*.txt")):
-            if txt.name.lower().endswith(".lyrics.txt"):
-                continue
-            try:
-                song = ultrastar.parse(txt.read_bytes())
-            except Exception:
-                continue
-            if song.header("TITLE"):
-                return (song.header("ARTIST") or "").strip(), song.header("TITLE").strip()
-        name = rel_dir.rsplit("/", 1)[-1]
-        artist, sep, title = name.partition(" - ")
-        return (artist, title) if sep else ("", name)
+    def _song_names(storage: Storage, rel_dir: str) -> tuple[str, str]:
+        """Исполнитель и название из .txt песни (поиск .txt — в storage); нет — пусто."""
+        try:
+            song = storage.read_song(rel_dir) if rel_dir else None
+        except StorageError:
+            song = None  # имя для списка корзины — не повод отказать в удалении
+        return (song.artist, song.title) if song else ("", "")
 
     def move_to_trash(self, storage: Storage, rel_dir: str, reason: str = "") -> TrashItem:
         """Перенести папку песни в корзину. У цели она удаляется только после
@@ -145,6 +138,7 @@ class Trash:
             raise TrashError(f"Песня не найдена в папке результата: {rel_dir}") from None
         except StorageError as e:
             raise TrashError(str(e)) from None
+        artist, title = self._song_names(storage, rel_dir)
         item_id, now, entry = self._new_entry()
         try:
             dest = entry.joinpath(*rel_dir.split("/"))
@@ -152,7 +146,6 @@ class Trash:
             if _local_sizes(dest) != remote:
                 raise TrashError("Копия песни в корзине не совпала с оригиналом по размеру — "
                                  "песня не удалена")
-            artist, title = self._song_names(dest, rel_dir)
             item = self._commit(entry, TrashItem(
                 id=item_id, deleted_at=now.isoformat(), kind="song", rel_dir=rel_dir,
                 reason=reason, target_id=storage.target_id, target_label=storage.label,
@@ -178,10 +171,10 @@ class Trash:
             dest.parent.mkdir(parents=True, exist_ok=True)
             with storage.open_read(rel_file) as src, open(dest, "wb") as out:
                 shutil.copyfileobj(src, out, 1024 * 1024)
-            stat_size = storage.sizes(rel_dir).get(fname) if rel_dir else dest.stat().st_size
-            if stat_size != dest.stat().st_size:
+            original = storage.stat(rel_file)
+            if original is None or original.size != dest.stat().st_size:
                 raise TrashError("Копия файла в корзине не совпала с оригиналом по размеру")
-            artist, title = self._song_names(dest.parent, rel_dir)
+            artist, title = self._song_names(storage, rel_dir)
             return self._commit(entry, TrashItem(
                 id=item_id, deleted_at=now.isoformat(), kind="version", rel_dir=rel_dir,
                 rel_file=rel_file, reason=reason, target_id=storage.target_id,
@@ -234,6 +227,9 @@ class Trash:
         Версия файла: текущий файл сначала сам уходит в корзину как версия,
         затем на его место встаёт сохранённый."""
         item = self.get(item_id)
+        if item.target_id and item.target_id != storage.target_id:
+            raise TrashError(f"Песня была удалена из другой папки результата: {item.target_label}. "
+                             "Выберите эту папку в настройках, чтобы восстановить её")
         entry = Path(item.path)
         try:
             if item.kind == "version":

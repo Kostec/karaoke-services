@@ -6,14 +6,15 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 
-from .base import Entry, Storage, StorageError, StorageNotFound
+from ..db import local_label, local_target_id
+from .base import Entry, GuardedFile, Storage, StorageError, StorageNotFound
 
 
 class LocalStorage(Storage):
     def __init__(self, root: str | Path, *, target_id: str | None = None, label: str | None = None):
         self.root = Path(root)
-        self.target_id = target_id or f"local:{self.root.as_posix()}"
-        self.label = label or self.root.as_posix()
+        self.target_id = target_id or local_target_id(self.root.as_posix())
+        self.label = label or local_label(self.root.as_posix())
 
     def _abs(self, rel: str) -> Path:
         return self.root.joinpath(*rel.split("/")) if rel else self.root
@@ -55,11 +56,11 @@ class LocalStorage(Storage):
         with self._errors(rel):
             if self._abs(rel).is_dir():
                 raise StorageError(f"Это папка, а не файл: {rel}")
-            return open(self._abs(rel), "rb")
+            return GuardedFile(open(self._abs(rel), "rb"), self._errors, rel)
 
     def _open_write(self, rel):
         with self._errors(rel):
-            return open(self._abs(rel), "wb")
+            return GuardedFile(open(self._abs(rel), "wb"), self._errors, rel)
 
     def _replace(self, src, dst):
         with self._errors(dst):

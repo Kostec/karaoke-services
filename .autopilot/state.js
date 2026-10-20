@@ -11,7 +11,7 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-19T23:17:21+03:00",
-  "updatedAt": "2026-10-20T07:41:12+03:00",
+  "updatedAt": "2026-10-20T07:43:24+03:00",
   "finishedAt": null,
   "stages": [
     {
@@ -137,11 +137,15 @@ window.STATE =
         "tests/core/test_storage*",
         "tests/core/test_trash*"
       ],
-      "status": "review",
+      "status": "repair",
       "retries": 0,
-      "repairs": 0,
+      "repairs": 1,
       "handoffs": 0,
-      "startedAt": "2026-10-20T07:30:26+03:00"
+      "startedAt": "2026-10-20T07:30:26+03:00",
+      "commit": "521d1b2",
+      "repairFindings": [
+        "единый target_id, один поиск .txt, restore в чужую цель, ошибки SMB при передаче, probe, .part-тест, save_version, пустая папка исполнителя"
+      ]
     },
     {
       "id": "03",
@@ -376,7 +380,8 @@ window.STATE =
     "db.Jobs.update не проверяет переходы конечного автомата §2",
     "db.py:272 — дефолты SMB-хоста захардкожены в ядре (дублируют compose/.env.example)",
     ".gitattributes дублирует tests/core/fixtures/.gitattributes",
-    "test_repo_config сканирует env только в core/ — расширить на web/ и worker/"
+    "test_repo_config сканирует env только в core/ — расширить на web/ и worker/",
+    "storage/trash: публичные sizes/listdir/delete_file/close/Trash.get сверх «Границ» (записаны в interfaces.md)"
   ],
   "reviewers": {
     "manifestSpec": "a489e47ea70f9876b",

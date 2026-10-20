@@ -143,3 +143,49 @@ def test_list_is_newest_first(env):
     clock.t = T0 + timedelta(hours=1)
     b = trash.save_version(st, f"{REL}/Исполнитель - Песня.mp3")
     assert [i.id for i in trash.list()] == [b.id, a.id]
+
+
+def test_restore_into_other_target_is_refused(env, tmp_path):
+    st, trash, out, _ = env
+    item = trash.move_to_trash(st, REL, "x")
+    other = LocalStorage(str(tmp_path / "other"))
+    with pytest.raises(TrashError) as e:
+        trash.restore(other, item.id)
+    assert str(e.value).startswith(f"Песня была удалена из другой папки результата: {st.label}")
+    assert not (tmp_path / "other" / REL).exists()
+    assert [i.id for i in trash.list()] == [item.id]
+
+
+def test_save_version_checks_copy_against_file_size_only(env):
+    st, trash, out, _ = env
+    rel_file = f"{REL}/Исполнитель - Песня.mp3"
+
+    class ShortRead(LocalStorage):
+        def open_read(self, rel):
+            import io
+            return io.BytesIO(super().read(rel)[:10])
+
+        def sizes(self, rel_dir):
+            raise AssertionError("обход всей папки не нужен")
+
+    with pytest.raises(TrashError):
+        trash.save_version(ShortRead(str(out)), rel_file)
+    assert trash.list() == []
+    v = trash.save_version(type("NoWalk", (LocalStorage,), {"sizes": ShortRead.sizes})(str(out)),
+                           rel_file)
+    assert v.files == {"Исполнитель - Песня.mp3": 5000}
+
+
+def test_move_last_song_of_artist_removes_artist_dir(env):
+    st, trash, out, _ = env
+    trash.move_to_trash(st, REL, "x")
+    assert not (out / "Исполнитель").exists()
+    assert out.is_dir()
+
+
+def test_trash_item_for_folder_without_song_txt(env):
+    st, trash, out, _ = env
+    (out / "Б/Б - В").mkdir(parents=True)
+    (out / "Б/Б - В/Б - В.mp3").write_bytes(b"1")
+    item = trash.move_to_trash(st, "Б/Б - В", "x")
+    assert (item.artist, item.title, item.name) == ("", "", "Б - В")

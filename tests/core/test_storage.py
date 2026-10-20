@@ -16,7 +16,7 @@ from smbprotocol.exceptions import SMBOSError
 from smbprotocol.header import NtStatus
 
 from karaoke_core import naming
-from karaoke_core.db import OutputTarget
+from karaoke_core.db import OutputTarget, song_id_for
 from karaoke_core.storage import (LocalStorage, SmbStorage, StorageError, StorageNotFound,
                                   make_storage)
 
@@ -39,6 +39,11 @@ class FakeSmbClient:
         self.prefix = f"\\\\{host}\\{share}".lower()
         self.sessions = []
         self.register_error = None
+        self.fail = {}  # операция → исключение: open/read/write/replace/remove/scandir/...
+
+    def _check(self, op):
+        if op in self.fail:
+            raise self.fail[op]
 
     def _p(self, unc: str) -> Path:
         assert unc.lower().startswith(self.prefix), unc
@@ -46,6 +51,7 @@ class FakeSmbClient:
         return self.root.joinpath(*[x for x in rest.split("\\") if x])
 
     def _wrap(self, fn, unc, *a):
+        self._check(getattr(fn, "__name__", ""))
         try:
             return fn(*a)
         except FileNotFoundError:
@@ -59,7 +65,7 @@ class FakeSmbClient:
         self.sessions.append((server, username, port))
 
     def open_file(self, path, mode="r", **kw):
-        return self._wrap(open, path, self._p(path), mode)
+        return FakeSmbFile(self._wrap(open, path, self._p(path), mode), self)
 
     class _Entry:
         def __init__(self, p: Path):
@@ -75,6 +81,7 @@ class FakeSmbClient:
             return self._p.stat()
 
     def scandir(self, path, **kw):
+        self._check("scandir")
         p = self._p(path)
         if not p.is_dir():
             raise SMBOSError(NtStatus.STATUS_OBJECT_NAME_NOT_FOUND, path)
@@ -94,6 +101,30 @@ class FakeSmbClient:
 
     def rmdir(self, path, **kw):
         return self._wrap(os.rmdir, path, self._p(path))
+
+
+class FakeSmbFile:
+    """Файл с шары: ошибки посреди чтения/записи берутся из ``client.fail``."""
+
+    def __init__(self, f, client):
+        self._f, self._c = f, client
+
+    def read(self, *a):
+        self._c._check("read")
+        return self._f.read(*a)
+
+    def write(self, b):
+        self._c._check("write")
+        return self._f.write(b)
+
+    def close(self):
+        self._f.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -303,13 +334,88 @@ def test_probe_fails_for_missing_folder(tmp_path):
 
 # --------------------------------------------------------------------------- make_storage
 
-def test_make_storage_by_kind():
-    st = make_storage(OutputTarget(kind="smb", host="h", share="s", path="p", user="u",
-                                   password="pw"))
-    assert isinstance(st, SmbStorage)
-    assert st.target_id == "smb://h/s/p"
-    loc = make_storage(OutputTarget(kind="local", path="songs"))
-    assert isinstance(loc, LocalStorage) and loc.target_id == "local:/output/songs"
+@pytest.mark.parametrize("target", [
+    OutputTarget(kind="smb", host="h", share="s", path="p/q", user="u", password="pw"),
+    OutputTarget(kind="smb", host="192.168.0.129", share="karaoke"),
+    OutputTarget(kind="local", path="songs"),
+    OutputTarget(kind="local"),
+])
+def test_make_storage_identity_comes_from_output_target(target):
+    st = make_storage(target)
+    assert isinstance(st, SmbStorage if target.kind == "smb" else LocalStorage)
+    assert (st.target_id, st.label) == (target.target_id, target.label)
+    assert song_id_for(st.target_id, "A/A - B") == song_id_for(target.target_id, "A/A - B")
+
+
+def test_storages_built_directly_share_target_format():
+    smb = SmbStorage("h", "s", "p/q", "u", "pw", client=FakeSmbClient(Path(".")))
+    t = OutputTarget(kind="smb", host="h", share="s", path="p/q")
+    assert (smb.target_id, smb.label) == (t.target_id, t.label) == ("smb://h/s/p/q", "//h/s/p/q")
+    loc = LocalStorage("/output/songs")
+    t = OutputTarget(kind="local", path="songs")
+    assert (loc.target_id, loc.label) == (t.target_id, t.label) == ("local:/output/songs", "/output/songs")
+
+
+def test_write_streams_into_part_before_final_name(env):
+    st, root = env
+    seen = []
+
+    class Watching(io.RawIOBase):
+        def __init__(self):
+            self.chunks = [b"#TITLE:x\n", b": 0 1 1 a\n"]
+
+        def readable(self):
+            return True
+
+        def read(self, n=-1):
+            seen.append(((root / "A/x.txt.part").exists(), (root / "A/x.txt").exists()))
+            return self.chunks.pop(0) if self.chunks else b""
+
+    st.write_atomic("A/x.txt", Watching())
+    assert seen[1] == (True, False)  # первый кусок уже в .part, готового .txt ещё нет
+    assert (root / "A/x.txt").read_bytes() == b"#TITLE:x\n: 0 1 1 a\n"
+    assert not (root / "A/x.txt.part").exists()
+
+
+def test_read_song_single_folder(env):
+    st, root = env
+    d = "Исполнитель/Исполнитель - Песня"
+    put(root, f"{d}/Исполнитель - Песня.lyrics.txt", LYRICS)
+    put(root, f"{d}/Исполнитель - Песня.txt", SOLO)
+    s = st.read_song(d)
+    assert (s.rel_dir, s.txt_name, s.artist, s.title) == (d, "Исполнитель - Песня.txt",
+                                                           "Исполнитель", "Песня")
+    put(root, "Пусто/x.lyrics.txt", LYRICS)
+    assert st.read_song("Пусто") is None
+
+
+def test_stat_file(env):
+    st, root = env
+    put(root, "A/f.mp3", b"12345")
+    assert st.stat("A/f.mp3").size == 5 and st.stat("A/f.mp3").is_dir is False
+    assert st.stat("A").is_dir is True
+    assert st.stat("A/none") is None
+
+
+def test_delete_last_song_removes_empty_artist_dir(env, tmp_path):
+    st, root = env
+    put(root, "A/A - B/A - B.txt", SOLO)
+    put(root, "A/A - C/A - C.txt", SOLO)
+    put(root, "Solo/Solo.txt", SOLO)
+    st.delete_dir("A/A - B")
+    assert (root / "A").is_dir() and not (root / "A/A - B").exists()
+    st.delete_dir("A/A - C")
+    assert not (root / "A").exists()
+    st.delete_dir("Solo")  # родитель — корень, его не трогаем
+    assert root.is_dir() and list(root.iterdir()) == []
+
+
+def test_artist_dir_with_other_files_is_kept(env):
+    st, root = env
+    put(root, "A/A - B/A - B.txt", SOLO)
+    put(root, "A/folder.jpg", b"x")
+    st.delete_dir("A/A - B")
+    assert (root / "A/folder.jpg").exists()
 
 
 # --------------------------------------------------------------------------- ошибки SMB
@@ -372,3 +478,89 @@ def test_smb_passes_credentials_to_session(tmp_path):
     st = SmbStorage("pi", "karaoke", "", "user", PW, client=fake)
     st.probe()
     assert fake.sessions == [("pi", "user", 445)]
+
+
+def _resp(cls, status):
+    from smbprotocol.header import SMB2HeaderResponse
+    h = SMB2HeaderResponse()
+    h["status"] = status
+    return cls(h)
+
+
+def _file_op_errors():
+    from smbprotocol.exceptions import AccessDenied, SMBConnectionClosed
+    return {
+        "closed": (SMBConnectionClosed(f"connection closed {PW}"), "прервано"),
+        "reset": (ConnectionResetError(104, "Connection reset by peer"), "недоступен"),
+        "denied": (SMBOSError(NtStatus.STATUS_ACCESS_DENIED, r"\\pi\karaoke\x " + PW), "Нет доступа"),
+        "denied_resp": (_resp(AccessDenied, NtStatus.STATUS_ACCESS_DENIED), "Нет доступа"),
+        "timeout": (TimeoutError("timed out"), "недоступен"),
+        "other": (RuntimeError(f"weird {PW}"), "Ошибка Samba"),
+    }
+
+
+def _smb_with_song(share):
+    fake = FakeSmbClient(share)
+    put(share, "A/A - B/A - B.txt", SOLO)
+    put(share, "A/A - B/A - B.mp3", b"m" * 100)
+    return SmbStorage("pi", "karaoke", "", "user", PW, client=fake), fake
+
+
+FILE_OPS = {
+    "read_txt": ("read", lambda st, src, tmp: st.read("A/A - B/A - B.txt")),
+    "open_read": ("read", lambda st, src, tmp: st.open_read("A/A - B/A - B.mp3").read()),
+    "download": ("read", lambda st, src, tmp: st.download_dir("A/A - B", tmp / "dl")),
+    "list": ("read", lambda st, src, tmp: st.list_songs()),
+    "write": ("write", lambda st, src, tmp: st.write_atomic("A/new.txt", b"abc")),
+    "open_write": ("open", lambda st, src, tmp: st.write_atomic("A/new.txt", b"abc")),
+    "rename": ("replace", lambda st, src, tmp: st.write_atomic("A/new.txt", b"abc")),
+    "remove": ("remove", lambda st, src, tmp: st.delete_dir("A/A - B")),
+    "rmdir": ("rmdir", lambda st, src, tmp: st.delete_dir("A/A - B")),
+    "scandir": ("scandir", lambda st, src, tmp: st.sizes("A/A - B")),
+    "stat": ("stat", lambda st, src, tmp: st.exists("A/A - B")),
+    "upload": ("makedirs", lambda st, src, tmp: st.upload_dir(src, "Z/Z - Z")),
+}
+
+
+@pytest.mark.parametrize("case", ["closed", "reset", "denied", "denied_resp", "timeout", "other"])
+@pytest.mark.parametrize("op", sorted(FILE_OPS))
+def test_smb_file_operation_errors_are_storage_errors(case, op, tmp_path, caplog):
+    exc, expected = _file_op_errors()[case]
+    fail_op, action = FILE_OPS[op]
+    st, fake = _smb_with_song(tmp_path / "share")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "f.mp3").write_bytes(b"1")
+    fake.fail[fail_op] = exc
+    caplog.set_level("DEBUG")
+    with pytest.raises(StorageError) as e:
+        action(st, src, tmp_path)
+    assert expected in str(e.value)
+    assert PW not in str(e.value) and PW not in caplog.text
+    assert not list((tmp_path / "share").rglob("*.part"))
+
+
+def test_probe_raises_when_write_is_denied(tmp_path):
+    st, fake = _smb_with_song(tmp_path)
+    fake.fail["open"] = SMBOSError(NtStatus.STATUS_ACCESS_DENIED, r"\\pi\karaoke\probe")
+    with pytest.raises(StorageError) as e:
+        st.probe()
+    assert "Нет доступа" in str(e.value)
+
+
+def test_probe_reports_first_error_not_cleanup_error(tmp_path):
+    from smbprotocol.exceptions import SMBConnectionClosed
+    st, fake = _smb_with_song(tmp_path)
+    fake.fail["read"] = SMBOSError(NtStatus.STATUS_ACCESS_DENIED, r"\\pi\karaoke\probe")
+    fake.fail["remove"] = SMBConnectionClosed("closed")
+    with pytest.raises(StorageError) as e:
+        st.probe()
+    assert "Нет доступа" in str(e.value)
+
+
+def test_probe_reports_cleanup_error_when_rest_succeeded(tmp_path):
+    st, fake = _smb_with_song(tmp_path)
+    fake.fail["remove"] = SMBOSError(NtStatus.STATUS_ACCESS_DENIED, r"\\pi\karaoke\probe")
+    with pytest.raises(StorageError) as e:
+        st.probe()
+    assert "Нет доступа" in str(e.value)
