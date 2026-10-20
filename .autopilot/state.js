@@ -11,7 +11,7 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-19T23:17:21+03:00",
-  "updatedAt": "2026-10-20T09:12:33+03:00",
+  "updatedAt": "2026-10-20T09:23:01+03:00",
   "finishedAt": null,
   "stages": [
     {
@@ -47,19 +47,22 @@ window.STATE =
     },
     {
       "id": "build",
-      "status": "active",
+      "status": "done",
       "startedAt": "2026-10-20T07:15:36+03:00",
-      "note": "6 из 8 тасков готовы, 04 на доработке"
+      "note": "8 из 8 тасков готовы",
+      "finishedAt": "2026-10-20T09:23:01+03:00"
     },
     {
       "id": "review",
-      "status": "active",
+      "status": "done",
       "startedAt": "2026-10-20T07:27:48+03:00",
-      "note": "проверено 7 из 8"
+      "note": "проверено 8 из 8",
+      "finishedAt": "2026-10-20T09:23:01+03:00"
     },
     {
       "id": "final",
-      "status": "pending"
+      "status": "active",
+      "startedAt": "2026-10-20T09:23:01+03:00"
     }
   ],
   "requirements": {
@@ -230,7 +233,7 @@ window.STATE =
         "selfcheck.py",
         "tests/worker/"
       ],
-      "status": "repair",
+      "status": "done",
       "retries": 0,
       "repairs": 1,
       "handoffs": 0,
@@ -242,7 +245,13 @@ window.STATE =
         "отладка вне папки задания",
         "claim_next(types)",
         "мелочи: константы, storage.close, read_song"
-      ]
+      ],
+      "finishedAt": "2026-10-20T09:14:51+03:00",
+      "commit": "201d970",
+      "tests": {
+        "passed": 291,
+        "failed": 0
+      }
     },
     {
       "id": "05",
@@ -410,15 +419,22 @@ window.STATE =
         "README.md",
         "scripts/"
       ],
-      "status": "pending",
+      "status": "done",
       "retries": 0,
-      "repairs": 0,
-      "handoffs": 0
+      "repairs": 1,
+      "handoffs": 0,
+      "startedAt": "2026-10-20T09:14:51+03:00",
+      "finishedAt": "2026-10-20T09:23:01+03:00",
+      "commit": "ac665e5",
+      "tests": {
+        "passed": 320,
+        "failed": 0
+      }
     }
   ],
   "singlePass": null,
   "tests": {
-    "passed": 252,
+    "passed": 320,
     "failed": 0
   },
   "debt": {
@@ -471,7 +487,9 @@ window.STATE =
     "songs.js: title кнопки подменяет её доступное имя (неактивные кнопки редакторов читаются причиной)",
     "фикстурные сохранения T07 положили 3 версии тестовой песни в корзину тома data",
     "lock_constraints.py: фильтр nvidia- слишком широкий (нужен nvidia-.*-cu12); версии torch в двух местах; нет теста преобразования",
-    "ui.js:128 runAction считает текст ошибки сам — перевести на api.errorText"
+    "ui.js:128 runAction считает текст ошибки сам — перевести на api.errorText",
+    "при замене в другую папку неудачный перенос старой в корзину даёт done с предупреждением в логе",
+    "нет функции paths для папки отладки (song_at/debug)"
   ],
   "reviewers": {
     "manifestSpec": "a489e47ea70f9876b",
