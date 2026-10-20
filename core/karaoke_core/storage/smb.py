@@ -13,7 +13,7 @@ import stat as stat_mod
 from contextlib import contextmanager
 
 from ..db import smb_label, smb_target_id
-from .base import Entry, GuardedFile, Storage, StorageError, StorageNotFound
+from .base import Entry, GuardedFile, Storage, StorageBusy, StorageError, StorageNotFound
 
 log = logging.getLogger(__name__)
 
@@ -111,8 +111,11 @@ class SmbStorage(Storage):
             return StorageError(f"Шара «{self.share}» не найдена на {self.host}")
         if status in not_found:
             return StorageNotFound(f"Не найдено на шаре {where}: {rel or '/'.join(self.base_parts) or '/'}")
+        if status in codes("STATUS_SHARING_VIOLATION", "STATUS_FILE_LOCK_CONFLICT", "STATUS_LOCK_NOT_GRANTED"):
+            return StorageBusy(f"Файл занят на шаре {where}: {rel or '/'}")
         if status in codes("STATUS_ACCESS_DENIED"):
-            return StorageError(f"Нет доступа на шаре {where}: {rel or '/'}")
+            # Samba отвечает так и при замене файла, открытого другим клиентом — повторяемо
+            return StorageBusy(f"Нет доступа на шаре {where}: {rel or '/'}")
         if status in codes("STATUS_OBJECT_NAME_COLLISION"):
             return StorageError(f"Уже существует на шаре {where}: {rel}")
         if isinstance(exc, SMBConnectionClosed):

@@ -564,3 +564,57 @@ def test_probe_reports_cleanup_error_when_rest_succeeded(tmp_path):
     with pytest.raises(StorageError) as e:
         st.probe()
     assert "Нет доступа" in str(e.value)
+
+
+# --------------------------------------------------------------------------- занятый файл
+
+def _smb_on(tmp_path):
+    share = tmp_path / "share"
+    share.mkdir()
+    fake = FakeSmbClient(share)
+    return SmbStorage("pi", "karaoke", "", "user", "s3cret-pw", client=fake), fake, share
+
+
+class _Flaky:
+    """Replace, который первые ``n`` раз отвечает как Samba на файл, открытый другим клиентом."""
+
+    def __init__(self, fake, n, status=NtStatus.STATUS_ACCESS_DENIED):
+        self.fake, self.left, self.status, self.calls = fake, n, status, 0
+        self.real = type(fake).replace
+
+    def __call__(self, src, dst, **kw):
+        self.calls += 1
+        if self.left:
+            self.left -= 1
+            raise SMBOSError(self.status, dst)
+        return self.real(self.fake, src, dst, **kw)
+
+
+@pytest.mark.parametrize("status", [NtStatus.STATUS_ACCESS_DENIED, NtStatus.STATUS_SHARING_VIOLATION])
+def test_write_atomic_waits_while_file_is_busy(tmp_path, monkeypatch, status):
+    from karaoke_core.storage import base
+    sleeps = []
+    monkeypatch.setattr(base.time, "sleep", sleeps.append)
+    st, fake, share = _smb_on(tmp_path)
+    put(share, "A/A - B/A - B.txt", b"old")
+    flaky = _Flaky(fake, 2, status)
+    fake.replace = flaky
+    st.write_atomic("A/A - B/A - B.txt", b"new")
+    assert (share / "A/A - B/A - B.txt").read_bytes() == b"new"
+    assert flaky.calls == 3 and len(sleeps) == 2
+    assert not (share / "A/A - B/A - B.txt.part").exists()
+
+
+def test_write_atomic_gives_up_with_hint_and_keeps_old_file(tmp_path, monkeypatch):
+    from karaoke_core.storage import StorageBusy, base
+    monkeypatch.setattr(base.time, "sleep", lambda s: None)
+    st, fake, share = _smb_on(tmp_path)
+    put(share, "A/A - B/A - B.txt", b"old")
+    flaky = _Flaky(fake, 999)
+    fake.replace = flaky
+    with pytest.raises(StorageBusy) as e:
+        st.write_atomic("A/A - B/A - B.txt", b"new")
+    assert "Нет доступа" in str(e.value) and "открыт на другом устройстве" in str(e.value)
+    assert flaky.calls == len(base.BUSY_RETRY_DELAYS) + 1
+    assert (share / "A/A - B/A - B.txt").read_bytes() == b"old"
+    assert not (share / "A/A - B/A - B.txt.part").exists()

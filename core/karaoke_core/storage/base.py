@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import secrets
 import shutil
+import time
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -22,6 +23,10 @@ PART_SUFFIX = ".part"
 LYRICS_SUFFIX = ".lyrics.txt"
 MAX_TXT_BYTES = 2 * 1024 * 1024  # больше — точно не UltraStar .txt
 CHUNK = 1024 * 1024
+# Паузы между попытками заменить файл, который держит открытым другой клиент шары
+# (плеер на Pi, браузер, проводник): SMB в это время отвечает «нет доступа».
+BUSY_RETRY_DELAYS = (1, 2, 3, 5, 5, 5, 5)
+BUSY_HINT = " — файл, похоже, открыт на другом устройстве (плеер, проводник); закройте его и выложите повторно"
 
 
 class StorageError(Exception):
@@ -30,6 +35,11 @@ class StorageError(Exception):
 
 class StorageNotFound(StorageError):
     """Файла или папки нет."""
+
+
+class StorageBusy(StorageError):
+    """Отказ, который может пройти сам: файл занят другим клиентом шары (или нет прав).
+    Замену такого файла ``write_atomic`` повторяет с паузами ``BUSY_RETRY_DELAYS``."""
 
 
 @dataclass
@@ -220,13 +230,24 @@ class Storage(ABC):
         try:
             with self._open_write(part) as out:
                 shutil.copyfileobj(src, out, CHUNK)
-            self._replace(part, rel)
+            self._replace_when_free(part, rel)
         except BaseException:
             try:
                 self._remove(part)
             except Exception:
                 pass
             raise
+
+    def _replace_when_free(self, part: str, rel: str) -> None:
+        """``_replace`` с ожиданием, пока файл занят; не дождались — ``StorageBusy`` с подсказкой."""
+        for delay in (*BUSY_RETRY_DELAYS, None):
+            try:
+                self._replace(part, rel)
+                return
+            except StorageBusy as e:
+                if delay is None:
+                    raise StorageBusy(str(e) + BUSY_HINT) from None
+                time.sleep(delay)
 
     def upload_dir(self, local: str | Path, rel_dir: str) -> list[str]:
         """Выложить локальную папку песни: сначала медиа, последними ``.txt``.

@@ -13,11 +13,11 @@
 from __future__ import annotations
 
 from ..db import OutputTarget
-from .base import SongEntry, Storage, StorageError, StorageNotFound
+from .base import SongEntry, Storage, StorageBusy, StorageError, StorageNotFound
 from .local import LocalStorage
 from .smb import SmbStorage
 
-__all__ = ["Storage", "SongEntry", "StorageError", "StorageNotFound",
+__all__ = ["Storage", "SongEntry", "StorageError", "StorageNotFound", "StorageBusy",
            "LocalStorage", "SmbStorage", "make_storage"]
 
 
