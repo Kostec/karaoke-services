@@ -601,13 +601,15 @@ def test_write_atomic_waits_while_file_is_busy(tmp_path, monkeypatch, status):
     fake.replace = flaky
     st.write_atomic("A/A - B/A - B.txt", b"new")
     assert (share / "A/A - B/A - B.txt").read_bytes() == b"new"
-    assert flaky.calls == 3 and len(sleeps) == 2
+    # занятый файл: прямая замена и переименование старого отклонены → пауза → вторая попытка прошла
+    assert len(sleeps) == 1 and flaky.left == 0
     assert not (share / "A/A - B/A - B.txt.part").exists()
 
 
 def test_write_atomic_gives_up_with_hint_and_keeps_old_file(tmp_path, monkeypatch):
     from karaoke_core.storage import StorageBusy, base
-    monkeypatch.setattr(base.time, "sleep", lambda s: None)
+    sleeps = []
+    monkeypatch.setattr(base.time, "sleep", sleeps.append)
     st, fake, share = _smb_on(tmp_path)
     put(share, "A/A - B/A - B.txt", b"old")
     flaky = _Flaky(fake, 999)
@@ -615,6 +617,47 @@ def test_write_atomic_gives_up_with_hint_and_keeps_old_file(tmp_path, monkeypatc
     with pytest.raises(StorageBusy) as e:
         st.write_atomic("A/A - B/A - B.txt", b"new")
     assert "Нет доступа" in str(e.value) and "открыт на другом устройстве" in str(e.value)
-    assert flaky.calls == len(base.BUSY_RETRY_DELAYS) + 1
+    assert len(sleeps) == len(base.BUSY_RETRY_DELAYS)  # все паузы выждали, потом сдались
     assert (share / "A/A - B/A - B.txt").read_bytes() == b"old"
     assert not (share / "A/A - B/A - B.txt.part").exists()
+
+
+class _NoReplaceOverExisting:
+    """Replace как у Samba на exFAT/NTFS-диске: переименовать поверх существующего файла — «нет доступа»."""
+
+    def __init__(self, fake):
+        self.fake, self.real = fake, type(fake).replace
+        self.denied = 0
+
+    def __call__(self, src, dst, **kw):
+        if self.fake._p(dst).exists():
+            self.denied += 1
+            raise SMBOSError(NtStatus.STATUS_ACCESS_DENIED, dst)
+        return self.real(self.fake, src, dst, **kw)
+
+
+def test_write_atomic_replaces_existing_file_on_share_without_rename_over(tmp_path):
+    st, fake, share = _smb_on(tmp_path)
+    put(share, "A/A - B/A - B.txt", b"old")
+    guard = _NoReplaceOverExisting(fake)
+    fake.replace = guard
+    st.write_atomic("A/A - B/A - B.txt", b"new")
+    assert (share / "A/A - B/A - B.txt").read_bytes() == b"new"
+    assert guard.denied == 1
+    assert sorted(p.name for p in (share / "A/A - B").iterdir()) == ["A - B.txt"]
+
+
+def test_swap_puts_old_file_back_when_new_one_cannot_be_placed(tmp_path):
+    st, fake, share = _smb_on(tmp_path)
+    put(share, "A/A - B/A - B.txt", b"old")
+    real = type(fake).replace
+
+    def replace(src, dst, **kw):
+        if src.endswith(".part"):
+            raise SMBOSError(NtStatus.STATUS_ACCESS_DENIED, dst)
+        return real(fake, src, dst, **kw)
+    fake.replace = replace
+    with pytest.raises(StorageError):
+        st.write_atomic("A/A - B/A - B.txt", b"new")
+    assert (share / "A/A - B/A - B.txt").read_bytes() == b"old"
+    assert sorted(p.name for p in (share / "A/A - B").iterdir()) == ["A - B.txt"]

@@ -11,7 +11,7 @@ Docker — только Linux-движок: `docker --context desktop-linux comp
 - Проверка GPU и правок UltraSinger: `./scripts/compose.ps1 run --rm worker gpucheck` (успех — RC=0, последняя строка `gpucheck: OK …`).
 - Только образ worker (15–30 мин с нуля): `./scripts/compose.ps1 build worker`.
 - Логи: `./scripts/compose.ps1 logs --tail 100 worker` (или `web`).
-- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 553 passed, 2 skipped (после смены зависимостей — `run --build`).
+- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 564 passed, 2 skipped (после смены зависимостей — `run --build`).
 - Подмножество: `docker --context desktop-linux compose --profile test run --rm tests pytest -q tests/worker/test_runner_queue.py`.
 - Фронт-тесты (Node 24, встроенный node:test): `node --test tests/frontend/` → 76 pass.
 - Бэкап патча UltraSinger в `patches/karaoke-local.patch`: `./scripts/export-ultrasinger-patch.ps1` (читает `D:/Projects/UltraSinger`).
@@ -124,6 +124,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 
 - У Docker Desktop активен Windows-движок — всегда `--context desktop-linux` (или `scripts/compose.ps1`); движок не переключать.
 - Сеть контейнеров: `dns: 77.88.8.8, 1.1.1.1` и выключенный IPv6 (`sysctls`) в `docker-compose.yml` — DNS Docker Desktop сбоил, а AAAA-адреса без маршрута ломали Яндекс/LRCLIB; yt-dlp везде с `-4`.
+- Шара на Pi не даёт переименовать поверх существующего файла (Samba на exFAT/NTFS-диске → «нет доступа»): `Storage.write_atomic` при отказе меняет файл в три шага (`_swap`: старый → `.old-*`, новый на место, старый удалить; сбой — откат), а «нет доступа»/sharing violation ещё и ждёт повторами (`BUSY_RETRY_DELAYS`).
 - Имена `pi`/`pi.local` в контейнерах не резолвятся — в `OUTPUT_SMB_HOST` только IP.
 - Порт 8080 на хосте занят jenkins — `WEB_PORT=8090` (внутри контейнера веб слушает 8080).
 - Linux-колёса torch cu126 собраны без sm_61: на Pascal исполняется sm_60 — это норма (`gpucheck.runnable_arch`); cu128 без Pascal вовсе, сборку валит `worker/build/check_torch_arch.py`.

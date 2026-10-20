@@ -245,9 +245,37 @@ class Storage(ABC):
                 self._replace(part, rel)
                 return
             except StorageBusy as e:
+                if self._swap(part, rel):
+                    return
                 if delay is None:
                     raise StorageBusy(str(e) + BUSY_HINT) from None
                 time.sleep(delay)
+
+    def _swap(self, part: str, rel: str) -> bool:
+        """Замена в три шага для шар, которые не дают переименовать поверх существующего файла
+        (Samba на exFAT/NTFS-диске отвечает «нет доступа»): старый → ``.old-*``, новый → на место,
+        старый удаляется. Сбой на втором шаге возвращает старый файл. ``False`` — сменить не удалось
+        (файла нет или он и правда занят)."""
+        if self._stat(rel) is None:
+            return False
+        old = f"{rel}.old-{secrets.token_hex(4)}"
+        try:
+            self._replace(rel, old)
+        except StorageBusy:
+            return False
+        try:
+            self._replace(part, rel)
+        except BaseException:
+            try:
+                self._replace(old, rel)
+            except Exception:
+                pass
+            raise
+        try:
+            self._remove(old)
+        except StorageError:
+            pass  # хвост «.old-*» не мешает: это не .txt песни
+        return True
 
     def upload_dir(self, local: str | Path, rel_dir: str) -> list[str]:
         """Выложить локальную папку песни: сначала медиа, последними ``.txt``.
