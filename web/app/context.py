@@ -11,6 +11,7 @@ from typing import Callable, Mapping
 
 from karaoke_core import naming
 from karaoke_core.paths import DataPaths
+from karaoke_core.http import Http
 from karaoke_core.db import Jobs, Library, LibraryItem, OutputTarget, Settings, Songs, connect, now
 from karaoke_core.storage import Storage, StorageError, make_storage
 from karaoke_core.trash import Trash
@@ -33,12 +34,13 @@ def not_found(what: str = "Не найдено") -> ApiError:
 class AppContext:
     def __init__(self, data_dir: str | Path, *, env: Mapping[str, str] | None = None,
                  storage_factory: Callable[[OutputTarget], Storage] | None = None,
-                 trash: Trash | None = None):
+                 trash: Trash | None = None, http: Http | None = None):
         self.env = dict(os.environ if env is None else env)
         self.paths = DataPaths(data_dir)
         self.data_dir = self.paths.root
         self.storage_factory = storage_factory or make_storage
         self.trash = trash or Trash(self.paths.trash, days=self.int_env("TRASH_DAYS", 30))
+        self.http = http or Http()  # исходящие запросы (LRCLIB …); в тестах — FakeHttp
         self._local = threading.local()
         self._lock = threading.Lock()
         self._storage: tuple[str, Storage] | None = None

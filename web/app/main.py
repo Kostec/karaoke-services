@@ -23,6 +23,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
 from .api_jobs import ctx_of, router as jobs_router
+from .api_lyrics import router as lyrics_router
 from .api_settings import router as settings_router
 from .api_songs import router as songs_router
 from .context import ApiError, AppContext
@@ -74,10 +75,11 @@ async def _purge_loop(ctx: AppContext) -> None:
 
 
 def create_app(*, data_dir: str | Path | None = None, env: dict | None = None,
-               storage_factory=None, trash=None, static_dir: str | Path | None = None) -> FastAPI:
+               storage_factory=None, trash=None, static_dir: str | Path | None = None,
+               http=None) -> FastAPI:
     env = dict(os.environ if env is None else env)
     ctx = AppContext(data_dir or env.get("DATA_DIR") or "/data", env=env,
-                     storage_factory=storage_factory, trash=trash)
+                     storage_factory=storage_factory, trash=trash, http=http)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -122,6 +124,7 @@ def create_app(*, data_dir: str | Path | None = None, env: dict | None = None,
     app.include_router(jobs_router)
     app.include_router(songs_router)
     app.include_router(settings_router)
+    app.include_router(lyrics_router)
 
     @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
                    include_in_schema=False)

@@ -1,8 +1,12 @@
 // Раздел «Новая песня» (и перегенерация песни из списка: #new?song=<song_id>).
 
 import { api, PARAM_KEYS, generateForm, errorText } from './api.js';
-import { h, clear, toast, debounce, songName, field } from './ui.js';
+import { h, clear, toast, debounce, songName, field, confirmDialog } from './ui.js';
 import { readId3, planAutofill } from './id3.js';
+import {
+  usableHits, previewLines, fmtSeconds, searchBlocker, needsReplaceConfirm,
+  NOTHING_FOUND, UNAVAILABLE, REPLACE_QUESTION,
+} from './lyrics-search.js';
 
 
 let root, form, f = {}, defaults = null, defaultsError = null;
@@ -12,6 +16,8 @@ let dupId = null; // song_id совпавшей песни
 let submitting = false;
 let alignTouched = false;
 let existsSeq = 0;
+let lyricsSeq = 0; // R01: ответ поиска текста, пришедший после закрытия/нового поиска, игнорируется
+let lyricsDlg = null;
 // G07: теги mp3 — значения, подставленные из тегов (их можно заменить тегами другого mp3),
 // и обложка из тегов (уходит в «Обложку», если своя не выбрана).
 let autoVals = {};
@@ -69,6 +75,8 @@ async function build() {
   f.lyricsFile = h('input', { type: 'file', accept: '.txt,.lrc,text/plain', 'aria-label': 'Файл текста' });
   f.lyricsWarn = h('div', { class: 'banner warn small' }, 'Без текста слова будут распознаны автоматически — качество ниже');
   f.lyricsErr = h('div', { class: 'field-error', hidden: true });
+  f.findLyrics = h('button', { type: 'button', onclick: onFindLyrics }, 'Найти текст');
+  f.findHint = h('span', { class: 'small muted' });
 
   f.cover = h('input', { type: 'file', name: 'cover', accept: '.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp' });
   f.coverErr = h('div', { class: 'field-error', hidden: true });
@@ -104,7 +112,8 @@ async function build() {
     h('div', { class: 'field' },
       h('span', {}, 'Текст песни', h('span', { class: 'hint' }, ' (можно оставить пустым)')),
       f.lyrics,
-      h('div', { class: 'inline-file' }, h('span', { class: 'small muted' }, 'или файл:'), f.lyricsFile),
+      h('div', { class: 'inline-file' }, h('span', { class: 'small muted' }, 'или файл:'), f.lyricsFile,
+        f.findLyrics, f.findHint),
       f.lyricsErr),
     f.lyricsWarn,
     field('Обложка', f.cover, d.max_cover_mb ? `jpg, png или webp до ${d.max_cover_mb} МБ, необязательно` : 'jpg, png или webp, необязательно'), f.coverErr, f.coverPreview,
@@ -129,6 +138,7 @@ async function build() {
       el.classList.remove('invalid');
       (el === f.artist ? f.artistErr : f.titleErr).hidden = true;
       replace = false;
+      updateFindLyrics();
       onName();
     });
   }
@@ -148,6 +158,7 @@ async function build() {
   root.append(form);
   setParams(d.defaults || {});
   updateLyricsState();
+  updateFindLyrics();
 }
 
 function setParams(p) {
@@ -180,6 +191,7 @@ function resetForm() {
   document.getElementById('new-title').textContent = 'Новая песня';
   setParams(defaults?.defaults || {});
   updateLyricsState();
+  updateFindLyrics();
 }
 
 // ---------------------------------------------------------------- перегенерация
@@ -195,6 +207,7 @@ async function loadRegen(songId) {
     document.getElementById('new-title').textContent = 'Перегенерация';
     f.artist.value = song.artist || '';
     f.title.value = song.title || '';
+    updateFindLyrics();
     if (song.params) setParams({ ...(defaults?.defaults || {}), ...song.params });
     let text = song.lyrics;
     if (text == null) {
@@ -216,6 +229,78 @@ async function loadRegen(songId) {
     updateLyricsState();
   }
   f.regenBanner.className = 'banner warn';
+}
+
+// ---------------------------------------------------------------- поиск текста (R01)
+
+function updateFindLyrics() {
+  const why = searchBlocker(f.artist.value, f.title.value);
+  f.findLyrics.disabled = !!why;
+  f.findLyrics.title = why;
+  f.findHint.textContent = why;
+}
+
+function lyricsDialog() {
+  if (lyricsDlg) return lyricsDlg;
+  const status = h('p', { class: 'small muted' });
+  const list = h('div', { class: 'lyrics-hits', style: 'max-height: 60vh; overflow: auto; display: grid; gap: 8px;' });
+  const close = h('button', { type: 'button', onclick: () => lyricsDlg.el.close() }, 'Закрыть');
+  const el = h('dialog', { 'aria-labelledby': 'lyrics-dlg-title', style: 'max-width: 640px; width: calc(100% - 32px);' },
+    h('h3', { id: 'lyrics-dlg-title' }, 'Найти текст'), status, list, h('div', { class: 'actions' }, close));
+  el.addEventListener('close', () => { lyricsSeq++; });
+  document.body.append(el);
+  lyricsDlg = { el, status, list };
+  return lyricsDlg;
+}
+
+async function onFindLyrics() {
+  const artist = f.artist.value.trim(), title = f.title.value.trim();
+  if (searchBlocker(artist, title)) return;
+  const dlg = lyricsDialog();
+  const seq = ++lyricsSeq;
+  dlg.status.textContent = `Ищу текст «${songName(artist, title)}»…`;
+  dlg.status.className = 'small muted';
+  clear(dlg.list);
+  if (!dlg.el.open) {
+    if (typeof dlg.el.showModal === 'function') dlg.el.showModal(); else dlg.el.setAttribute('open', '');
+  }
+  f.findLyrics.disabled = true;
+  let hits = [], error = '';
+  try {
+    hits = usableHits((await api.lyricsSearch(artist, title)).items);
+  } catch (e) {
+    error = e.status === 503 ? UNAVAILABLE : errorText(e);
+  } finally {
+    updateFindLyrics();
+  }
+  if (seq !== lyricsSeq) return;
+  if (error || !hits.length) {
+    dlg.status.textContent = error || NOTHING_FOUND;
+    dlg.status.className = error ? 'banner err' : 'banner warn';
+    return;
+  }
+  dlg.status.textContent = 'Выберите вариант — текст попадёт в поле «Текст песни».';
+  for (const hit of hits) {
+    const meta = [hit.album, fmtSeconds(hit.duration)].filter(Boolean).join(' · ');
+    dlg.list.append(h('div', { class: 'card', style: 'margin: 0;' },
+      h('div', {}, h('strong', {}, songName(hit.artist, hit.title))),
+      meta ? h('div', { class: 'small muted' }, meta) : null,
+      h('div', { class: 'small', style: 'white-space: pre-line; margin: 6px 0;' }, previewLines(hit.text).join('\n')),
+      h('div', { class: 'actions' },
+        h('button', { type: 'button', class: 'primary', onclick: () => insertLyrics(hit.text) }, 'Вставить'))));
+  }
+}
+
+async function insertLyrics(text) {
+  lyricsDlg?.el.close();
+  if (needsReplaceConfirm(f.lyrics.value) && f.lyrics.value.trim() !== text.trim()) {
+    if (!(await confirmDialog(REPLACE_QUESTION, 'Заменить'))) return;
+  }
+  f.lyrics.value = text;
+  f.lyricsErr.hidden = true;
+  f.lyrics.classList.remove('invalid');
+  updateLyricsState();
+  toast('Текст вставлен');
 }
 
 // ---------------------------------------------------------------- проверки

@@ -94,6 +94,9 @@ export const api = {
   audioUrl: (id) => `/api/songs/${encodeURIComponent(id)}/audio`,
   deleteSong: (id) => request('DELETE', `/api/songs/${encodeURIComponent(id)}`),
 
+  lyricsSearch: (artist, title) =>
+    request('GET', `/api/lyrics/search?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`),
+
   trash: () => request('GET', '/api/trash'),
   restore: (id) => request('POST', `/api/trash/${encodeURIComponent(id)}/restore`),
 
