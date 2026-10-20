@@ -3,10 +3,50 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>Караоке</title>
+<link rel="stylesheet" href="/css/app.css">
+<script type="module" src="/js/app.js"></script>
 </head>
 <body>
-<h1>Караоке</h1>
-<p>Интерфейс ещё собирается. REST API: <a href="/api/docs">/api/docs</a>.</p>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <h1>Караоке</h1>
+      <div class="status" id="status">
+        <span id="status-gpu" class="muted">GPU: проверяется…</span>
+        <span id="status-output" class="muted">Папка результата: проверяется…</span>
+      </div>
+    </div>
+    <nav class="tabs" aria-label="Разделы">
+      <a href="#queue" data-view="queue">Очередь<span class="badge-count" id="queue-count" hidden></span></a>
+      <a href="#new" data-view="new">Новая песня</a>
+      <a href="#songs" data-view="songs">Песни</a>
+      <a href="#trash" data-view="trash">Корзина</a>
+      <a href="#settings" data-view="settings">Настройки</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section id="view-queue" data-view="queue" hidden></section>
+  <section id="view-new" data-view="new" hidden></section>
+  <section id="view-songs" data-view="songs" hidden></section>
+  <section id="view-trash" data-view="trash" hidden></section>
+  <section id="view-settings" data-view="settings" hidden></section>
+  <noscript><p>Для работы сервиса включите JavaScript.</p></noscript>
+</main>
+
+<dialog id="confirm">
+  <form method="dialog">
+    <p id="confirm-text"></p>
+    <div class="actions">
+      <button value="cancel" id="confirm-cancel">Отмена</button>
+      <button value="ok" class="primary" id="confirm-ok">Да</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
 </body>
 </html>
