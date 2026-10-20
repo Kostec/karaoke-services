@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
-from karaoke_core import naming, postprocess, ultrastar
+from karaoke_core import musiclink, naming, postprocess, ultrastar
 from karaoke_core.db import Job, instrumental_params, now, song_id_for
 from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_PARAMS
 from karaoke_core.storage import Storage, StorageError
@@ -20,7 +20,7 @@ from .progress import (IMPORT_PREPARE, PUBLISH, STAGE_DOWNLOAD, STAGE_POSTPROCES
 
 __all__ = ["Handler", "GenerateHandler", "InstrumentalHandler", "ImportHandler", "PublishHandler",
            "HANDLERS", "prepare_lyrics", "ultrasinger_args", "parse_lrc", "lyrics_lines", "lrc_matches", "audio_only_copy", "to_mp3",
-           "download_youtube"]
+           "download_youtube", "download_link"]
 
 
 
@@ -287,6 +287,16 @@ class GenerateHandler:
         inputs = p.get("inputs") or {}
         in_dir = ctx.paths.abs(inputs["dir"]) if inputs.get("dir") else ctx.paths.job_in(rel_dir, job.id)
         audio = ctx.paths.abs(inputs["audio"]) if inputs.get("audio") else in_dir / INPUT_AUDIO
+        cover = ctx.paths.abs(inputs["cover"]) if inputs.get("cover") else None
+        if cover is not None and not cover.is_file():
+            cover = None
+        url = (inputs.get("audio_url") or "").strip()
+        if url and not inputs.get("audio"):
+            if not audio.is_file():  # «Перезапустить» с готовым in/input.mp3 не качает заново
+                download_link(ctx, job.id, url, in_dir, job_dir / "download", thumbnail=cover is None)
+            saved_thumb = in_dir / f"{INPUT_COVER_STEM}.jpg"
+            if cover is None and saved_thumb.is_file():
+                cover = saved_thumb
         if not audio.is_file():
             raise JobFailed("input", "Исходный mp3 не найден — загрузите файл и создайте задание заново")
 
@@ -333,11 +343,8 @@ class GenerateHandler:
         ctx.check_cancel(job.id, force=True)
 
         ctx.progress(job.id, tracker.set(*STAGE_POSTPROCESS))
-        cover = ctx.paths.abs(inputs["cover"]) if inputs.get("cover") else None
         try:
-            fin = postprocess.finalize(folders[0], job.artist, job.title,
-                                       cover if cover is not None and cover.is_file() else None,
-                                       dest_dir=job_dir / "result")
+            fin = postprocess.finalize(folders[0], job.artist, job.title, cover, dest_dir=job_dir / "result")
         except postprocess.FinalizeError as e:
             raise JobFailed("postprocess", f"Ошибка постобработки: {e}") from None
         ctx.log(job.id, f"Постобработка: нот нулевой длины исправлено {fin.zero_fixed}"
@@ -460,8 +467,8 @@ def _log_tail(e: JobFailed) -> str:
     return e.user_message.partition("\n\n")[2]  # «Последние строки лога: …»
 
 
-def _youtube_failed(reason: str, tail: str = "") -> JobFailed:
-    msg = f"{YOUTUBE_FAILED}: {reason}"
+def _youtube_failed(reason: str, tail: str = "", what: str = YOUTUBE_FAILED) -> JobFailed:
+    msg = f"{what}: {reason}"
     return JobFailed("youtube", f"{msg}\n\n{tail}" if tail else msg)
 
 
@@ -474,11 +481,12 @@ def _ytdlp_reason(tail: str) -> str:
 
 
 def download_youtube(ctx: JobContext, job_id: int, url: str, work: Path,
-                     thumbnail: bool) -> tuple[Path, Path | None]:
-    """Звук (и миниатюра) с YouTube через yt-dlp. Возвращает (mp3, jpg или None)."""
+                     thumbnail: bool, what: str = YOUTUBE_FAILED) -> tuple[Path, Path | None]:
+    """Звук (и миниатюра) через yt-dlp (YouTube и всё, что он умеет). Возвращает (mp3, jpg или None).
+    ``-4``: у контейнеров нет IPv6-маршрута, а сайты отдают AAAA первыми."""
     work.mkdir(parents=True, exist_ok=True)
     template = work / "youtube.%(ext)s"
-    cmd = ctx.ytdlp_cmd() + ["-x", "--audio-format", "mp3", "--no-playlist", "--newline",
+    cmd = ctx.ytdlp_cmd() + ["-4", "-x", "--audio-format", "mp3", "--no-playlist", "--newline",
                              "-o", str(template)]
     if thumbnail:
         cmd += ["--write-thumbnail", "--convert-thumbnails", "jpg"]
@@ -486,12 +494,60 @@ def download_youtube(ctx: JobContext, job_id: int, url: str, work: Path,
         ctx.run_command(job_id, cmd + ["--", url], tracker=DownloadTracker(), what="yt-dlp")
     except JobFailed as e:
         tail = _log_tail(e)
-        raise _youtube_failed(_ytdlp_reason(tail), tail) from None
+        raise _youtube_failed(_ytdlp_reason(tail), tail, what) from None
     mp3 = work / "youtube.mp3"
     if not mp3.is_file():
-        raise _youtube_failed("yt-dlp не создал mp3")
+        raise _youtube_failed("yt-dlp не создал mp3", what=what)
     jpg = work / "youtube.jpg"
     return mp3, (jpg if thumbnail and jpg.is_file() else None)
+
+
+LINK_FAILED = "Не удалось скачать звук по ссылке"
+YANDEX_FAILED = "Яндекс Музыка не отдала звук"
+
+
+def _download_yandex(ctx: JobContext, job_id: int, url: str, dest: Path) -> None:
+    """Трек Яндекс Музыки через ``MUSICLINK_CMD download <url> <dest>``; ключ доступа из «Настроек» —
+    только в окружении подпроцесса (не в argv и не в лог)."""
+    ym_key = ctx.settings.get_yandex()
+    if not ym_key:
+        raise JobFailed("yandex_no_token", musiclink.MSG_NEED_LOGIN)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        ctx.run_command(job_id, ctx.musiclink_cmd() + ["download", url, str(dest)], what="musiclink",
+                        extra_env={"YANDEX_MUSIC_TOKEN": ym_key})
+    except JobFailed as e:
+        tail = _log_tail(e)
+        lines = [ln.strip() for ln in tail.splitlines()[1:] if ln.strip()]  # без «Последние строки лога:»
+        reason = lines[-1] if lines else YANDEX_FAILED
+        raise JobFailed("download", f"{reason}\n\n{tail}" if tail else reason) from None
+    if not dest.is_file():
+        raise JobFailed("download", f"{YANDEX_FAILED}: файл не создан")
+
+
+def download_link(ctx: JobContext, job_id: int, url: str, in_dir: Path, work: Path,
+                  thumbnail: bool) -> None:
+    """Звук по ссылке (``inputs.audio_url``) → ``in/input.mp3``; миниатюра yt-dlp → ``in/cover.jpg``
+    (если ``thumbnail``). Сразу в in/: сбой дальше не заставит «Перезапустить» качать заново."""
+    try:
+        link = musiclink.classify(url)
+    except musiclink.MusicLinkError as e:
+        raise JobFailed("input", str(e)) from None
+    ctx.progress(job_id, STAGE_DOWNLOAD)
+    ctx.log(job_id, f"Звук по ссылке: {link.url}")
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    in_dir.mkdir(parents=True, exist_ok=True)
+    if musiclink.is_yandex(link):
+        mp3 = work / INPUT_AUDIO
+        _download_yandex(ctx, job_id, link.url, mp3)
+    else:
+        mp3, thumb = download_youtube(ctx, job_id, link.url, work, thumbnail=thumbnail, what=LINK_FAILED)
+        if thumb is not None:
+            shutil.copy2(thumb, in_dir / f"{INPUT_COVER_STEM}.jpg")
+    ctx.check_cancel(job_id, force=True)
+    shutil.copy2(mp3, in_dir / INPUT_AUDIO)
+    shutil.rmtree(work, ignore_errors=True)
 
 
 def to_mp3(ctx: JobContext, job_id: int, src: Path, dest: Path) -> None:

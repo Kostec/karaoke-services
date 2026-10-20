@@ -1,14 +1,16 @@
 // Раздел «Новая песня» (и перегенерация песни из списка: #new?song=<song_id>).
+// Звук — mp3-файл или ссылка на трек (audio_url, скачает воркер); одно сбрасывает другое.
 
 import { api, PARAM_KEYS, generateForm, errorText } from './api.js';
 import { h, clear, toast, debounce, songName, field, confirmDialog } from './ui.js';
 import { readId3, planAutofill } from './id3.js';
 import {
   searchBlocker, needsReplaceConfirm, REPLACE_QUESTION,
-  lrcPlainText, lrcTimingDefault, lrcAfterEdit, lrcForNewText, lrcFormPart, lrcShown, LRC_SAVED,
+  lrcPlainText, lrcTimingDefault, fmtSeconds, lrcAfterEdit, lrcForNewText, lrcFormPart, lrcShown, LRC_SAVED,
   LRC_TIMING_LABEL,
 } from './lyrics-search.js';
 import { openLyricsDialog } from './lyrics-dialog.js';
+import { linkOutcome, linkCoverUrl, isYandexNoToken, LINK_SERVICES, SETTINGS_LINK_TEXT } from './link-logic.js';
 
 
 let root, form, f = {}, defaults = null, defaultsError = null;
@@ -28,6 +30,11 @@ let previewUrl = null;
 let lrcHeld = null;
 let audioDuration = null; // длительность mp3 из формы, с
 let durationSeq = 0;
+// Ссылка на трек: link — {input, url, list} последнего «Получить» (url — ссылка на один трек из
+// ответа inspect, list — подсказка, если это альбом/плейлист); linkThumb — обложка-превью.
+let link = null;
+let linkThumb = null;
+let linkSeq = 0;
 const COVER_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 
 export function mount(section) {
@@ -74,6 +81,11 @@ async function build() {
   f.audio = h('input', { type: 'file', name: 'audio', accept: '.mp3,audio/mpeg' });
   f.audioHint = h('div', { class: 'small muted' });
   f.audioErr = h('div', { class: 'field-error', hidden: true });
+  f.audioUrl = h('input', { type: 'text', name: 'audio_url', inputmode: 'url', autocomplete: 'off',
+    placeholder: 'https://…', 'aria-label': 'Ссылка на трек', style: 'flex:1;min-width:12em' });
+  f.linkBtn = h('button', { type: 'button', onclick: onGetLink }, 'Получить');
+  f.linkInfo = h('div', { class: 'small muted', hidden: true });
+  f.linkErr = h('div', { class: 'field-error', hidden: true });
 
   f.lyrics = h('textarea', { name: 'lyrics', rows: '10', placeholder: 'Вставьте текст песни или выберите файл .txt / .lrc' });
   f.lyricsFile = h('input', { type: 'file', accept: '.txt,.lrc,text/plain', 'aria-label': 'Файл текста' });
@@ -117,6 +129,10 @@ async function build() {
     f.dup,
     field('Аудио mp3', f.audio, d.max_upload_mb ? `до ${d.max_upload_mb} МБ` : null), f.audioHint, f.audioErr, f.tagsHint,
     h('div', { class: 'field' },
+      h('span', {}, 'или ссылка на трек', h('span', { class: 'hint' }, ` (${LINK_SERVICES})`)),
+      h('div', { class: 'inline-file' }, f.audioUrl, f.linkBtn),
+      f.linkInfo, f.linkErr),
+    h('div', { class: 'field' },
       h('span', {}, 'Текст песни', h('span', { class: 'hint' }, ' (можно оставить пустым)')),
       f.lyrics,
       h('div', { class: 'inline-file' }, h('span', { class: 'small muted' }, 'или файл:'), f.lyricsFile,
@@ -156,9 +172,12 @@ async function build() {
   f.lrc_timing.addEventListener('change', () => { f.lrcHint.textContent = ''; });
   f.lyricsFile.addEventListener('change', onLyricsFile);
   f.audio.addEventListener('change', async () => {
+    if (f.audio.files[0]) clearLink(true); // файл важнее ссылки — ссылка сбрасывается
     readAudioDuration(f.audio.files[0]);
     if (await checkAudio()) autofillFromTags(f.audio.files[0]);
   });
+  f.audioUrl.addEventListener('input', onLinkInput);
+  f.audioUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); onGetLink(); } });
   f.cover.addEventListener('change', async () => { await checkCover(); updateCoverPreview(); });
   f.language.addEventListener('change', () => {
     if (!alignTouched) f.align_model.value = (defaults?.align_models || {})[f.language.value] || '';
@@ -200,6 +219,7 @@ function resetForm() {
   updateCoverPreview();
   audioDuration = null;
   durationSeq++;
+  clearLink(true);
   setLrc(null);
   for (const e of [f.audioErr, f.coverErr, f.lyricsErr, f.artistErr, f.titleErr]) e.hidden = true;
   for (const e of [f.artist, f.title]) e.classList.remove('invalid');
@@ -319,6 +339,108 @@ function readAudioDuration(file) {
   el.addEventListener('loadedmetadata', () => done(el.duration), { once: true });
   el.addEventListener('error', () => done(null), { once: true });
   el.src = url;
+}
+
+// ---------------------------------------------------------------- ссылка на трек
+
+/** Сбросить ссылку (выбран файл / сброс формы); input — очистить и поле. */
+function clearLink(input) {
+  linkSeq++;
+  if (input) f.audioUrl.value = '';
+  f.audioUrl.classList.remove('invalid');
+  const hadLink = !!link;
+  link = null;
+  linkThumb = null;
+  f.linkInfo.hidden = true;
+  f.linkErr.hidden = true;
+  f.linkBtn.disabled = false;
+  f.linkBtn.textContent = 'Получить';
+  updateCoverPreview();
+  if (hadLink && !f.audio.files[0]) { audioDuration = null; durationSeq++; applyLrcDefault(); }
+}
+
+/** Ввод ссылки: файл сбрасывается (вместе с обложкой из его тегов); прежний «Получить» устарел. */
+function onLinkInput() {
+  if (f.audioUrl.value.trim() && f.audio.files[0]) {
+    f.audio.value = '';
+    f.audioErr.hidden = true;
+    tagCover = null;
+    tagsSeq++;
+    f.tagsHint.hidden = true;
+    audioDuration = null;
+    durationSeq++;
+    applyLrcDefault();
+    updateCoverPreview();
+  }
+  if (link && f.audioUrl.value.trim() !== link.input) clearLink(false);
+  f.linkErr.hidden = true;
+  f.audioErr.hidden = true;
+}
+
+function showLinkError(text, e) {
+  f.linkErr.textContent = text;
+  if (isYandexNoToken(e)) f.linkErr.append(' ', h('a', { href: '#settings' }, SETTINGS_LINK_TEXT));
+  f.linkErr.hidden = !text;
+}
+
+/** «Получить»: link/inspect → исполнитель/название (если пусты), обложка-превью, длительность для LRC. */
+async function onGetLink() {
+  const input = f.audioUrl.value.trim();
+  if (!input) { showLinkError('Вставьте ссылку на трек'); f.audioUrl.focus(); return; }
+  onLinkInput();
+  const my = ++linkSeq;
+  f.linkBtn.disabled = true;
+  f.linkBtn.textContent = 'Получаю…';
+  f.linkErr.hidden = true;
+  f.linkInfo.hidden = true;
+  try {
+    const info = await api.linkInspect(input);
+    if (my !== linkSeq) return;
+    const out = linkOutcome(info);
+    if (out.kind !== 'track') {
+      link = { input, url: '', list: out.kind === 'list' ? out.text : '' };
+      linkThumb = null;
+      showLinkError(out.text);
+      if (out.kind === 'list') f.linkErr.append(' ', h('a', { href: '#import' }, 'Открыть Импорт'));
+      return;
+    }
+    const t = out.track;
+    link = { input, url: t.url || input, list: '' };
+    linkThumb = t.thumbnail || null;
+    const plan = planAutofill({ artist: f.artist.value, title: f.title.value }, t, autoVals);
+    for (const [k, v] of Object.entries(plan)) {
+      f[k].value = v;
+      f[k].classList.remove('invalid');
+      (k === 'artist' ? f.artistErr : f.titleErr).hidden = true;
+    }
+    autoVals = { ...autoVals, ...plan };
+    const sec = Number(t.duration);
+    audioDuration = sec > 0 ? sec : null; // правило 3 с для таймингов LRC — по длительности трека
+    durationSeq++;
+    applyLrcDefault();
+    const what = [songName(t.artist, t.title), fmtSeconds(t.duration)].filter(Boolean).join(' · ');
+    f.linkInfo.textContent = `Трек: ${what || t.url}`;
+    f.linkInfo.hidden = false;
+    updateCoverPreview();
+    updateFindLyrics();
+    if (plan.artist || plan.title) {
+      replace = false;
+      checkExists();
+    }
+  } catch (e) {
+    if (my !== linkSeq) return;
+    showLinkError(errorText(e), e);
+    f.audioUrl.classList.add('invalid');
+  } finally {
+    if (my === linkSeq) { f.linkBtn.disabled = false; f.linkBtn.textContent = 'Получить'; }
+  }
+}
+
+/** Что уходит в audio_url: ссылка на трек из «Получить» или введённая как есть. */
+function audioUrlValue() {
+  const input = f.audioUrl.value.trim();
+  if (!input) return '';
+  return link && link.input === input && link.url ? link.url : input;
 }
 
 // ---------------------------------------------------------------- проверки
@@ -454,11 +576,25 @@ function updateCoverPreview() {
   previewUrl = null;
   const own = f.cover.files[0] && f.coverErr.hidden ? f.cover.files[0] : null;
   const file = own || tagCover;
-  f.coverPreview.hidden = !file;
+  const thumb = currentLinkCover();
+  f.coverPreview.hidden = !file && !thumb;
+  if (thumb) { // обложку со ссылки (cover_url) скачает сервис, если своей нет
+    f.coverImg.setAttribute('referrerpolicy', 'no-referrer');
+    f.coverImg.src = thumb;
+    f.coverNote.textContent = 'Обложка со ссылки — выберите файл выше, чтобы заменить';
+    return;
+  }
+  f.coverImg.removeAttribute('referrerpolicy');
   if (!file) { f.coverImg.removeAttribute('src'); return; }
   previewUrl = URL.createObjectURL(file);
   f.coverImg.src = previewUrl;
   f.coverNote.textContent = own ? 'Своя обложка' : 'Обложка из тегов mp3 — выберите файл выше, чтобы заменить';
+}
+
+/** Обложка со ссылки, которая уйдёт в generate (cover_url): своя обложка важнее. */
+function currentLinkCover() {
+  const own = f.cover.files[0] || tagCover;
+  return linkCoverUrl({ ownCover: own, audioFile: f.audio.files[0], link, input: f.audioUrl.value, thumb: linkThumb });
 }
 
 function removeCover() {
@@ -511,8 +647,9 @@ function collectParams() {
 
 /** Подсветить поле по машиночитаемому `field` из ответа сервера. */
 function markField(name, detail) {
-  const errs = { artist: f.artistErr, title: f.titleErr, audio: f.audioErr, cover: f.coverErr, lyrics: f.lyricsErr };
-  const inputs = { lyrics: f.lyrics };
+  const errs = { artist: f.artistErr, title: f.titleErr, audio: f.audioErr, cover: f.coverErr, lyrics: f.lyricsErr,
+    audio_url: f.linkErr };
+  const inputs = { lyrics: f.lyrics, audio_url: f.audioUrl };
   const el = inputs[name] || f[name];
   if (!name || !el || !(el instanceof HTMLElement)) return;
   if (errs[name]) {
@@ -542,9 +679,15 @@ async function onSubmit(ev) {
     if (bad && ok) el.focus();
     ok = ok && !bad;
   }
-  if (!f.audio.files[0] && !regen) {
-    f.audioErr.textContent = 'Загрузите mp3-файл';
+  const audioUrl = f.audio.files[0] ? '' : audioUrlValue();
+  if (!f.audio.files[0] && !audioUrl && !regen) {
+    f.audioErr.textContent = 'Загрузите mp3-файл или вставьте ссылку на трек';
     f.audioErr.hidden = false;
+    ok = false;
+  } else if (audioUrl && link?.list && link.input === f.audioUrl.value.trim()) {
+    showLinkError(link.list); // альбом/плейлист — это «Импорт → Ссылка»
+    f.linkErr.append(' ', h('a', { href: '#import' }, 'Открыть Импорт'));
+    f.audioUrl.focus();
     ok = false;
   } else if (!(await checkAudio())) {
     ok = false;
@@ -554,7 +697,8 @@ async function onSubmit(ev) {
 
   const fd = generateForm({
     artist, title, lyrics: f.lyrics.value, params: collectParams(),
-    audio: f.audio.files[0], cover: f.cover.files[0] || tagCover,
+    audio: f.audio.files[0], audio_url: audioUrl, cover: f.cover.files[0] || tagCover,
+    cover_url: currentLinkCover() || undefined,
     song_id: regen?.song_id, replace,
     lyrics_lrc: lrcFormPart(lrcHeld), // передать / сбросить сохранённый / не трогать
   });
@@ -574,6 +718,7 @@ async function onSubmit(ev) {
       f.dup.scrollIntoView({ block: 'center', behavior: 'smooth' });
     } else {
       f.error.textContent = errorText(e);
+      if (isYandexNoToken(e)) f.error.append(' ', h('a', { href: '#settings' }, SETTINGS_LINK_TEXT));
       f.error.hidden = false;
       markField(e.data?.field, errorText(e));
     }

@@ -11,9 +11,9 @@ Docker — только Linux-движок: `docker --context desktop-linux comp
 - Проверка GPU и правок UltraSinger: `./scripts/compose.ps1 run --rm worker gpucheck` (успех — RC=0, последняя строка `gpucheck: OK …`).
 - Только образ worker (15–30 мин с нуля): `./scripts/compose.ps1 build worker`.
 - Логи: `./scripts/compose.ps1 logs --tail 100 worker` (или `web`).
-- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 403 passed, 2 skipped (после смены зависимостей — `run --build`).
+- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 553 passed, 2 skipped (после смены зависимостей — `run --build`).
 - Подмножество: `docker --context desktop-linux compose --profile test run --rm tests pytest -q tests/worker/test_runner_queue.py`.
-- Фронт-тесты (Node 24, встроенный node:test): `node --test tests/frontend/` → 53 pass.
+- Фронт-тесты (Node 24, встроенный node:test): `node --test tests/frontend/` → 76 pass.
 - Бэкап патча UltraSinger в `patches/karaoke-local.patch`: `./scripts/export-ultrasinger-patch.ps1` (читает `D:/Projects/UltraSinger`).
 - CLI воркера внутри образа: `python -m karaoke_worker gpucheck|selfcheck|run`; entrypoint пропускает эти слова в CLI, прочее (`bash`, `python`) исполняет как есть.
 
@@ -49,6 +49,8 @@ patches/karaoke-local.patch  резервная копия правок форк
 - `core/karaoke_core/trash.py` — `Trash`: перенос в корзину, версии `.txt`, restore (только в ту же цель), purge по `TRASH_DAYS`.
 - `web/app/api_jobs.py` — общие помощники приёма файлов (`Staging`, `queue_duplicate`, `is_mp3`, `cover_ext_of`, `copy_limited`; их же зовёт `api_import`); generate (multipart, staging → `jobs/<id>/in/`), instrumental, cancel/restart/republish, лог `?from=|tail=` и SSE.
 - `web/app/api_import.py` — `POST /api/import/inspect` (usdb | `files[]` | url: zip или GitHub → codeload-архив), `POST /api/jobs/import`, staging `imports/<token>/`, `purge_imports`, `max_import_mb`.
+- `core/karaoke_core/musiclink.py` — ссылки на музыку: `classify` (Яндекс трек/альбом/плейлист или yt-dlp; аудио VK и адреса домашней сети — отказ; у YouTube снимается `list=`), `ytdlp_info` (`-4 -J --flat-playlist`), `YandexMusic` (токен аккаунта, `info`/`download`/`check`), `MusicLinkError`, CLI `python -m karaoke_core.musiclink download <url> <dest>` (токен — в env `YANDEX_MUSIC_TOKEN`); токен — `Settings.get_yandex/set_yandex`.
+- `web/app/api_link.py` — `POST /api/link/inspect` → треки `{url, artist, title, duration, thumbnail, existing_song_id}`; generate принимает `audio_url` (вместо файла) и `cover_url` (обложку качает web, `api_jobs.download_cover`); worker качает звук в `handlers.download_link` (yt-dlp или `MUSICLINK_CMD`); `/api/settings/yandex` — `has_token`.
 - `web/app/lyrics.py` — `LrclibProvider`, `LyricsHit(..., synced)`, `strip_lrc`, `synced_lrc`; `web/app/usdb.py` — `UsdbClient` (вход, поиск, `fetch_song`), `UsdbAuthError/UsdbUnavailable/UsdbNotFound`, HTML-разборщики; `web/app/api_usdb.py` — `usdb_api_error`.
 - `web/app/params.py` — модели, языки, лимиты (`MAX_COVER_MB`, `MAX_LYRICS_MB`, `MAX_FOLDER_AUDIO_MB`), `/api/defaults`.
 - `web/app/context.py` — `AppContext` (`.http`, `.usdb()` — кэш клиента сохранённой учётки, `reset_usdb()`), `ApiError`, `match_key` (ключ дубля песни).
@@ -105,8 +107,8 @@ patches/karaoke-local.patch  резервная копия правок форк
 - `ULTRASINGER_GIT` — источник UltraSinger для сборки worker (git-URL `…#karaoke-local` или локальный путь).
 - `DEFAULT_WHISPER_MODEL`, `DEFAULT_LANGUAGE`, `DEFAULT_COMPUTE_TYPE`, `DEFAULT_BATCH_SIZE`, `DEFAULT_ALIGN_MODEL_RU` — умолчания формы и аргументов UltraSinger.
 - Задаёт compose/образ, не пользователь: `DATA_DIR`, `MODELS_DIR`, `HF_HOME`, `TORCH_HOME`, `XDG_CACHE_HOME`, `PYHYPHEN_DIR`, `ULTRASINGER_DIR`, `WEB_STATIC_DIR`.
-- `YTDLP_CMD` — команда yt-dlp (пусто — `python -m yt_dlp` образа worker).
-- Подмена команд в тестах: `ULTRASINGER_CMD`, `DEMUCS_CMD`, `FFMPEG_CMD`, `YTDLP_CMD`; интеграция с живой шарой: `TEST_SMB_HOST`, `TEST_SMB_SHARE`, `TEST_SMB_USER`, `TEST_SMB_PASSWORD`, `TEST_SMB_PATH`.
+- `YTDLP_CMD` — команда yt-dlp для web и worker (пусто — `python -m yt_dlp` образа); `MUSICLINK_CMD` — загрузчик Яндекс Музыки (пусто — `python -m karaoke_core.musiclink`); `YANDEX_MUSIC_TOKEN` — только окружение этого подпроцесса (токен пользователь вводит в «Настройках»).
+- Подмена команд в тестах: `ULTRASINGER_CMD`, `DEMUCS_CMD`, `FFMPEG_CMD`, `YTDLP_CMD`, `MUSICLINK_CMD`; интеграция с живой шарой: `TEST_SMB_HOST`, `TEST_SMB_SHARE`, `TEST_SMB_USER`, `TEST_SMB_PASSWORD`, `TEST_SMB_PATH`.
 
 ## Тесты
 
@@ -121,6 +123,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 ## Подводные камни
 
 - У Docker Desktop активен Windows-движок — всегда `--context desktop-linux` (или `scripts/compose.ps1`); движок не переключать.
+- Сеть контейнеров: `dns: 77.88.8.8, 1.1.1.1` и выключенный IPv6 (`sysctls`) в `docker-compose.yml` — DNS Docker Desktop сбоил, а AAAA-адреса без маршрута ломали Яндекс/LRCLIB; yt-dlp везде с `-4`.
 - Имена `pi`/`pi.local` в контейнерах не резолвятся — в `OUTPUT_SMB_HOST` только IP.
 - Порт 8080 на хосте занят jenkins — `WEB_PORT=8090` (внутри контейнера веб слушает 8080).
 - Linux-колёса torch cu126 собраны без sm_61: на Pascal исполняется sm_60 — это норма (`gpucheck.runnable_arch`); cu128 без Pascal вовсе, сборку валит `worker/build/check_torch_arch.py`.

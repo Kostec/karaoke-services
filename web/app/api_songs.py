@@ -13,6 +13,7 @@ from karaoke_core.paths import INPUT_LYRICS
 from karaoke_core.storage import StorageError, StorageNotFound
 from karaoke_core.trash import TrashError
 
+from .api_import import SOURCES as IMPORT_SOURCES
 from .api_jobs import ctx_of
 from .context import ApiError, AppContext, not_found
 from .notes import NotesIn, apply_notes, notes_payload, read_only_reason
@@ -53,7 +54,9 @@ def _song_out(ctx: AppContext, item, own=_UNREAD) -> dict:
     if own is _UNREAD:
         own = ctx.songs.get(item.own_song_id) if item.own_song_id else None
     params = own.params if own and isinstance(own.params, dict) else {}
-    out["source"] = params.get("source") or None
+    # «импорт» — только песни из usdb/файлов/ссылки на архив; generate по ссылке на музыку
+    # (source="link") — песня, созданная сервисом
+    out["source"] = params.get("source") if params.get("source") in IMPORT_SOURCES else None
     return out
 
 

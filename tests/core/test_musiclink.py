@@ -63,8 +63,55 @@ def test_classify_vk_audio_is_error(url):
         classify(url)
 
 
+@pytest.mark.parametrize("url, norm", [
+    ("https://www.youtube.com/watch?v=kXYiU_JCYtU&list=RDkXYiU_JCYtU&start_radio=1&index=2",
+     "https://www.youtube.com/watch?v=kXYiU_JCYtU"),
+    ("https://music.youtube.com/watch?v=abc&list=OLAK5uy&si=x", "https://music.youtube.com/watch?v=abc"),
+    ("https://youtu.be/kXYiU_JCYtU?list=PL123&t=30", "https://youtu.be/kXYiU_JCYtU?t=30"),
+    ("https://www.youtube.com/playlist?list=PL123&index=3", "https://www.youtube.com/playlist?list=PL123&index=3"),
+    ("https://www.youtube.com/watch?list=PL123", "https://www.youtube.com/watch?list=PL123"),
+    ("https://example.com/watch?v=1&list=2", "https://example.com/watch?v=1&list=2"),
+])
+def test_classify_youtube_video_in_list_is_one_track(url, norm):
+    assert classify(url).url == norm
+
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1/a", "http://localhost:8090/", "https://nas.local/x", "http://pi.local./x",
+    "http://192.168.1.10/song", "http://10.0.0.1/", "http://172.16.5.4/", "http://169.254.169.254/latest",
+    "http://[::1]/", "http://[fe80::1]/", "http://[::ffff:192.168.0.1]/", "http://0.0.0.0/",
+    "https://music.yandex.ru.localhost/track/1",
+])
+def test_classify_rejects_home_network_literals(url):
+    with pytest.raises(MusicLinkError, match="^Ссылки на адреса домашней сети не поддерживаются$"):
+        classify(url, resolver=lambda host: pytest.fail("литерал не резолвится"))
+
+
+def test_classify_rejects_home_network_by_dns():
+    seen = []
+
+    def resolver(host):
+        seen.append(host)
+        return {"router.example": ["93.184.216.34", "192.168.0.1"], "rebind.example": ["::1"],
+                "www.youtube.com": ["142.250.74.46", "2a00:1450:4010::200e"]}.get(host, [])
+
+    for host in ("router.example", "rebind.example"):
+        with pytest.raises(MusicLinkError, match="домашней сети"):
+            classify(f"https://{host}/watch?v=1", resolver=resolver)
+    assert classify("https://www.youtube.com/watch?v=1", resolver=resolver).kind == "ytdlp"
+    assert classify("https://nowhere.invalid/x", resolver=resolver).kind == "ytdlp"  # не резолвится — дальше
+    assert classify("https://music.yandex.ru/track/5", resolver=resolver).kind == "yandex_track"
+    assert seen == ["router.example", "rebind.example", "www.youtube.com", "nowhere.invalid", "music.yandex.ru"]
+
+
+def test_classify_uses_module_resolver(monkeypatch):
+    monkeypatch.setattr(ml, "RESOLVER", lambda host: ["10.1.2.3"])
+    with pytest.raises(MusicLinkError, match="домашней сети"):
+        classify("https://www.youtube.com/watch?v=1")
+
+
 @pytest.mark.parametrize("url", ["", "music.yandex.ru/album/1", "ftp://x.ru/a.mp3", "javascript:alert(1)",
-                                 "https://"])
+                                 "https://", "http://[bad/"])
 def test_classify_not_http(url):
     with pytest.raises(MusicLinkError, match="Нужна ссылка вида https://"):
         classify(url)

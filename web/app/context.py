@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import os
+import re
+import shlex
+import sys
 import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Mapping
 
-from karaoke_core import naming
+from karaoke_core import musiclink, naming
 from karaoke_core.paths import DataPaths
 from karaoke_core.http import Http
 from karaoke_core.db import Jobs, Library, LibraryItem, OutputTarget, Settings, Songs, connect, now
@@ -36,13 +39,16 @@ def not_found(what: str = "Не найдено") -> ApiError:
 class AppContext:
     def __init__(self, data_dir: str | Path, *, env: Mapping[str, str] | None = None,
                  storage_factory: Callable[[OutputTarget], Storage] | None = None,
-                 trash: Trash | None = None, http: Http | None = None):
+                 trash: Trash | None = None, http: Http | None = None,
+                 yandex_factory: Callable[[str], musiclink.YandexMusic] | None = None):
         self.env = dict(os.environ if env is None else env)
         self.paths = DataPaths(data_dir)
         self.data_dir = self.paths.root
         self.storage_factory = storage_factory or make_storage
         self.trash = trash or Trash(self.paths.trash, days=self.int_env("TRASH_DAYS", 30))
         self.http = http or Http()  # исходящие запросы (LRCLIB …); в тестах — FakeHttp
+        # Яндекс Музыка: фабрика клиента по токену; в тестах — фейк
+        self.yandex_factory = yandex_factory or musiclink.YandexMusic
         self._local = threading.local()
         self._lock = threading.Lock()
         self._storage: tuple[str, Storage] | None = None
@@ -66,6 +72,11 @@ class AppContext:
     @property
     def max_upload_mb(self) -> int:
         return self.int_env("MAX_UPLOAD_MB", 50)
+
+    def ytdlp_cmd(self) -> list[str]:
+        """Команда yt-dlp из ``YTDLP_CMD``; пусто — ``python -m yt_dlp`` образа web."""
+        raw = str(self.env.get("YTDLP_CMD", "") or "").strip()
+        return shlex.split(raw) if raw else [sys.executable, "-m", "yt_dlp"]
 
     # ------------------------------------------------------------------ БД
 
@@ -161,6 +172,16 @@ class AppContext:
         with self._lock:
             self._usdb = None
 
+    # ------------------------------------------------------------------ Яндекс Музыка
+
+    def yandex(self) -> musiclink.YandexMusic:
+        """Клиент Яндекс Музыки по сохранённому токену.
+        Токена нет — ``ApiError(400, code="yandex_no_token")``."""
+        ym_key = self.settings.get_yandex()
+        if not ym_key:
+            raise ApiError(400, musiclink.MSG_NEED_LOGIN, code="yandex_no_token")
+        return self.yandex_factory(ym_key)
+
     # ------------------------------------------------------------------ индекс песен
 
     def rescan(self) -> None:
@@ -229,6 +250,26 @@ class AppContext:
 
     def song_dict(self, item: LibraryItem) -> dict:
         return {**item.to_dict(), "own": bool(item.own_song_id)}
+
+
+# Сетевой сбой yt-dlp (не «ссылка плохая», а «сеть/сайт недоступны») → 503.
+_NETWORK_FAILURE = re.compile(
+    r"unable to download (?:webpage|api page|json)|failed to resolve|name resolution|resolve host"
+    r"|name or service not known|nodename nor servname|getaddrinfo|timed out"
+    r"|connection (?:refused|reset|aborted|error)|network is unreachable|no route to host"
+    r"|remote end closed|urlopen error", re.I)
+
+
+def link_api_error(e: musiclink.MusicLinkError, field: str = "url") -> ApiError:
+    """Ошибка ссылки на музыку → ответ API: сеть/недоступность — 503, нет токена — 400
+    ``code="yandex_no_token"``, прочее — 400 с ``field``."""
+    text = str(e)
+    if text == musiclink.MSG_NEED_LOGIN:
+        return ApiError(400, text, code="yandex_no_token")
+    if text == musiclink.MSG_UNAVAILABLE or text.endswith("истекло время ожидания") or (
+            text.startswith(musiclink.MSG_YTDLP) and _NETWORK_FAILURE.search(text)):
+        return ApiError(503, text)
+    return ApiError(400, text, field=field)
 
 
 def match_key(artist: str, title: str) -> tuple[str, str]:

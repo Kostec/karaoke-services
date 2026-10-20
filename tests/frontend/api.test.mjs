@@ -27,6 +27,19 @@ test('generateForm: поля multipart как ждёт POST /api/jobs/generate',
   assert.equal(plain.has('song_id'), false);
   assert.equal(plain.has('audio'), false);
   assert.equal(plain.has('lyrics_lrc'), false);
+  assert.equal(plain.has('audio_url'), false);
+  assert.deepEqual([...fd.keys()], ['artist', 'title', 'audio', 'lyrics', 'params', 'song_id', 'replace']);
+});
+
+test('generateForm: audio_url — ссылка вместо файла; при файле не уходит, пустая — не уходит', () => {
+  const link = generateForm({ artist: 'A', title: 'T', audio_url: ' https://youtu.be/x ', params: {} });
+  assert.equal(link.get('audio_url'), 'https://youtu.be/x');
+  assert.equal(link.has('audio'), false);
+  assert.deepEqual([...link.keys()], ['artist', 'title', 'audio_url', 'lyrics', 'params', 'replace']);
+  const both = generateForm({ artist: 'A', title: 'T', audio: new Blob(['x']), audio_url: 'https://youtu.be/x', params: {} });
+  assert.equal(both.has('audio_url'), false);
+  assert.ok(both.get('audio') instanceof Blob);
+  assert.equal(generateForm({ artist: 'A', title: 'T', audio_url: '  ', params: {} }).has('audio_url'), false);
 });
 
 test('generateForm: lyrics_lrc — файловой частью (пустая строка — сбросить сохранённый)', async () => {

@@ -1,6 +1,6 @@
 """Фейковый yt-dlp (YTDLP_CMD) — без сети.
 
-Требует ``-x --audio-format mp3 --no-playlist -o <шаблон> <ссылка>``; пишет ``<шаблон>`` с
+Требует ``-4 -x --audio-format mp3 --no-playlist -o <шаблон> <ссылка>``; пишет ``<шаблон>`` с
 расширением mp3 (ID3 + ``YT-AUDIO <ссылка>``), а при ``--write-thumbnail --convert-thumbnails jpg`` —
 ещё и миниатюру ``.jpg``. FAKE_YTDLP_MODE:
   fail     — «ERROR: … Video unavailable», код 1;
@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 def main(argv: list[str]) -> int:
-    for flag in ("-x", "--no-playlist", "-o"):
+    for flag in ("-4", "-x", "--no-playlist", "-o"):
         if flag not in argv:
             print(f"bad args (нет {flag}): {argv}", flush=True)
             return 2

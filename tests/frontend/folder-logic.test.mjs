@@ -119,7 +119,7 @@ test('текст трека: подпись, LRC и галочка таймин�
   assert.equal(s.lrcTiming, false);
   let f = logic.trackFields(s, 'FILE', { language: 'ru', lrc_timing: true });
   assert.deepEqual(f, { artist: 'Кино', title: 'Кукушка', lyrics: 'Песен ещё не написанных', audio: 'FILE',
-    params: { language: 'ru', lrc_timing: false }, replace: false, song_id: undefined, lyrics_lrc: undefined });
+    audio_url: undefined, cover_url: undefined, params: { language: 'ru', lrc_timing: false }, replace: false, song_id: undefined, lyrics_lrc: undefined });
 
   // синхронизированный: текст из LRC в развёрнутом порядке, длительность близка → тайминги включены
   s = { ...base, duration: 202.5, ...logic.withHit({ ...base, duration: 202.5 }, synced) };

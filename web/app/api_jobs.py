@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import urllib.parse
 from pathlib import Path
 from typing import BinaryIO
 
@@ -12,12 +13,13 @@ from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
-from karaoke_core import naming, ultrastar
+from karaoke_core import musiclink, naming, ultrastar
+from karaoke_core.http import HttpError
 from karaoke_core.db import ACTIVE_STATES, FINAL_STATES, STAGE_PUBLISH, instrumental_params
 from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_LRC, INPUT_LYRICS
 from karaoke_core.storage import StorageError
 
-from .context import ApiError, AppContext, not_found, song_key
+from .context import ApiError, AppContext, link_api_error, not_found, song_key
 from .params import MAX_COVER_MB, MAX_FOLDER_AUDIO_MB, MAX_LYRICS_MB, parse_params
 
 router = APIRouter(prefix="/api/jobs", tags=["Задания"])
@@ -73,6 +75,33 @@ def copy_limited(src: BinaryIO, dest: Path, limit_mb: int, field: str) -> None:
             out.write(chunk)
 
 
+def download_cover(ctx: AppContext, url: str, dest_dir: Path) -> str | None:
+    """Обложка по ссылке (миниатюра ссылки на музыку, ``co=`` или usdb) в ``dest_dir`` как
+    ``cover.<ext>`` (лимит ``MAX_COVER_MB``, сигнатура jpg/png/webp); не вышло — ``None``,
+    без ошибки. Ссылки в домашнюю сеть не качаются."""
+    try:
+        parts = urllib.parse.urlsplit((url or "").strip())
+        if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+            return None
+        musiclink.check_public_host(parts.hostname)
+    except (ValueError, musiclink.MusicLinkError):
+        return None
+    tmp = dest_dir / ".cover"
+    try:
+        ctx.http.download(url.strip(), tmp, max_bytes=MAX_COVER_MB * MB, timeout=30)
+        with open(tmp, "rb") as f:
+            ext = cover_ext_of(f.read(16))
+    except (HttpError, OSError):
+        tmp.unlink(missing_ok=True)
+        return None
+    if ext is None:
+        tmp.unlink(missing_ok=True)
+        return None
+    name = f"{INPUT_COVER_STEM}.{ext}"
+    tmp.replace(dest_dir / name)
+    return name
+
+
 def _read_text_file(upload: UploadFile, field: str = "lyrics") -> str:
     data = upload.file.read(MAX_LYRICS_MB * MB + 1)
     if len(data) > MAX_LYRICS_MB * MB:
@@ -89,6 +118,7 @@ class Staging:
         self.dir = ctx.paths.staging(rel_dir)
         self.dir.mkdir(parents=True)
         self.names: dict[str, str] = {}
+        self.extra: dict[str, str] = {}  # прочие поля inputs (audio_url — ссылка вместо mp3)
 
     def path(self, key: str, name: str) -> Path:
         self.names[key] = name
@@ -118,7 +148,7 @@ class Staging:
             dest.parent.mkdir(parents=True, exist_ok=True)
             os.replace(self.dir, dest)
             moved.append(dest.parent)
-            return {**params, "inputs": {"dir": paths.rel(dest),
+            return {**params, "inputs": {"dir": paths.rel(dest), **self.extra,
                                          **{k: paths.rel(dest / n) for k, n in self.names.items()}}}
 
         try:
@@ -143,9 +173,11 @@ def queue_duplicate(ctx: AppContext, type_: str, *, key: str | None = None, song
 def generate(request: Request,
              artist: str = Form(""), title: str = Form(""),
              audio: UploadFile | None = File(None),
+             audio_url: str | None = Form(None),
              lyrics: str | None = Form(None),
              lyrics_file: UploadFile | None = File(None),
              cover: UploadFile | None = File(None),
+             cover_url: str | None = Form(None),
              lyrics_lrc: UploadFile | None = File(None),
              params: str = Form("{}"),
              song_id: str | None = Form(None),
@@ -168,10 +200,21 @@ def generate(request: Request,
     if lyrics_lrc is not None and lyrics_lrc.filename:
         lrc = _read_text_file(lyrics_lrc, "lyrics_lrc").replace("\r\n", "\n").replace("\r", "\n")
     has_audio = audio is not None and bool(audio.filename)
+    link_url = (audio_url or "").strip()
+    if has_audio and link_url:
+        raise ApiError(400, "Нужно что-то одно: mp3-файл или ссылка", field="audio")
+    if link_url:
+        try:
+            link = musiclink.classify(link_url)
+            if link.kind in ("yandex_album", "yandex_playlist"):
+                raise musiclink.MusicLinkError("Нужна ссылка на один трек, а не на альбом или плейлист")
+            link_url = link.url
+        except musiclink.MusicLinkError as e:
+            raise link_api_error(e, field="audio_url") from None
     own_src = ctx.paths.source(source.rel_dir) if source and source.own_song_id else None
     if source and not source.own_song_id and not text.strip():
         raise ApiError(400, "Для чужой песни нужен текст", field="lyrics")
-    if not has_audio and source is None:
+    if not has_audio and not link_url and source is None:
         raise ApiError(400, "Загрузите mp3-файл", field="audio")
     if has_audio and not is_mp3(audio.file.read(4)):
         raise ApiError(400, "Это не mp3-файл", field="audio")
@@ -185,7 +228,12 @@ def generate(request: Request,
     storage = ctx.storage()
     staging = Staging(ctx, rel_dir)
     try:
-        if own_src is not None and not has_audio:
+        if link_url:
+            if own_src is not None:
+                staging.copy_from(own_src)  # обложка и LRC — из source/, звук — по ссылке
+                staging.drop("audio")
+            staging.extra["audio_url"] = link_url
+        elif own_src is not None and not has_audio:
             staging.copy_from(own_src)  # своя песня: mp3 и обложка из source/
             if "audio" not in staging.names:
                 raise ApiError(409, "Исходный mp3 не найден — загрузите файл")
@@ -212,11 +260,20 @@ def generate(request: Request,
             staging.drop("cover")
             cover.file.seek(0)
             copy_limited(cover.file, staging.path("cover", f"{INPUT_COVER_STEM}.{cover_ext}"), MAX_COVER_MB, "cover")
+        elif (cover_url or "").strip():
+            # обложка со ссылки важнее сохранённой в source/; не скачалась — остаётся прежняя
+            name = download_cover(ctx, cover_url, staging.dir)
+            if name:
+                if staging.names.get("cover") != name:
+                    staging.drop("cover")
+                staging.path("cover", name)
     except BaseException:
         staging.discard()
         raise
 
     replace_dir = existing.rel_dir if existing else (source.rel_dir if source else None)
+    if link_url:
+        p["source"] = "link"
     p.update(rel_dir=rel_dir, replace=bool(replace_dir), replace_rel_dir=replace_dir,
              target_id=storage.target_id)
     ref_id = source.song_id if source else (existing.song_id if existing else None)
@@ -276,15 +333,26 @@ def restart(job_id: int, request: Request):
     prev_in = (job.params.get("inputs") or {}).get("dir")
     prev_in = ctx.paths.abs(prev_in) if prev_in else None
     source = ctx.paths.source(rel_dir)
+    audio_url = (job.params.get("inputs") or {}).get("audio_url")
+    by_link = False  # звук не скачан — воркер скачает по ссылке заново
     if prev_in is not None and (prev_in / INPUT_AUDIO).is_file():
         origin = prev_in  # вход родителя ещё лежит в jobs/<id>/in
+    elif audio_url:
+        # звук из source/ может быть от прежней версии песни, не по этой ссылке: звук — только
+        # по ссылке; текст и обложка — из in/ родителя, иначе из source/
+        by_link = True
+        origin = next((d for d in (prev_in, source) if d is not None and d.is_dir()), None)
     elif (source / INPUT_AUDIO).is_file():
         origin = source  # после успеха воркер перенёс вход в source/
     else:
         raise ApiError(409, "Исходники задания не сохранились — создайте задание заново")
     staging = Staging(ctx, rel_dir)
     try:
-        staging.copy_from(origin)
+        if origin is not None:
+            staging.copy_from(origin)
+        if by_link:
+            staging.drop("audio")
+            staging.extra["audio_url"] = audio_url
     except BaseException:
         staging.discard()
         raise

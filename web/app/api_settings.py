@@ -5,12 +5,13 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
 
+from karaoke_core import musiclink
 from karaoke_core.db import OutputTarget, UsdbAccount
 from karaoke_core.storage import StorageError
 
 from .api_jobs import ctx_of
 from .api_usdb import usdb_api_error
-from .context import ApiError, AppContext
+from .context import ApiError, AppContext, link_api_error
 from .usdb import UsdbClient, UsdbError
 
 
@@ -26,6 +27,10 @@ class OutputIn(BaseModel):
 class UsdbIn(BaseModel):
     user: str = ""
     password: str | None = None  # пусто или нет поля — «не менять» (при том же логине)
+
+
+class YandexIn(BaseModel):
+    token: str = ""  # пусто: PUT — удалить, test — проверить сохранённый
 
 
 router = APIRouter(prefix="/api/settings", tags=["Настройки"])
@@ -148,4 +153,47 @@ def put_usdb(body: UsdbIn, request: Request):
 def test_usdb(body: UsdbIn, request: Request):
     ctx = ctx_of(request)
     _usdb_login(ctx, _usdb_account(ctx, body))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------- Яндекс Музыка
+
+
+def _yandex_check(ctx: AppContext, ym_key: str) -> None:
+    """Проверить токен Яндекс Музыки; неверный — 400 ``field=token``, сеть — 503."""
+    try:
+        ctx.yandex_factory(ym_key).check()
+    except musiclink.MusicLinkError as e:
+        err = link_api_error(e, field="token")
+        if err.status == 400:
+            err.extra = {"field": "token"}
+        raise err from None
+
+
+def _yandex_public(ctx: AppContext) -> dict:
+    return {"has_token": bool(ctx.settings.get_yandex())}
+
+
+@router.get("/yandex", summary="Яндекс Музыка: есть ли токен (сам токен не возвращается)")
+def get_yandex(request: Request):
+    return _yandex_public(ctx_of(request))
+
+
+@router.put("/yandex", summary="Сохранить токен Яндекс Музыки (только принятый); пустой — удалить")
+def put_yandex(body: YandexIn, request: Request):
+    ctx = ctx_of(request)
+    ym_key = body.token.strip()
+    if ym_key:
+        _yandex_check(ctx, ym_key)
+    ctx.settings.set_yandex(ym_key or None)
+    return _yandex_public(ctx)
+
+
+@router.post("/yandex/test", summary="Проверить токен Яндекс Музыки (не сохраняет); пустой — сохранённый")
+def test_yandex(body: YandexIn, request: Request):
+    ctx = ctx_of(request)
+    ym_key = body.token.strip() or ctx.settings.get_yandex()
+    if not ym_key:
+        raise ApiError(400, musiclink.MSG_NEED_LOGIN, field="token")
+    _yandex_check(ctx, ym_key)
     return {"ok": True}

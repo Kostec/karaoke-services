@@ -14,9 +14,11 @@ CLI для воркера (отменяемый подпроцесс)::
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -26,7 +28,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 __all__ = [
     "MusicLinkError", "LinkKind", "LinkTrack", "LinkInfo", "classify", "ytdlp_info",
-    "YandexMusic", "is_yandex", "main",
+    "YandexMusic", "is_yandex", "main", "check_public_host", "RESOLVER",
     "YANDEX_KINDS", "MSG_NEED_LOGIN", "MSG_REJECTED", "MSG_NO_RIGHTS", "MSG_UNAVAILABLE",
 ]
 
@@ -41,6 +43,7 @@ MSG_NO_RIGHTS = "Яндекс Музыка не отдала трек: нужн�
 MSG_UNAVAILABLE = "Яндекс Музыка недоступна, попробуйте позже"
 MSG_NOT_FOUND = "Яндекс Музыка не нашла ничего по этой ссылке"
 MSG_YTDLP = "Не удалось получить данные по ссылке: "
+MSG_HOME_NETWORK = "Ссылки на адреса домашней сети не поддерживаются"
 
 
 class MusicLinkError(Exception):
@@ -99,13 +102,71 @@ def _clean_query(query: str) -> str:
     return urlencode(kept)
 
 
-def classify(url: str) -> LinkKind:
-    """Определить, кто обслуживает ссылку; ``MusicLinkError`` — ссылка не годится."""
+def _system_resolve(host: str) -> list[str]:
+    """Адреса хоста по DNS; не резолвится — пустой список (пусть дальше скажет yt-dlp)."""
+    try:
+        return [str(info[4][0]) for info in socket.getaddrinfo(host, None)]
+    except (OSError, UnicodeError):
+        return []
+
+
+# Резолвер classify: хост → список IP-строк. Шов для тестов (подменяется в tests/conftest.py).
+RESOLVER: Callable[[str], list[str]] = _system_resolve
+
+
+def _is_home_ip(value: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(value.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
+
+
+def check_public_host(host: str, resolver: Callable[[str], list[str]] | None = None) -> None:
+    """Защита от SSRF: адреса домашней сети (loopback, частные, link-local, ``.local``) —
+    ``MusicLinkError``; и по литералу IP, и по результату DNS."""
+    host = (host or "").strip().strip("[]").rstrip(".").lower()
+    if host == "localhost" or host.endswith((".localhost", ".local")) or _is_home_ip(host):
+        raise MusicLinkError(MSG_HOME_NETWORK)
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return  # литерал IP уже проверен
+    except ValueError:
+        pass
+    if any(_is_home_ip(a) for a in (resolver or RESOLVER)(host)):
+        raise MusicLinkError(MSG_HOME_NETWORK)
+
+
+_YT_HOST = re.compile(r"^(?:(?:www|m|music)\.)?youtube\.com$")
+# Параметры списка у ссылки на одно видео («…watch?v=X&list=Y»): трек — один, список — нет.
+_YT_LIST_PARAMS = {"list", "index", "start_radio"}
+
+
+def _single_video_query(host: str, path: str, query: str) -> str:
+    """У ссылки YouTube на одно видео убрать параметры плейлиста."""
+    pairs = parse_qsl(query, keep_blank_values=True)
+    single = ((_YT_HOST.match(host) and path.rstrip("/") == "/watch" and any(k == "v" and v for k, v in pairs))
+              or (host == "youtu.be" and path.strip("/") != ""))
+    if not single:
+        return query
+    return urlencode([(k, v) for k, v in pairs if k not in _YT_LIST_PARAMS])
+
+
+def classify(url: str, resolver: Callable[[str], list[str]] | None = None) -> LinkKind:
+    """Определить, кто обслуживает ссылку; ``MusicLinkError`` — ссылка не годится.
+    ``resolver`` — хост → IP (по умолчанию ``RESOLVER``): ссылки в домашнюю сеть отклоняются."""
     raw = (url or "").strip()
-    parts = urlsplit(raw)
-    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+    try:
+        parts = urlsplit(raw)
+        hostname = parts.hostname
+    except ValueError:  # «http://[bad/» и подобное
+        raise MusicLinkError(MSG_NOT_HTTP) from None
+    if parts.scheme.lower() not in ("http", "https") or not hostname:
         raise MusicLinkError(MSG_NOT_HTTP)
-    host = parts.hostname.lower()
+    host = hostname.lower()
+    check_public_host(host, resolver)
     path = re.sub(r"/{2,}", "/", parts.path or "/")
     if _VK_HOST.match(host) and _is_vk_audio(path, parts.query):
         raise MusicLinkError(MSG_VK_AUDIO)
@@ -123,7 +184,8 @@ def classify(url: str) -> LinkKind:
                             {"user": m[1], "kind": m[2]})
         if m := _Y_UUID_PLAYLIST.match(path):
             return LinkKind("yandex_playlist", f"{base}/playlists/{m[1]}", {"uuid": m[1]})
-    clean = urlunsplit((parts.scheme.lower(), parts.netloc, parts.path, _clean_query(parts.query), ""))
+    query = _single_video_query(host, path, _clean_query(parts.query))
+    clean = urlunsplit((parts.scheme.lower(), parts.netloc, parts.path, query, ""))
     return LinkKind("ytdlp", clean, {})
 
 

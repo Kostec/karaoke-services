@@ -7,6 +7,16 @@ import time
 args = sys.argv[1:]
 url = args[-1]
 
+NET_ERRORS = {
+    "net-webpage": "ERROR: [youtube] abc: Unable to download webpage: HTTP Error 502: Bad Gateway",
+    "net-dns": "ERROR: [generic] Unable to resolve: <urlopen error [Errno -3] Temporary failure in name resolution>",
+    "net-timeout": "ERROR: [vk] 1_2: Read timed out. (read timeout=20.0)",
+    "net-conn": "ERROR: [rutube] x: Connection reset by peer",
+}
+for marker, line in NET_ERRORS.items():
+    if marker in url:
+        print(line, file=sys.stderr)
+        sys.exit(1)
 if "error" in url:
     print("WARNING: что-то не так", file=sys.stderr)
     print("ERROR: [generic] Unsupported URL: " + url, file=sys.stderr)

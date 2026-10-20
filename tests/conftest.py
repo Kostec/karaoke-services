@@ -13,6 +13,13 @@ if _TESTS not in sys.path:
 
 import pytest  # noqa: E402
 
+from karaoke_core import musiclink  # noqa: E402
+
+# DNS в тестах не трогаем: classify считает все хосты нерезолвящимися (проверку адресов
+# домашней сети по DNS тесты задают своим резолвером). Модульно — до импорта тестов,
+# у которых classify зовётся при загрузке модуля.
+musiclink.RESOLVER = lambda host: []
+
 
 @pytest.fixture(autouse=True)
 def _no_busy_waits(monkeypatch):

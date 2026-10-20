@@ -1,5 +1,6 @@
 // Папка с музыкой (G08): чистая логика без DOM — раскладка файлов на группы, исполнитель/название
-// трека, ограничения и подписи строк. DOM и сеть — в import.js.
+// трека, ограничения и подписи строк. Те же строки — у треков по ссылке («Импорт → Ссылка»):
+// вместо файла у них audio_url (initialLinkTrack). DOM и сеть — в import.js.
 //
 // Раскладка повторяет правила разбора сборника на сервере (core/karaoke_core/songpack.py):
 // песня — .txt с #TITLE и нотами (кроме *.lyrics.txt), её файлы — по заголовкам без учёта регистра,
@@ -180,7 +181,25 @@ export function withDuration(state, duration) {
   return { duration: sec, ...timing(state.hit, sec) };
 }
 
-/** Поля generateForm для трека: params — общие на группу, lrc_timing — свой у трека. */
+/**
+ * Строка трека по ссылке (элемент tracks ответа POST /api/link/inspect): та же логика, что у mp3
+ * из папки, но звук — audio_url (url), длительность и «уже есть» известны сразу, лимита размера нет.
+ */
+export function initialLinkTrack(track) {
+  const artist = String(track?.artist ?? '').trim(), title = String(track?.title ?? '').trim();
+  const state = initialTrack(track?.url || '', 0, { artist, title, needArtist: !artist }, 0);
+  const sec = Number(track?.duration);
+  return {
+    ...state, url: track?.url || '', thumbnail: track?.thumbnail || null,
+    duration: sec > 0 ? sec : null,
+    ...withExisting(state, track?.existing_song_id),
+  };
+}
+
+/**
+ * Поля generateForm для трека: params — общие на группу, lrc_timing — свой у трека.
+ * Звук — файл (mp3 из папки) или, без файла, audio_url = state.url (трек по ссылке).
+ */
 export function trackFields(state, file, params) {
   const hit = state.hit;
   const fromLrc = hit?.synced ? lrcPlainText(hit.synced) : '';
@@ -188,7 +207,9 @@ export function trackFields(state, file, params) {
   return {
     artist: state.artist.trim(), title: state.title.trim(),
     lyrics: fromLrc || hit?.text || '',
-    audio: file,
+    audio: file || undefined,
+    audio_url: file ? undefined : (state.url || undefined),
+    cover_url: file || !state.url ? undefined : (state.thumbnail || undefined), // обложка со ссылки
     params: { ...params, lrc_timing: !!held && !!state.lrcTiming },
     replace: !!state.replace,
     song_id: undefined,

@@ -4,7 +4,8 @@
   ULTRASINGER_CMD  команда UltraSinger (по умолчанию ``python $ULTRASINGER_DIR/src/UltraSinger.py``)
   DEMUCS_CMD       команда demucs (по умолчанию ``python -m demucs.separate``)
   FFMPEG_CMD       ffmpeg (по умолчанию ``ffmpeg``)
-  YTDLP_CMD        yt-dlp для импорта (по умолчанию ``python -m yt_dlp``)
+  YTDLP_CMD        yt-dlp для импорта и ссылок (по умолчанию ``python -m yt_dlp``)
+  MUSICLINK_CMD    загрузка с Яндекс Музыки (по умолчанию ``python -m karaoke_core.musiclink``)
 """
 
 from __future__ import annotations
@@ -152,6 +153,9 @@ class JobContext:
     def ytdlp_cmd(self) -> list[str]:
         return self._cmd("YTDLP_CMD", [sys.executable, "-m", "yt_dlp"])
 
+    def musiclink_cmd(self) -> list[str]:
+        return self._cmd("MUSICLINK_CMD", [sys.executable, "-m", "karaoke_core.musiclink"])
+
     # ------------------------------------------------------------ лог и прогресс
 
     def log(self, job_id: int, text: str) -> None:
@@ -179,22 +183,28 @@ class JobContext:
     # ------------------------------------------------------------ процессы
 
     def run_command(self, job_id: int, cmd: list[str], *, tracker: ProgressTracker | None = None,
-                    cwd: str | Path | None = None, what: str = "UltraSinger") -> list[str]:
-        """Запустить процесс, вести лог и прогресс; код ≠ 0 → JobFailed. Возвращает хвост лога."""
+                    cwd: str | Path | None = None, what: str = "UltraSinger",
+                    extra_env: Mapping[str, str] | None = None) -> list[str]:
+        """Запустить процесс, вести лог и прогресс; код ≠ 0 → JobFailed. Возвращает хвост лога.
+        ``extra_env`` дополняет окружение процесса и в лог не пишется (секреты — только так)."""
         self.log(job_id, "$ " + " ".join(shlex.quote(str(c)) for c in cmd))
         tail: deque[str] = deque(maxlen=40)
+        hidden_values = [v for v in (extra_env or {}).values() if v]
 
         def on_line(text: str, final: bool) -> None:
             if tracker is not None:
                 self.progress(job_id, tracker.feed(text))
             if final:
                 line = clean_line(text).strip()
+                for value in hidden_values:  # процесс мог напечатать секрет — в лог он не попадёт
+                    line = line.replace(value, "***")
                 if line:
                     tail.append(line)
                     self.log(job_id, line)
 
+        env = {**os.environ, **extra_env} if extra_env else None
         rc = run_command(cmd, on_line=on_line, should_cancel=lambda: self.check_cancel(job_id), cwd=cwd,
-                         fatal_grace=self.fatal_grace)
+                         env=env, fatal_grace=self.fatal_grace)
         if rc != 0:
             reason, message = explain_failure(list(tail), rc, what)
             last = "\n".join(list(tail)[-5:])

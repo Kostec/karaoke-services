@@ -106,11 +106,15 @@ export const api = {
   usdbAccount: () => request('GET', '/api/settings/usdb'),
   saveUsdbAccount: (body) => request('PUT', '/api/settings/usdb', body),
   testUsdbAccount: (body) => request('POST', '/api/settings/usdb/test', body),
+  yandexAccount: () => request('GET', '/api/settings/yandex'),
+  saveYandexAccount: (body) => request('PUT', '/api/settings/yandex', body),
+  testYandexAccount: (body) => request('POST', '/api/settings/yandex/test', body),
   usdbSearch: ({ artist = '', title = '', language = 'Russian', start = 0 } = {}) =>
     request('GET', `/api/usdb/search?${new URLSearchParams({ artist, title, language, start: String(start) })}`),
 
   importInspect: (form) => request('POST', '/api/import/inspect', form),
   importJob: (form) => request('POST', '/api/jobs/import', form),
+  linkInspect: (url) => request('POST', '/api/link/inspect', { url: String(url ?? '').trim() }),
 };
 
 // ---------------------------------------------------------------- общие помощники
@@ -133,18 +137,21 @@ export function pickParams(src = {}) {
 
 /**
  * multipart для POST /api/jobs/generate — единственное место сборки (форма и редактор текста).
- * {artist, title, lyrics, params, audio?, cover?, song_id?, replace?, lyrics_lrc?}
+ * {artist, title, lyrics, params, audio? | audio_url?, cover?, song_id?, replace?, lyrics_lrc?}
+ * audio_url — ссылка на трек вместо файла (звук скачает воркер); при файле не уходит.
  * lyrics_lrc — LRC файловой частью: строка — взять её ('' — сбросить сохранённый), нет — не трогать.
  */
-export function generateForm({ artist, title, lyrics = '', params = {}, audio, cover, song_id: songId, replace = false,
-  lyrics_lrc: lrc }) {
+export function generateForm({ artist, title, lyrics = '', params = {}, audio, audio_url: audioUrl, cover,
+  cover_url: coverUrl, song_id: songId, replace = false, lyrics_lrc: lrc }) {
   const fd = new FormData();
   fd.append('artist', artist);
   fd.append('title', title);
   if (audio) fd.append('audio', audio);
+  else if (typeof audioUrl === 'string' && audioUrl.trim()) fd.append('audio_url', audioUrl.trim());
   fd.append('lyrics', lyrics);
   if (typeof lrc === 'string') fd.append('lyrics_lrc', new Blob([lrc], { type: 'text/plain' }), 'lyrics.lrc');
   if (cover) fd.append('cover', cover);
+  else if (typeof coverUrl === 'string' && coverUrl.trim()) fd.append('cover_url', coverUrl.trim()); // своя важнее
   fd.append('params', JSON.stringify(pickParams(params)));
   if (songId) fd.append('song_id', songId);
   fd.append('replace', replace ? 'true' : 'false');

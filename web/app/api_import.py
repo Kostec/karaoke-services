@@ -25,10 +25,10 @@ from karaoke_core import naming, songpack, ultrastar
 from karaoke_core.http import HttpError
 from karaoke_core.paths import DataPaths, INPUT_AUDIO, INPUT_COVER_STEM
 
-from .api_jobs import CHUNK, MB, Staging, copy_limited, cover_ext_of, ctx_of, is_mp3, queue_duplicate
+from .api_jobs import CHUNK, MB, Staging, copy_limited, ctx_of, download_cover, is_mp3, queue_duplicate
 from .api_usdb import usdb_api_error
 from .context import ApiError, AppContext, song_key
-from .params import MAX_COVER_MB, max_import_mb
+from .params import max_import_mb
 from .usdb import UsdbError
 
 log = logging.getLogger("karaoke.web")
@@ -238,24 +238,6 @@ def _has_instrumental(txt_path: Path) -> bool:
     return songpack.resolve_file(txt_path.parent, value, songpack.AUDIO_EXTS) is not None
 
 
-def _download_cover(ctx: AppContext, url: str, dest_dir: Path) -> str | None:
-    """Обложка по ссылке (``co=`` или usdb) в ``dest_dir``; не вышло — без обложки."""
-    tmp = dest_dir / ".cover"
-    try:
-        ctx.http.download(url, tmp, max_bytes=MAX_COVER_MB * MB, timeout=30)
-        with open(tmp, "rb") as f:
-            ext = cover_ext_of(f.read(16))
-    except (HttpError, OSError):
-        tmp.unlink(missing_ok=True)
-        return None
-    if ext is None:
-        tmp.unlink(missing_ok=True)
-        return None
-    name = f"cover.{ext}"
-    tmp.replace(dest_dir / name)
-    return name
-
-
 def _from_usdb(ctx: AppContext, work: Path, usdb_id: int | None) -> list[songpack.FoundSong]:
     if not usdb_id or usdb_id <= 0:
         raise ApiError(400, "Укажите id песни в usdb", field="usdb_id")
@@ -407,7 +389,7 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
             ext = PurePosixPath(s["cover_rel"]).suffix.lower().replace(".jpeg", ".jpg")
             shutil.copyfile(_inside(work, s["cover_rel"]), staging.path("cover", f"{INPUT_COVER_STEM}{ext}"))
         elif s.get("cover_url"):
-            name = _download_cover(ctx, s["cover_url"], staging.dir)  # не скачалась — без обложки
+            name = download_cover(ctx, s["cover_url"], staging.dir)  # не скачалась — без обложки
             if name:
                 staging.path("cover", name)
     except BaseException:

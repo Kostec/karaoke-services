@@ -1,10 +1,13 @@
-// Раздел «Настройки»: папка результата (SMB-шара или локальная папка ПК) с проверкой; учётка usdb.
+// Раздел «Настройки»: папка результата (SMB-шара или локальная папка ПК) с проверкой; учётка usdb;
+// ключ доступа Яндекс Музыки (OAuth-токен аккаунта — сервис не спрашивает логин и пароль Яндекса).
 
 import { api } from './api.js';
-import { h, clear, toast, field } from './ui.js';
+import { h, clear, toast, field, confirmDialog } from './ui.js';
+import { yandexSaveAction, YM_REMOVE_CONFIRM, YM_KEPT, YM_EMPTY } from './link-logic.js';
 
 let root, hooks, f = {}, current = null, built = false;
 let u = {}, usdbCurrent = null; // карточка «usdb»
+let y = {}, ymCurrent = null; // карточка «Яндекс Музыка»: {has_token}
 
 export function mount(section, ctx) {
   root = section;
@@ -26,6 +29,12 @@ export async function show() {
     fillUsdb(usdbCurrent);
   } catch (e) {
     showUsdbResult('err', `Не удалось загрузить учётку usdb: ${e.detail}`);
+  }
+  try {
+    ymCurrent = await api.yandexAccount();
+    fillYandex(ymCurrent);
+  } catch (e) {
+    showYandexResult('err', `Не удалось загрузить настройки Яндекс Музыки: ${e.detail}`);
   }
 }
 
@@ -68,7 +77,7 @@ function build() {
   form.addEventListener('submit', (e) => { e.preventDefault(); submit(true); });
   for (const el of [f.kindSmb, f.kindLocal]) el.addEventListener('change', updateKind);
   for (const el of [f.host, f.share, f.user, f.path]) el.addEventListener('input', updateKind);
-  clear(root).append(h('div', { class: 'view-head' }, h('h2', {}, 'Настройки')), f.loadErr, form, buildUsdb());
+  clear(root).append(h('div', { class: 'view-head' }, h('h2', {}, 'Настройки')), f.loadErr, form, buildUsdb(), buildYandex());
 }
 
 // ---------------------------------------------------------------- usdb
@@ -150,6 +159,93 @@ function showUsdbResult(kind, text) {
   u.result.className = `banner ${kind}`;
   u.result.textContent = text;
   u.result.hidden = false;
+}
+
+// ---------------------------------------------------------------- Яндекс Музыка
+
+const YM_HELP = 'https://yandex-music.readthedocs.io/en/main/token.html';
+
+function buildYandex() {
+  y.current = h('div', { class: 'small muted' });
+  y.key = h('input', { type: 'password', autocomplete: 'off', name: 'yandex-music-key', spellcheck: 'false' });
+  y.result = h('div', { class: 'banner', hidden: true, role: 'status' });
+  y.test = h('button', { type: 'button', onclick: () => submitYandex(false) }, 'Проверить');
+  y.save = h('button', { type: 'submit', class: 'primary' }, 'Сохранить');
+  const form = h('form', { class: 'card', novalidate: true },
+    h('h3', { style: 'margin-top:0' }, 'Яндекс Музыка'),
+    y.current,
+    h('p', { class: 'small muted' }, 'Для генерации по ссылкам music.yandex.ru (трек, альбом, плейлист) нужен ',
+      'OAuth-токен вашего аккаунта с подпиской Плюс. Логин и пароль Яндекса сюда не вводятся: токен получают ',
+      'сами, в браузере, ', h('a', { href: YM_HELP, target: '_blank', rel: 'noopener' }, 'по этой инструкции'),
+      ' — войти в Яндекс на oauth.yandex.ru и скопировать access_token из адресной строки.'),
+    field('Токен', y.key),
+    y.result,
+    h('div', { class: 'actions' }, y.test, y.save),
+    h('p', { class: 'small muted' }, 'Сохраняется только токен, который Яндекс Музыка приняла. Пустое поле и «Сохранить» — удалить токен (с подтверждением). ',
+      'Проверка с пустым полем проверяет сохранённый.'));
+  form.addEventListener('submit', (e) => { e.preventDefault(); submitYandex(true); });
+  return form;
+}
+
+function fillYandex(acc) {
+  y.key.value = '';
+  y.current.textContent = acc?.has_token ? 'Токен сохранён' : 'Токен не задан';
+  y.key.placeholder = acc?.has_token ? 'сохранён — впишите новый, чтобы заменить' : '';
+}
+
+function yandexBody() {
+  const b = {};
+  b['token'] = y.key.value.trim();
+  return b;
+}
+
+async function submitYandex(save) {
+  if (save) {
+    const action = yandexSaveAction(y.key.value, ymCurrent?.has_token);
+    if (action === 'empty') {
+      showYandexResult('err', YM_EMPTY);
+      y.key.focus();
+      return;
+    }
+    if (action === 'confirm-remove' && !(await confirmDialog(YM_REMOVE_CONFIRM, 'Удалить токен', { danger: true }))) {
+      showYandexResult('warn', YM_KEPT);
+      y.key.focus();
+      return;
+    }
+  }
+  const btn = save ? y.save : y.test;
+  y.test.disabled = y.save.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = save ? 'Сохранение…' : 'Проверка…';
+  y.result.hidden = true;
+  try {
+    if (save) {
+      const removing = !y.key.value.trim();
+      ymCurrent = await api.saveYandexAccount(yandexBody());
+      fillYandex(ymCurrent);
+      showYandexResult('ok', removing ? 'Токен Яндекс Музыки удалён' : 'Сохранено: Яндекс Музыка приняла токен');
+      toast(removing ? 'Токен Яндекс Музыки удалён' : 'Токен Яндекс Музыки сохранён');
+    } else {
+      await api.testYandexAccount(yandexBody());
+      showYandexResult('ok', 'Проверка пройдена: Яндекс Музыка приняла токен');
+    }
+  } catch (e) {
+    showYandexResult('err', e.detail);
+    if (e.data?.field === 'token') {
+      y.key.classList.add('invalid');
+      y.key.addEventListener('input', () => y.key.classList.remove('invalid'), { once: true });
+      y.key.focus();
+    }
+  } finally {
+    btn.textContent = label;
+    y.test.disabled = y.save.disabled = false;
+  }
+}
+
+function showYandexResult(kind, text) {
+  y.result.className = `banner ${kind}`;
+  y.result.textContent = text;
+  y.result.hidden = false;
 }
 
 function fill(t) {

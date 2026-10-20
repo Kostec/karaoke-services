@@ -54,9 +54,11 @@ class Env:
             return LocalStorage(root, target_id=target.target_id, label=target.label)
         return make_storage(target)
 
-    def client(self, password: str = "", *, storage_factory=None, **kw) -> TestClient:
+    def client(self, password: str = "", *, storage_factory=None, extra_env: dict | None = None,
+               **kw) -> TestClient:
         # Умолчания — из .env.example (единственный источник), поверх — тестовые значения.
-        env = {**ENV_EXAMPLE, "OUTPUT_KIND": "local", "WEB_PASSWORD": password, "MAX_UPLOAD_MB": "1"}
+        env = {**ENV_EXAMPLE, "OUTPUT_KIND": "local", "WEB_PASSWORD": password, "MAX_UPLOAD_MB": "1",
+               **(extra_env or {})}
         app = create_app(data_dir=self.data, env=env, storage_factory=storage_factory or self.factory, **kw)
         return TestClient(app)
 
