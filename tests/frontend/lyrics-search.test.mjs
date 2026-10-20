@@ -3,7 +3,34 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   stripLrc, usableHits, previewLines, fmtSeconds, searchBlocker, needsReplaceConfirm,
+  lrcPlainText, lrcTimingDefault, lrcAfterEdit, DURATION_MISMATCH,
 } from '../../web/static/js/lyrics-search.js';
+
+test('lrcPlainText: строка с N метками — N раз, по порядку времени (как --lyrics_timing форка)', () => {
+  const lrc = '[ar:Кино]\n[offset:+200]\n[00:01.00]Раз\n[00:05.00][00:02.50]Припев  дважды\n[00:03.00]\n[00:04.00]Два\n';
+  assert.equal(lrcPlainText(lrc), 'Раз\nПрипев дважды\n\nДва\nПрипев дважды');
+  assert.equal(lrcPlainText('просто текст'), '');
+});
+
+test('lrcTimingDefault: правило 3 с между длительностью LRCLIB и mp3', () => {
+  assert.deepEqual(lrcTimingDefault(200, 203), { checked: true, hint: '' });
+  assert.deepEqual(lrcTimingDefault(200, 196.9), { checked: false, hint: DURATION_MISMATCH });
+  assert.equal(DURATION_MISMATCH, 'Длительность не совпадает с mp3 — тайминги, скорее всего, от другой версии');
+  assert.equal(lrcTimingDefault(null, 200).checked, false);
+  assert.equal(lrcTimingDefault(200, null).checked, false);
+});
+
+test('lrcAfterEdit: правка текста LRC держит, очистка поля — сбрасывает', () => {
+  const held = { lrc: '[00:01.00]Раз', duration: 200 };
+  assert.equal(lrcAfterEdit(held, 'Раз, исправлено'), held);
+  assert.equal(lrcAfterEdit(held, '  \n '), null);
+  assert.equal(lrcAfterEdit(null, 'текст'), null);
+});
+
+test('usableHits: synced передаётся дальше', () => {
+  const [hit] = usableHits([{ id: 1, text: 'Раз', synced: '[00:01.00]Раз' }]);
+  assert.equal(hit.synced, '[00:01.00]Раз');
+});
 
 test('stripLrc: метки времени срезаются, метаданные убираются', () => {
   const lrc = '[ar:Кино]\r\n[ti:Звезда]\r\n[00:12.34] Песен ещё не написанных\n[00:15.00]\n\n\n[00:17.5]Сколько?\n[01:02.003][01:05.00]Скажи  \n';

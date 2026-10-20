@@ -21,7 +21,8 @@ from karaoke_worker import selfcheck  # noqa: E402
 ARG_OPTIONS_OK = '''
 def arg_options():
     short = "hi:o:amv:"
-    long = ["ifile=", "ofile=", "language=", "lyrics=", "vad_onset=", "vad_offset=", "midi"]
+    long = ["ifile=", "ofile=", "language=", "lyrics=", "vad_onset=", "vad_offset=", "lyrics_timing=",
+            "midi"]
     return long, short
 '''
 
@@ -155,6 +156,15 @@ def test_missing_vad_flag_is_reported_by_name(tmp_path):
     assert len(bad) == 1
     assert "--vad_offset" in bad[0].message
     assert "--lyrics" not in bad[0].message
+
+
+def test_missing_lyrics_timing_flag_is_reported_by_name(tmp_path):
+    us = make_ultrasinger(tmp_path, arg_options=ARG_OPTIONS_OK.replace('"lyrics_timing=",', ""))
+
+    bad = failed(selfcheck.run_checks(us))
+
+    assert len(bad) == 1
+    assert "--lyrics_timing" in bad[0].message
 
 
 def test_intact_branch_passes_all_checks(tmp_path):

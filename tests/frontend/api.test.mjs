@@ -5,7 +5,7 @@ import { PARAM_KEYS, pickParams, generateForm, errorText, ApiError } from '../..
 
 test('PARAM_KEYS и pickParams: только известные ключи, undefined отбрасывается', () => {
   assert.deepEqual(PARAM_KEYS, ['whisper_model', 'language', 'compute_type', 'batch_size', 'align_model',
-    'vad_onset', 'vad_offset', 'demucs_model', 'keep_debug']);
+    'vad_onset', 'vad_offset', 'demucs_model', 'keep_debug', 'lrc_timing']);
   assert.deepEqual(pickParams({ whisper_model: 'm', rel_dir: 'x', language: undefined, vad_onset: null }),
     { whisper_model: 'm', vad_onset: null });
 });
@@ -26,6 +26,15 @@ test('generateForm: поля multipart как ждёт POST /api/jobs/generate',
   assert.equal(plain.get('replace'), 'false');
   assert.equal(plain.has('song_id'), false);
   assert.equal(plain.has('audio'), false);
+  assert.equal(plain.has('lyrics_lrc'), false);
+});
+
+test('generateForm: lyrics_lrc — файловой частью (пустая строка — сбросить сохранённый)', async () => {
+  const fd = generateForm({ artist: 'A', title: 'T', lyrics: 'Раз', lyrics_lrc: '[00:01.00]Раз', params: {} });
+  assert.ok(fd.get('lyrics_lrc') instanceof Blob);
+  assert.equal(await fd.get('lyrics_lrc').text(), '[00:01.00]Раз');
+  const reset = generateForm({ artist: 'A', title: 'T', lyrics: 'Раз', lyrics_lrc: '', params: {} });
+  assert.equal(await reset.get('lyrics_lrc').text(), '');
 });
 
 test('errorText: detail сервера, иначе message, иначе запасной текст', () => {

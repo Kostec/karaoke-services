@@ -42,6 +42,7 @@ def defaults(ctx: AppContext) -> dict:
         "vad_offset": None,
         "demucs_model": DEMUCS_MODELS[0],
         "keep_debug": False,
+        "lrc_timing": False,  # окна строк из LRC (--lyrics_timing), если строки совпали
     }
 
 
@@ -106,4 +107,5 @@ def parse_params(ctx: AppContext, raw: str | dict | None) -> dict:
     if p["demucs_model"] not in DEMUCS_MODELS:
         raise ApiError(400, "Неизвестная модель Demucs: " + str(p["demucs_model"]), field="demucs_model")
     p["keep_debug"] = bool(p["keep_debug"])
+    p["lrc_timing"] = bool(p["lrc_timing"])
     return p

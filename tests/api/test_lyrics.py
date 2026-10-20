@@ -38,7 +38,8 @@ def test_success_fields_and_request(lc, http):
     r = search(lc)
     assert r.status_code == 200
     assert r.json() == {"items": [{"id": 1, "artist": "Кино", "title": "Песня 1", "album": "Группа крови",
-                                   "duration": 285.0, "text": "Строка 1\nДальше"}]}
+                                   "duration": 285.0, "text": "Строка 1\nДальше",
+                                   "synced": None}]}
     [req] = http.requests
     assert req.query == {"track_name": "Звезда", "artist_name": "Кино"}
 
@@ -66,6 +67,15 @@ def test_only_lrc_is_stripped(lc, http):
     synced = "[ar:Кино]\n[00:12.34] Песен ещё не написанных\n[00:15.00]\n[00:17.5]Сколько?\n[01:02:03]Скажи\n"
     http.route("GET", BY_FIELDS, json=[hit(1, plainLyrics=None, syncedLyrics=synced)])
     assert search(lc).json()["items"][0]["text"] == "Песен ещё не написанных\n\nСколько?\nСкажи"
+
+
+def test_synced_lyrics_are_returned_next_to_plain_text(lc, http):
+    synced = "[00:01.00] Строка 1\r\n[00:02.50]Дальше\r\n"
+    http.route("GET", BY_FIELDS, json=[hit(1, syncedLyrics=synced), hit(2, syncedLyrics="без меток")])
+    a, b = search(lc).json()["items"]
+    assert a["text"] == "Строка 1\nДальше"
+    assert a["synced"] == "[00:01.00] Строка 1\n[00:02.50]Дальше"
+    assert b["synced"] is None, "текст без меток времени — не синхронизация"
 
 
 def test_nothing_found(lc, http):

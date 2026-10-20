@@ -31,6 +31,7 @@ class LyricsHit:
     album: str
     duration: float | None
     text: str
+    synced: str | None = None  # LRC с метками строк (syncedLyrics) или None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -94,4 +95,11 @@ class LrclibProvider:
         return LyricsHit(id=r.get("id"), artist=str(r.get("artistName") or ""), title=str(r.get("trackName") or ""),
                          album=str(r.get("albumName") or ""),
                          duration=float(duration) if isinstance(duration, (int, float)) else None,
-                         text=text)
+                         text=text, synced=synced_lrc(r.get("syncedLyrics")))
+
+
+def synced_lrc(raw) -> str | None:
+    """syncedLyrics → LRC с переводами строк ``\\n``; без меток времени — None."""
+    if not isinstance(raw, str) or not _TIME_TAG.search(raw):
+        return None
+    return clean_text(raw)

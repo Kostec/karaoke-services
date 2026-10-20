@@ -24,6 +24,7 @@ router = APIRouter(prefix="/api/jobs", tags=["Задания"])
 CHUNK = 1 << 16
 SSE_TAIL_LINES = 500
 MB = 1024 * 1024
+INPUT_LRC = "lyrics.lrc"  # LRC с метками строк рядом с lyrics.txt (UTF-8, его читает --lyrics_timing)
 
 
 def ctx_of(request: Request) -> AppContext:
@@ -71,10 +72,10 @@ def _copy_limited(src: BinaryIO, dest: Path, limit_mb: int, field: str) -> None:
             out.write(chunk)
 
 
-def _read_text_file(upload: UploadFile) -> str:
+def _read_text_file(upload: UploadFile, field: str = "lyrics") -> str:
     data = upload.file.read(MAX_LYRICS_MB * MB + 1)
     if len(data) > MAX_LYRICS_MB * MB:
-        raise _too_big(MAX_LYRICS_MB, "lyrics")
+        raise _too_big(MAX_LYRICS_MB, field)
     return ultrastar.decode(data)[0]
 
 
@@ -99,7 +100,7 @@ class _Staging:
 
     def copy_from(self, folder: Path) -> None:
         """Взять вход из прежней папки (in/ родителя или source/)."""
-        for key, name in (("audio", INPUT_AUDIO), ("lyrics", INPUT_LYRICS)):
+        for key, name in (("audio", INPUT_AUDIO), ("lyrics", INPUT_LYRICS), ("lrc", INPUT_LRC)):
             if (folder / name).is_file():
                 shutil.copyfile(folder / name, self.path(key, name))
         for cover in sorted(folder.glob(f"{INPUT_COVER_STEM}.*"))[:1]:
@@ -144,6 +145,7 @@ def generate(request: Request,
              lyrics: str | None = Form(None),
              lyrics_file: UploadFile | None = File(None),
              cover: UploadFile | None = File(None),
+             lyrics_lrc: UploadFile | None = File(None),
              params: str = Form("{}"),
              song_id: str | None = Form(None),
              replace: bool = Form(False)):
@@ -161,6 +163,9 @@ def generate(request: Request,
 
     text = _read_text_file(lyrics_file) if lyrics_file is not None and lyrics_file.filename else (lyrics or "")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lrc = None  # None — LRC из формы не пришёл: перегенерация берёт сохранённый из source/
+    if lyrics_lrc is not None and lyrics_lrc.filename:
+        lrc = _read_text_file(lyrics_lrc, "lyrics_lrc").replace("\r\n", "\n").replace("\r", "\n")
     has_audio = audio is not None and bool(audio.filename)
     own_src = ctx.paths.source(source.rel_dir) if source and source.own_song_id else None
     if source and not source.own_song_id and not text.strip():
@@ -198,6 +203,10 @@ def generate(request: Request,
         staging.drop("lyrics")  # текст — всегда из формы
         if text.strip():
             staging.path("lyrics", INPUT_LYRICS).write_text(text, "utf-8")
+        if lrc is not None or not text.strip():
+            staging.drop("lrc")
+        if lrc is not None and lrc.strip() and text.strip():
+            staging.path("lrc", INPUT_LRC).write_text(lrc, "utf-8")
         if cover_ext:
             staging.drop("cover")
             cover.file.seek(0)

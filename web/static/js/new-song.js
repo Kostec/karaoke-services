@@ -6,6 +6,7 @@ import { readId3, planAutofill } from './id3.js';
 import {
   usableHits, previewLines, fmtSeconds, searchBlocker, needsReplaceConfirm,
   NOTHING_FOUND, UNAVAILABLE, REPLACE_QUESTION,
+  lrcPlainText, lrcTimingDefault, lrcAfterEdit, SYNCED_LABEL, LRC_TIMING_LABEL,
 } from './lyrics-search.js';
 
 
@@ -24,6 +25,11 @@ let autoVals = {};
 let tagCover = null;
 let tagsSeq = 0;
 let previewUrl = null;
+// G06: LRC вставленного варианта LRCLIB держится рядом с текстом. {lrc: string, duration} — из
+// поиска; {lrc: null} — перегенерация с сохранённым source/lyrics.lrc; null — LRC нет.
+let lrcHeld = null;
+let audioDuration = null; // длительность mp3 из формы, с
+let durationSeq = 0;
 const COVER_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 
 export function mount(section) {
@@ -77,6 +83,9 @@ async function build() {
   f.lyricsErr = h('div', { class: 'field-error', hidden: true });
   f.findLyrics = h('button', { type: 'button', onclick: onFindLyrics }, 'Найти текст');
   f.findHint = h('span', { class: 'small muted' });
+  f.lrc_timing = h('input', { type: 'checkbox', name: 'lrc_timing' });
+  f.lrcHint = h('div', { class: 'small muted' });
+  f.lrcBox = h('div', { hidden: true }, h('label', { class: 'check' }, f.lrc_timing, LRC_TIMING_LABEL), f.lrcHint);
 
   f.cover = h('input', { type: 'file', name: 'cover', accept: '.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp' });
   f.coverErr = h('div', { class: 'field-error', hidden: true });
@@ -114,7 +123,7 @@ async function build() {
       f.lyrics,
       h('div', { class: 'inline-file' }, h('span', { class: 'small muted' }, 'или файл:'), f.lyricsFile,
         f.findLyrics, f.findHint),
-      f.lyricsErr),
+      f.lyricsErr, f.lrcBox),
     f.lyricsWarn,
     field('Обложка', f.cover, d.max_cover_mb ? `jpg, png или webp до ${d.max_cover_mb} МБ, необязательно` : 'jpg, png или webp, необязательно'), f.coverErr, f.coverPreview,
     h('div', { class: 'row2' }, field('Модель Whisper', f.whisper_model), field('Язык песни', f.language)),
@@ -142,9 +151,14 @@ async function build() {
       onName();
     });
   }
-  f.lyrics.addEventListener('input', updateLyricsState);
+  f.lyrics.addEventListener('input', () => {
+    setLrc(lrcAfterEdit(lrcHeld, f.lyrics.value));
+    updateLyricsState();
+  });
+  f.lrc_timing.addEventListener('change', () => { f.lrcHint.textContent = ''; });
   f.lyricsFile.addEventListener('change', onLyricsFile);
   f.audio.addEventListener('change', async () => {
+    readAudioDuration(f.audio.files[0]);
     if (await checkAudio()) autofillFromTags(f.audio.files[0]);
   });
   f.cover.addEventListener('change', async () => { await checkCover(); updateCoverPreview(); });
@@ -186,6 +200,9 @@ function resetForm() {
   tagsSeq++;
   f.tagsHint.hidden = true;
   updateCoverPreview();
+  audioDuration = null;
+  durationSeq++;
+  setLrc(null);
   for (const e of [f.audioErr, f.coverErr, f.lyricsErr, f.artistErr, f.titleErr]) e.hidden = true;
   for (const e of [f.artist, f.title]) e.classList.remove('invalid');
   document.getElementById('new-title').textContent = 'Новая песня';
@@ -214,6 +231,8 @@ async function loadRegen(songId) {
       try { text = (await api.lyrics(songId)).text; } catch (e) { toast(`Текст не загрузился: ${errorText(e)}`, 'err'); }
     }
     f.lyrics.value = text || '';
+    // тайминги из сохранённого source/lyrics.lrc: сервер возьмёт его сам, галочка — из params песни
+    if (song.params?.lrc_timing && f.lyrics.value.trim()) setLrc({ lrc: null, duration: null }, false);
     f.regenBanner.textContent = `Перегенерация «${songName(song.artist, song.title)}». После успеха старая версия уйдёт в корзину.`;
     f.audioHint.textContent = song.own
       ? 'Можно не выбирать: возьмётся mp3 из исходников песни.'
@@ -281,26 +300,70 @@ async function onFindLyrics() {
   }
   dlg.status.textContent = 'Выберите вариант — текст попадёт в поле «Текст песни».';
   for (const hit of hits) {
-    const meta = [hit.album, fmtSeconds(hit.duration)].filter(Boolean).join(' · ');
+    const meta = [hit.album, fmtSeconds(hit.duration), hit.synced ? SYNCED_LABEL : ''].filter(Boolean).join(' · ');
     dlg.list.append(h('div', { class: 'card', style: 'margin: 0;' },
       h('div', {}, h('strong', {}, songName(hit.artist, hit.title))),
       meta ? h('div', { class: 'small muted' }, meta) : null,
       h('div', { class: 'small', style: 'white-space: pre-line; margin: 6px 0;' }, previewLines(hit.text).join('\n')),
       h('div', { class: 'actions' },
-        h('button', { type: 'button', class: 'primary', onclick: () => insertLyrics(hit.text) }, 'Вставить'))));
+        h('button', { type: 'button', class: 'primary', onclick: () => insertLyrics(hit) }, 'Вставить'))));
   }
 }
 
-async function insertLyrics(text) {
+async function insertLyrics(hit) {
   lyricsDlg?.el.close();
+  // G06.1: у синхронизированного варианта текст строится из LRC (строка с N метками — N раз),
+  // иначе строки не совпадут с метками и тайминги не применятся
+  const fromLrc = hit.synced ? lrcPlainText(hit.synced) : '';
+  const text = fromLrc || hit.text;
   if (needsReplaceConfirm(f.lyrics.value) && f.lyrics.value.trim() !== text.trim()) {
     if (!(await confirmDialog(REPLACE_QUESTION, 'Заменить'))) return;
   }
+  setLrc(fromLrc ? { lrc: hit.synced, duration: hit.duration } : null);
   f.lyrics.value = text;
   f.lyricsErr.hidden = true;
   f.lyrics.classList.remove('invalid');
   updateLyricsState();
   toast('Текст вставлен');
+}
+
+/** Держать LRC (или сбросить: null); recheck — заново выставить галочку по правилу 3 с. */
+function setLrc(held, recheck = true) {
+  const changed = held !== lrcHeld;
+  lrcHeld = held;
+  f.lrcBox.hidden = !held;
+  if (!held) {
+    f.lrc_timing.checked = false;
+    f.lrcHint.textContent = '';
+  } else if (changed && recheck) {
+    applyLrcDefault();
+  }
+}
+
+function applyLrcDefault() {
+  if (!lrcHeld || lrcHeld.lrc == null) return;
+  const { checked, hint } = lrcTimingDefault(lrcHeld.duration, audioDuration);
+  f.lrc_timing.checked = checked;
+  f.lrcHint.textContent = hint;
+}
+
+/** Длительность mp3 из формы (метаданные через <audio>), затем — правило 3 с для LRC. */
+function readAudioDuration(file) {
+  const seq = ++durationSeq;
+  audioDuration = null;
+  if (!file) { applyLrcDefault(); return; }
+  const url = URL.createObjectURL(file);
+  const el = new Audio();
+  const done = (sec) => {
+    URL.revokeObjectURL(url);
+    if (seq !== durationSeq) return;
+    audioDuration = Number.isFinite(sec) && sec > 0 ? sec : null;
+    applyLrcDefault();
+  };
+  el.preload = 'metadata';
+  el.addEventListener('loadedmetadata', () => done(el.duration), { once: true });
+  el.addEventListener('error', () => done(null), { once: true });
+  el.src = url;
 }
 
 // ---------------------------------------------------------------- проверки
@@ -469,6 +532,7 @@ async function onLyricsFile() {
   }
   f.lyrics.value = text.replace(/\r\n?/g, '\n');
   f.lyricsFile.value = '';
+  setLrc(null); // текст из файла — не тот, к которому LRC
   updateLyricsState();
 }
 
@@ -484,6 +548,7 @@ function collectParams() {
     vad_offset: num(f.vad_offset),
     demucs_model: f.demucs_model.value,
     keep_debug: f.keep_debug.checked,
+    lrc_timing: !!lrcHeld && f.lrc_timing.checked,
   };
 }
 
@@ -536,6 +601,8 @@ async function onSubmit(ev) {
     artist, title, lyrics: f.lyrics.value, params: collectParams(),
     audio: f.audio.files[0], cover: f.cover.files[0] || tagCover,
     song_id: regen?.song_id, replace,
+    // LRC из поиска — с собой; при перегенерации без LRC — '' (сохранённый сбросить); иначе не трогать
+    lyrics_lrc: lrcHeld?.lrc ?? (regen && !lrcHeld ? '' : undefined),
   });
 
   submitting = true;

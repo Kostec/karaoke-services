@@ -15,6 +15,7 @@
 FAKE_US_TRACE — файл, куда дописываются «start <time>» / «end <time>» (проверка очереди).
 FAKE_US_ARGS — файл, куда пишутся аргументы командной строки (JSON).
 FAKE_US_INPUT — файл, куда копируется вход ``-i`` (что именно получил UltraSinger).
+``--lyrics_timing <file.lrc>`` принимается как у форка: файл должен читаться как UTF-8, иначе код 2.
 """
 
 import json
@@ -59,6 +60,13 @@ def main(argv: list[str]) -> int:
     if "--interactive" in argv:
         print("interactive mode is not allowed in tests", flush=True)
         return 2
+    if "--lyrics_timing" in args:
+        try:
+            Path(args["--lyrics_timing"]).read_text("utf-8-sig")
+        except (OSError, UnicodeError) as e:
+            print(f"bad --lyrics_timing: {e}", flush=True)
+            return 2
+        say(f"Line timing from LRC {args['--lyrics_timing']}")
     mode = os.environ.get("FAKE_US_MODE", "ok")
     trace("start")
     say("Checking GPU support.")

@@ -1,7 +1,7 @@
 """Проверка, что в UltraSinger на месте наши правки из ветки karaoke-local (история 56).
 
 Проверяется:
-- флаги --lyrics, --vad_onset, --vad_offset принимает getopt со списком UltraSinger.arg_options()
+- флаги --lyrics, --vad_onset, --vad_offset, --lyrics_timing принимает getopt со списком UltraSinger.arg_options()
   (тот же вызов, что в init_settings);
 - модуль modules.Speech_Recognition.lyrics_alignment импортируется;
 - midi_creator не падает на сегменте нулевой длины и не пишет такую ноту в MIDI;
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_ULTRASINGER_DIR = "/app/UltraSinger"
-REQUIRED_FLAGS = ("lyrics", "vad_onset", "vad_offset")
+REQUIRED_FLAGS = ("lyrics", "vad_onset", "vad_offset", "lyrics_timing")
 
 
 @dataclass
@@ -72,7 +72,7 @@ if missing:
 
 def check_flags(src: Path) -> CheckResult:
     """Флаги проверяются тем же getopt и тем же списком arg_options(), что и при запуске UltraSinger."""
-    name = "флаги --lyrics / --vad_onset / --vad_offset"
+    name = "флаги --lyrics / --vad_onset / --vad_offset / --lyrics_timing"
     ok, out = _run_in_ultrasinger(src, f"FLAGS = {REQUIRED_FLAGS!r}\n" + _FLAGS_CODE)
     if ok:
         return CheckResult(name, True, "флаги принимаются getopt UltraSinger")

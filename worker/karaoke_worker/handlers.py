@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path, PurePosixPath
 from typing import Protocol
@@ -18,7 +19,7 @@ from .progress import (IMPORT_PREPARE, PUBLISH, STAGE_DOWNLOAD, STAGE_POSTPROCES
                        DownloadTracker, ProgressTracker)
 
 __all__ = ["Handler", "GenerateHandler", "InstrumentalHandler", "ImportHandler", "PublishHandler",
-           "HANDLERS", "prepare_lyrics", "ultrasinger_args", "audio_only_copy", "to_mp3",
+           "HANDLERS", "prepare_lyrics", "ultrasinger_args", "parse_lrc", "lyrics_lines", "lrc_matches", "audio_only_copy", "to_mp3",
            "download_youtube"]
 
 
@@ -35,8 +36,69 @@ def prepare_lyrics(text: str) -> str:
     return text.strip("\n") + "\n" if text.strip() else ""
 
 
+# ---------------------------------------------------------------------------- тайминги LRC
+# Повтор один в один lrc_timing.parse_lrc / match_lrc_lines и lyrics_alignment.read_lyrics /
+# _norm_words форка UltraSinger (--lyrics_timing): ответ «совпало» здесь и там должен быть одним.
+
+LRC_NOT_USED = "Тайминги LRC не использованы: текст отличается"
+_LRC_TIME_TAG = re.compile(r"\[(\d+):(\d{1,2})(?:[.:](\d{1,3}))?\]")
+_LRC_OFFSET = re.compile(r"^\s*\[offset:\s*([+-]?\d+)\s*\]\s*$", re.IGNORECASE)
+_TAG_ONLY_LINE = re.compile(r"^\s*\[[^\]]*\]\s*$")  # [Chorus], [Припев]
+_LYRICS_TIME_TAG = re.compile(r"\[\d{1,2}:\d{2}(\.\d+)?\]")
+
+
+def _norm_line(text: str) -> str:
+    """Ключ строки: слова в нижнем регистре, ё→е, без знаков (не буква/цифра/_), через один пробел."""
+    words = (re.sub(r"[^\w]", "", w.lower().replace("ё", "е")) for w in (text or "").split())
+    return " ".join(w for w in words if w)
+
+
+def parse_lrc(text: str) -> list[tuple[float, str]]:
+    """LRC → [(секунды, строка)] по времени; строка с N метками даёт N записей; [offset:±мс]."""
+    offset, entries = 0.0, []
+    for raw in (text or "").lstrip("﻿").splitlines():
+        m = _LRC_OFFSET.match(raw)
+        if m:
+            offset = int(m.group(1)) / 1000
+            continue
+        line, times = raw.strip(), []
+        while m := _LRC_TIME_TAG.match(line):
+            value = int(m.group(1)) * 60 + int(m.group(2))
+            if m.group(3):
+                value += int(m.group(3)) / (10 ** len(m.group(3)))
+            times.append(value)
+            line = line[m.end():].lstrip()
+        if not times:
+            continue  # метаданные или строка без метки
+        line = re.sub(r"\s+", " ", line).strip()
+        entries += [(t, line) for t in times]
+    entries = [(round(max(t - offset, 0.0), 3), line) for t, line in entries]
+    entries.sort(key=lambda e: e[0])
+    return entries
+
+
+def lyrics_lines(text: str) -> list[str]:
+    """Строки текста так, как их читает UltraSinger: без меток, без [Припев] и пустых."""
+    out = []
+    for line in (text or "").lstrip("﻿").splitlines():
+        line = _LYRICS_TIME_TAG.sub("", line)
+        line = _TAG_ONLY_LINE.sub("", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if line and _norm_line(line):
+            out.append(line)
+    return out
+
+
+def lrc_matches(lyrics_text: str, lrc_text: str) -> bool:
+    """Совпадают ли строки текста со строками LRC (всё или ничего, как в форке)."""
+    lines = lyrics_lines(lyrics_text)
+    sung = [line for _, line in parse_lrc(lrc_text) if not _TAG_ONLY_LINE.match(line) and _norm_line(line)]
+    return bool(lines) and len(sung) == len(lines) and all(
+        _norm_line(a) == _norm_line(b) for a, b in zip(sung, lines))
+
+
 def ultrasinger_args(params: dict, in_mp3: Path, out_dir: Path, lyrics: Path | None,
-                     env: dict | None = None) -> list[str]:
+                     env: dict | None = None, *, lyrics_timing: Path | None = None) -> list[str]:
     """Аргументы UltraSinger (Решения §4). ``--interactive`` не передаётся никогда."""
     env = env or {}
 
@@ -57,6 +119,8 @@ def ultrasinger_args(params: dict, in_mp3: Path, out_dir: Path, lyrics: Path | N
             args += [flag, str(value)]
     if lyrics is not None:
         args += ["--lyrics", str(lyrics)]
+        if lyrics_timing is not None:
+            args += ["--lyrics_timing", str(lyrics_timing)]
     for key in ("vad_onset", "vad_offset"):
         if params.get(key) is not None:
             args += [f"--{key}", str(params[key])]
@@ -242,7 +306,21 @@ class GenerateHandler:
                 lyrics = work / "lyrics.txt"
                 lyrics.write_text(text, "utf-8")
 
-        cmd = ctx.ultrasinger_cmd() + ultrasinger_args(p, us_in, out, lyrics, dict(ctx.env))
+        timing = None
+        lrc = ctx.paths.abs(inputs["lrc"]) if inputs.get("lrc") else None
+        if lyrics is not None and p.get("lrc_timing") and lrc is not None and lrc.is_file():
+            try:
+                lrc_text = lrc.read_text("utf-8-sig")
+            except (OSError, UnicodeError):
+                lrc_text = ""
+            if lrc_matches(text, lrc_text):
+                timing = lrc
+                ctx.log(job.id, "Тайминги строк — из LRC")
+            else:
+                ctx.log(job.id, LRC_NOT_USED)
+
+        cmd = ctx.ultrasinger_cmd() + ultrasinger_args(p, us_in, out, lyrics, dict(ctx.env),
+                                                       lyrics_timing=timing)
         tail = ctx.run_command(job.id, cmd, tracker=tracker, cwd=ctx.ultrasinger_cwd())
         folders = [d for d in out.iterdir() if d.is_dir()]
         if len(folders) != 1:

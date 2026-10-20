@@ -35,7 +35,7 @@ export function usableHits(list) {
     if (!hit || hit.instrumental) continue;
     const text = stripLrc(hit.text);
     if (!text) continue;
-    out.push({ ...hit, text });
+    out.push({ ...hit, text, synced: typeof hit.synced === 'string' && hit.synced.trim() ? hit.synced : null });
     if (out.length >= MAX_HITS) break;
   }
   return out;
@@ -56,6 +56,57 @@ export function fmtSeconds(sec) {
 /** Почему поиск нельзя запустить (пусто — можно). */
 export function searchBlocker(artist, title) {
   return String(artist ?? '').trim() && String(title ?? '').trim() ? '' : NEED_FIELDS;
+}
+
+// ---------------------------------------------------------------- тайминги строк из LRC (G06)
+export const SYNCED_LABEL = 'есть синхронизация';
+export const LRC_TIMING_LABEL = 'Использовать тайминги строк';
+export const DURATION_MISMATCH = 'Длительность не совпадает с mp3 — тайминги, скорее всего, от другой версии';
+export const DURATION_UNKNOWN = 'Длительность mp3 неизвестна — включайте тайминги, если уверены в версии';
+export const MAX_DURATION_DIFF_S = 3;
+
+// Как lrc_timing.parse_lrc форка UltraSinger (--lyrics_timing): несколько меток на строку
+// разворачиваются по времени, [offset:±мс] сдвигает метки, строки без метки пропускаются.
+const LRC_TAG = /^\[(\d+):(\d{1,2})(?:[.:](\d{1,3}))?\]/;
+const LRC_OFFSET = /^\s*\[offset:\s*([+-]?\d+)\s*\]\s*$/i;
+
+/** LRC → [[секунды, строка]] по времени. */
+export function parseLrc(text) {
+  let offset = 0;
+  const entries = [];
+  for (const raw of String(text ?? '').replace(/^﻿+/, '').split(/\r\n|\r|\n/)) {
+    const off = LRC_OFFSET.exec(raw);
+    if (off) { offset = Number(off[1]) / 1000; continue; }
+    let line = raw.trim();
+    const times = [];
+    for (let m = LRC_TAG.exec(line); m; m = LRC_TAG.exec(line)) {
+      times.push(Number(m[1]) * 60 + Number(m[2]) + (m[3] ? Number(m[3]) / 10 ** m[3].length : 0));
+      line = line.slice(m[0].length).trimStart();
+    }
+    if (!times.length) continue;
+    line = line.replace(/\s+/g, ' ').trim();
+    for (const t of times) entries.push([t, line]);
+  }
+  return entries
+    .map(([t, line]) => [Math.round(Math.max(t - offset, 0) * 1000) / 1000, line])
+    .sort((a, b) => a[0] - b[0]);
+}
+
+/** Чистый текст для поля из LRC — строки в развёрнутом порядке (строка с N метками — N раз). */
+export function lrcPlainText(lrc) {
+  return tidy(parseLrc(lrc).map(([, line]) => line));
+}
+
+/** Галочка «Использовать тайминги строк»: включена, если длительности LRCLIB и mp3 разнятся ≤ 3 с. */
+export function lrcTimingDefault(lrcDuration, mp3Duration) {
+  const a = Number(lrcDuration), b = Number(mp3Duration);
+  if (!(a > 0) || !(b > 0)) return { checked: false, hint: DURATION_UNKNOWN };
+  return Math.abs(a - b) <= MAX_DURATION_DIFF_S ? { checked: true, hint: '' } : { checked: false, hint: DURATION_MISMATCH };
+}
+
+/** LRC, который держит форма, после правки поля: очищено — сброс, иначе тот же. */
+export function lrcAfterEdit(held, text) {
+  return held && String(text ?? '').trim() ? held : null;
 }
 
 /** Спрашивать ли «Заменить текст в поле?» перед вставкой. */

@@ -46,6 +46,62 @@ def test_generate_lyrics_file_in_cp1251(env, client):
     assert (env.data / r.json()["params"]["inputs"]["lyrics"]).read_text("utf-8") == "Привет, мир"
 
 
+def _lrc(text: str) -> dict:
+    """LRC уходит файловой частью multipart (как из generateForm): лимит — 413, а не 400 Starlette."""
+    return {"lyrics_lrc": ("lyrics.lrc", text.encode("utf-8"), "text/plain")}
+
+
+LRC = "[00:01.00]Тёплое место\n[00:03.00]Но улицы ждут\n"
+
+
+def test_generate_keeps_lrc_next_to_lyrics(env, client):
+    assert client.get("/api/defaults").json()["defaults"]["lrc_timing"] is False
+    r = _gen(client, lyrics="Тёплое место\nНо улицы ждут", files=_lrc(LRC),
+             params=json.dumps({"lrc_timing": True}))
+    assert r.status_code == 201, r.text
+    p = r.json()["params"]
+    assert p["lrc_timing"] is True
+    assert p["inputs"]["lrc"] == p["inputs"]["dir"] + "/lyrics.lrc"
+    assert (env.data / p["inputs"]["lrc"]).read_bytes() == LRC.encode("utf-8")
+
+    plain = _gen(client, title="Звезда", lyrics="текст").json()["params"]
+    assert plain["lrc_timing"] is False and "lrc" not in plain["inputs"]
+
+
+def test_generate_lrc_size_limit(client):
+    r = _gen(client, lyrics="текст", files=_lrc("[00:01.00]" + "a" * (1024 * 1024)))
+    assert r.status_code == 413 and r.json()["field"] == "lyrics_lrc"
+    assert client.get("/api/jobs").json() == []
+
+
+def test_restart_and_regen_take_lrc_from_previous_input(env, client):
+    job = _gen(client, lyrics="Тёплое место\nНо улицы ждут", files=_lrc(LRC),
+               params=json.dumps({"lrc_timing": True})).json()
+    client.post(f"/api/jobs/{job['id']}/cancel")
+    new = client.post(f"/api/jobs/{job['id']}/restart").json()
+    assert (env.data / new["params"]["inputs"]["lrc"]).read_text("utf-8") == LRC
+    client.post(f"/api/jobs/{new['id']}/cancel")
+
+    # своя песня: вход лежит в source/ (воркер перенёс после успеха)
+    from karaoke_core.db import Songs
+    env.put_song("Кино/Кино - Группа крови", env.SONG_TXT, "Кино - Группа крови")
+    Songs(connect(env.data / "karaoke.sqlite")).upsert(
+        artist="Кино", title="Группа крови", rel_dir="Кино/Кино - Группа крови", params={"lrc_timing": True})
+    src = env.data / "songs" / "Кино" / "Кино - Группа крови" / "source"
+    src.mkdir(parents=True)
+    (src / "input.mp3").write_bytes(MP3)
+    (src / "lyrics.lrc").write_text(LRC, "utf-8")
+    client.post("/api/songs/rescan")
+    sid = client.get("/api/songs").json()["items"][0]["song_id"]
+    regen = _gen(client, audio=None, lyrics="Тёплое место\nНо улицы ждут", song_id=sid,
+                 params=json.dumps({"lrc_timing": True})).json()
+    assert (env.data / regen["params"]["inputs"]["lrc"]).read_text("utf-8") == LRC
+    client.post(f"/api/jobs/{regen['id']}/cancel")
+    other = "[00:05.00]Другая\n"
+    regen = _gen(client, audio=None, lyrics="Другая", files=_lrc(other), song_id=sid).json()
+    assert (env.data / regen["params"]["inputs"]["lrc"]).read_text("utf-8") == other
+
+
 def test_generate_validation_errors(env, client):
     r = _gen(client, artist=" ")
     assert r.status_code == 400 and r.json()["detail"] == "Укажите исполнителя и название"

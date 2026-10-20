@@ -78,7 +78,7 @@ class World:
         return LocalStorage(self.out)
 
     def enqueue_generate(self, artist="Тестовая Группа", title="Песня Ёлки", *, lyrics="Ёлка\nпесня",
-                         **extra):
+                         lrc: str | None = None, **extra):
         from karaoke_core import naming
 
         rel_dir = naming.song_dir(artist, title)
@@ -93,6 +93,9 @@ class World:
             if lyrics:
                 (d / INPUT_LYRICS).write_text(lyrics, "utf-8")
                 inputs["lyrics"] = self.paths.rel(d / INPUT_LYRICS)
+            if lrc is not None:
+                (d / "lyrics.lrc").write_text(lrc, "utf-8")
+                inputs["lrc"] = self.paths.rel(d / "lyrics.lrc")
             return {**params, "inputs": inputs}
 
         return self.jobs.enqueue_with("generate", {"artist": artist, "title": title}, make)
