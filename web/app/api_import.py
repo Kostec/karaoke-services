@@ -323,6 +323,19 @@ def inspect(request: Request, source: str = Form(...), usdb_id: int | None = For
 
 # --------------------------------------------------------------------------- постановка
 
+MAX_YOUTUBE_ALTERNATIVES = 5
+
+
+def _unique_links(links: list[str] | None) -> list[str]:
+    """Ссылки песни (#VIDEO, комментарии usdb) без пустых и повторов, в исходном порядке."""
+    out: list[str] = []
+    for raw in links or []:
+        u = (raw or "").strip()
+        if u and u not in out:
+            out.append(u)
+    return out
+
+
 def _load_meta(ctx: AppContext, token: str) -> tuple[Path, dict]:
     try:
         work = ctx.paths.import_dir(token)
@@ -367,10 +380,17 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
     link = (youtube_url or "").strip() or None
     if link and not re.match(r"https?://", link, re.I):
         raise ApiError(400, "Ссылка на YouTube должна начинаться с http(s)://", field="youtube_url")
+    alternatives: list[str] = []
+    from_user = False
     if not has_audio and not s["audio_rel"]:
-        link = link or (s["youtube"][0] if s["youtube"] else None)
+        song_links = _unique_links(s["youtube"])
+        link = link or (song_links[0] if song_links else None)
         if not link:
             raise ApiError(400, NEED_AUDIO, field="audio")
+        # фронт присылает ссылку песни как есть: своя — только та, которой нет в разборе
+        from_user = link not in song_links
+        if not from_user:
+            alternatives = [u for u in song_links if u != link][:MAX_YOUTUBE_ALTERNATIVES]
     else:
         link = None
 
@@ -401,7 +421,7 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
     if meta["source"] == "usdb":
         params["usdb_id"] = meta.get("usdb_id")
     if link:
-        params["youtube_url"] = link
+        params.update(youtube_url=link, youtube_alternatives=alternatives, youtube_from_user=from_user)
     params.update(instrumental=bool(instrumental), rel_dir=rel_dir, replace=bool(replace_dir),
                   replace_rel_dir=replace_dir, target_id=storage.target_id)
     ref_id = source.song_id if source else (existing.song_id if existing else None)

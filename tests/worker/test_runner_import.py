@@ -16,6 +16,8 @@ ARTIST, TITLE = "Группа", "Песня"
 REL_DIR = "Группа/Группа - Песня"
 BASE = "Группа - Песня"
 YT = "https://www.youtube.com/watch?v=abcdefghijk"
+ALT1 = "https://www.youtube.com/watch?v=alternativ1"
+ALT2 = "https://youtu.be/alternativ2"
 
 SONG_TXT = (
     "#TITLE:Песня (оригинал)\r\n#ARTIST:Группа\r\n#MP3:orig.mp3\r\n#AUDIO:orig.mp3\r\n"
@@ -28,7 +30,8 @@ JPG = b"\xff\xd8\xff\xe0OWN-COVER"
 @pytest.fixture(autouse=True)
 def _ytdlp(monkeypatch):
     monkeypatch.setenv("YTDLP_CMD", f"{sys.executable} {FIX / 'fake_ytdlp.py'}")
-    monkeypatch.delenv("FAKE_YTDLP_MODE", raising=False)
+    for key in ("FAKE_YTDLP_MODE", "FAKE_YTDLP_DEAD", "FAKE_YTDLP_SEARCH"):
+        monkeypatch.delenv(key, raising=False)
 
 
 def read_json(path):
@@ -36,7 +39,8 @@ def read_json(path):
 
 
 def enqueue_import(world, *, source="files", audio: tuple[str, bytes] | None = ("input.mp3", MP3),
-                   cover: bool = True, youtube_url=None, instrumental=False, **extra):
+                   cover: bool = True, youtube_url=None, instrumental=False, txt: bytes = SONG_TXT,
+                   **extra):
     params = {"source": source, "youtube_url": youtube_url, "instrumental": instrumental,
               "rel_dir": REL_DIR, "replace": False, "replace_rel_dir": None,
               "target_id": world.storage.target_id, **extra}
@@ -44,7 +48,7 @@ def enqueue_import(world, *, source="files", audio: tuple[str, bytes] | None = (
     def make(job_id: int) -> dict:
         d = world.paths.job_in(REL_DIR, job_id)
         d.mkdir(parents=True)
-        (d / "song.txt").write_bytes(SONG_TXT)
+        (d / "song.txt").write_bytes(txt)
         inputs = {"dir": world.paths.rel(d), "txt": world.paths.rel(d / "song.txt")}
         if audio is not None:
             (d / audio[0]).write_bytes(audio[1])
@@ -136,12 +140,17 @@ def test_import_from_youtube_with_thumbnail_cover(world):
 
 def test_youtube_failure_message_and_restart(world, monkeypatch):
     monkeypatch.setenv("FAKE_YTDLP_MODE", "fail")
-    job = enqueue_import(world, source="url", audio=None, cover=False, youtube_url=YT)
+    monkeypatch.setenv("FAKE_YTDLP_SEARCH", json.dumps([{"id": "found000001", "title": "x", "duration": 10}]))
+    # своя ссылка пользователя: ни запасных ссылок, ни поиска — только сообщение
+    job = enqueue_import(world, source="url", audio=None, cover=False, youtube_url=YT,
+                         youtube_from_user=True, youtube_alternatives=[ALT1])
     world.run(gpu=GPU_OFF)
 
     failed = world.jobs.get(job.id)
     assert failed.state == "failed"
     assert failed.error.startswith("YouTube не отдал звук: [youtube] abcdefghijk: Video unavailable")
+    log = world.log(job.id)
+    assert ALT1 not in log and "ytsearch" not in log and "недоступна" not in log
     assert "Последние строки лога:" in failed.error
     assert not (world.out / REL_DIR).exists()
     assert (world.paths.job(REL_DIR, job.id) / "in" / "song.txt").is_file()
@@ -269,3 +278,106 @@ def test_youtube_with_own_cover_does_not_request_thumbnail(world):
     log = world.log(job.id)
     assert "fake_ytdlp.py" in log and "--write-thumbnail" not in log
     assert (world.out / REL_DIR / f"{BASE} [CO].jpg").read_bytes() == JPG
+
+
+# ------------------------------------------------------------ ролик песни удалён с YouTube
+
+# конец последней ноты: GAP 1000 + 3980 бит × 60000 / (300 × 4) = 200 000 мс (3:20)
+LONG_TXT = (
+    "#TITLE:Песня\n#ARTIST:Группа\n#MP3:orig.mp3\n#BPM:300\n#GAP:1000\n"
+    ": 0 4 5 Раз\n- 10\n: 3970 10 5 конец\nE\n"
+).encode("utf-8")
+CANDIDATES = [
+    {"id": "short000001", "url": "https://www.youtube.com/watch?v=short000001", "title": "Короткий", "duration": 150},
+    {"id": "live0000001", "url": "https://www.youtube.com/watch?v=live0000001", "title": "Эфир", "duration": None},
+    {"id": "long0000001", "url": "https://www.youtube.com/watch?v=long0000001", "title": "Длинный", "duration": 260},
+    {"id": "tiefirst001", "url": "https://www.youtube.com/watch?v=tiefirst001", "title": "Первый", "duration": 202},
+    {"id": "tiesecond01", "title": "Второй", "duration": 198.0},  # ≥ конец нот − 2 с, та же разница, но второй
+]
+
+
+def test_dead_song_link_falls_back_to_next_song_link(world, monkeypatch):
+    monkeypatch.setenv("FAKE_YTDLP_DEAD", "abcdefghijk,alternativ1")
+    job = enqueue_import(world, source="usdb", audio=None, cover=False, youtube_url=YT,
+                         youtube_from_user=False, youtube_alternatives=[ALT1, ALT2])
+    world.run(gpu=GPU_OFF)
+
+    done = world.jobs.get(job.id)
+    assert (done.state, done.error) == ("done", None)
+    assert (world.out / REL_DIR / f"{BASE}.mp3").read_bytes().endswith(b"YT-AUDIO " + ALT2.encode())
+    log = world.log(job.id)
+    assert f"Ссылка из песни недоступна — беру {ALT1}" in log
+    assert f"Ссылка из песни недоступна — беру {ALT2}" in log
+    assert "ytsearch" not in log
+    assert b"YT-THUMB" in (world.out / REL_DIR / f"{BASE} [CO].jpg").read_bytes()
+
+
+def test_all_song_links_dead_search_picks_video_by_song_length(world, monkeypatch):
+    monkeypatch.setenv("FAKE_YTDLP_DEAD", "abcdefghijk,alternativ1")
+    monkeypatch.setenv("FAKE_YTDLP_SEARCH", json.dumps(CANDIDATES))
+    job = enqueue_import(world, source="usdb", audio=None, cover=False, youtube_url=YT, txt=LONG_TXT,
+                         youtube_from_user=False, youtube_alternatives=[ALT1])
+    world.run(gpu=GPU_OFF)
+
+    done = world.jobs.get(job.id)
+    assert (done.state, done.error) == ("done", None)
+    mp3 = (world.out / REL_DIR / f"{BASE}.mp3").read_bytes()
+    assert mp3.endswith(b"YT-AUDIO https://www.youtube.com/watch?v=tiefirst001")
+    log = world.log(job.id)
+    assert "ytsearch5:Группа - Песня" in log and "--flat-playlist" in log
+    assert "Найден ролик «Первый» (3:22) — ноты сделаны под другую запись, слова могут разъехаться" in log
+    assert '"entries"' not in log  # JSON поиска в лог не пишется
+    assert (world.paths.source(REL_DIR) / "input.mp3").read_bytes().endswith(b"v=tiefirst001")
+
+
+def test_search_skips_dead_best_candidate(world, monkeypatch):
+    monkeypatch.setenv("FAKE_YTDLP_DEAD", "abcdefghijk,tiefirst001")
+    monkeypatch.setenv("FAKE_YTDLP_SEARCH", json.dumps(CANDIDATES))
+    job = enqueue_import(world, source="usdb", audio=None, cover=False, youtube_url=YT, txt=LONG_TXT)
+    world.run(gpu=GPU_OFF)
+
+    assert world.jobs.get(job.id).state == "done"
+    assert (world.out / REL_DIR / f"{BASE}.mp3").read_bytes().endswith(
+        b"YT-AUDIO https://www.youtube.com/watch?v=tiesecond01")
+
+
+@pytest.mark.parametrize("mode, reason", [("forbidden", "HTTP Error 403"),
+                                          ("network", "Temporary failure in name resolution")])
+def test_forbidden_or_network_error_is_not_a_reason_to_substitute(world, monkeypatch, mode, reason):
+    monkeypatch.setenv("FAKE_YTDLP_MODE", mode)
+    monkeypatch.setenv("FAKE_YTDLP_SEARCH", json.dumps(CANDIDATES))
+    job = enqueue_import(world, source="usdb", audio=None, cover=False, youtube_url=YT, txt=LONG_TXT,
+                         youtube_from_user=False, youtube_alternatives=[ALT1])
+    world.run(gpu=GPU_OFF)
+
+    failed = world.jobs.get(job.id)
+    assert failed.state == "failed"
+    assert failed.error.startswith("YouTube не отдал звук: ") and reason in failed.error
+    log = world.log(job.id)
+    assert ALT1 not in log and "ytsearch" not in log and "недоступна" not in log
+
+
+def test_dead_link_and_nothing_found_message(world, monkeypatch):
+    monkeypatch.setenv("FAKE_YTDLP_DEAD", "abcdefghijk")
+    monkeypatch.setenv("FAKE_YTDLP_SEARCH", json.dumps(CANDIDATES[:2]))  # короткий и без длительности
+    job = enqueue_import(world, source="usdb", audio=None, cover=False, youtube_url=YT, txt=LONG_TXT)
+    world.run(gpu=GPU_OFF)
+
+    failed = world.jobs.get(job.id)
+    assert failed.state == "failed"
+    assert failed.error == ("Ролик из песни удалён с YouTube, а поиск не нашёл подходящего — вставьте свою "
+                            "ссылку или загрузите mp3 и перезапустите импорт")
+    assert (world.paths.job(REL_DIR, job.id) / "in" / "song.txt").is_file()  # можно перезапустить
+
+
+def test_rank_search_results_and_song_end():
+    from karaoke_core import ultrastar
+    from karaoke_worker.handlers import rank_search_results, song_end_ms
+
+    assert song_end_ms(ultrastar.parse(LONG_TXT)) == 200000
+    assert song_end_ms(ultrastar.parse(b"#BPM:300\n#RELATIVE:yes\n: 0 4 5 a\nE\n")) is None
+    assert song_end_ms(ultrastar.parse(b"#TITLE:x\n: 0 4 5 a\nE\n")) is None  # нет #BPM
+    ids = [e["id"] for e in rank_search_results(CANDIDATES, 200000)]
+    assert ids == ["tiefirst001", "tiesecond01", "long0000001"]
+    assert [e["id"] for e in rank_search_results(CANDIDATES, None)][0] == "short000001"
+    assert rank_search_results([{"id": "x", "duration": True}, "мусор"], None) == []

@@ -168,7 +168,9 @@ def test_import_job_audio_sources(env, ic, http):
     # своя ссылка важнее ссылки из песни
     r = import_job(ic, body["token"], aria["index"], "Ария", "Беспечный ангел 3",
                    youtube_url="https://youtu.be/OwnLink0000")
-    assert r.json()["params"]["youtube_url"] == "https://youtu.be/OwnLink0000"
+    p = r.json()["params"]
+    assert p["youtube_url"] == "https://youtu.be/OwnLink0000"
+    assert (p["youtube_from_user"], p["youtube_alternatives"]) == (True, [])  # своя — без подмен
 
 
 def test_import_job_without_any_audio_is_400(ic):
@@ -229,6 +231,10 @@ def test_inspect_usdb_song_and_import_job(env, ic, http):
     p = r.json()["params"]
     assert p["source"] == "usdb" and p["usdb_id"] == 10101 and p["instrumental"] is True
     assert p["youtube_url"] == "https://www.youtube.com/watch?v=AbCdEfGhIj0"
+    # запасные ссылки песни для воркера (ролик могли удалить) — без выбранной и повторов
+    assert p["youtube_alternatives"] == ["https://www.youtube.com/watch?v=ZyXwVuTsRq9",
+                                         "https://www.youtube.com/watch?v=Qq_-1234567"]
+    assert p["youtube_from_user"] is False
     assert set(p["inputs"]) == {"dir", "txt", "cover"}
     assert (env.data / p["inputs"]["cover"]).read_bytes() == JPG
     assert (env.data / p["inputs"]["txt"]).read_bytes().decode("utf-8").startswith("#TITLE:Звезда по имени Солнце\n")
@@ -441,3 +447,33 @@ def test_folder_upload_unwritable_paths_are_400(env, ic, names):
     assert r.status_code == 400 and r.json()["field"] == "files", r.text
     assert "Недопустим" not in r.json()["detail"] and r.json()["detail"]
     assert not any((env.data / "imports").iterdir())
+
+
+def test_import_job_youtube_alternatives_from_chosen_song_link(env, ic, http):
+    """Фронт присылает ссылку песни как есть: она не «своя», запасные — прочие ссылки песни (≤ 5)."""
+    http.route("POST", USDB, usdb_page("login_ok.html"))
+    http.route("POST", USDB + "index.php?link=gettxt", usdb_page("gettxt.html"))
+    http.route("GET", USDB + "index.php?link=detail", usdb_page("detail.html"))
+    http.route("GET", "https://usdb.animux.de/data/cover/10101.jpg", body=JPG)
+    assert ic.put("/api/settings/usdb", json={"user": "karaoke", "password": "pw-test"}).status_code == 200
+    body = ic.post("/api/import/inspect", data={"source": "usdb", "usdb_id": "10101"}).json()
+    r = import_job(ic, body["token"], 0, "Кино", "Звезда по имени Солнце",
+                   youtube_url="https://www.youtube.com/watch?v=ZyXwVuTsRq9")
+    assert r.status_code == 201, r.text
+    p = r.json()["params"]
+    assert p["youtube_url"] == "https://www.youtube.com/watch?v=ZyXwVuTsRq9" and p["youtube_from_user"] is False
+    assert p["youtube_alternatives"] == ["https://www.youtube.com/watch?v=AbCdEfGhIj0",
+                                         "https://www.youtube.com/watch?v=Qq_-1234567"]
+
+
+def test_import_job_youtube_alternatives_are_limited(env, ic):
+    links = [f"https://www.youtube.com/watch?v=Link{i:07d}" for i in range(8)]
+    pack = make_zip({"s/s.txt": txt("Много", "Ссылок", video=f"v={links[0][-11:]}")})
+    body = inspect_files(ic, [("p.zip", pack)]).json()
+    # у песни 8 ссылок с повтором (подмена разбора в meta.json)
+    meta_path = env.data / "imports" / body["token"] / "meta.json"
+    meta = json.loads(meta_path.read_text("utf-8"))
+    meta["songs"][0]["youtube"] = links + [links[1], " "]
+    meta_path.write_text(json.dumps(meta), "utf-8")
+    p = import_job(ic, body["token"], 0, "Много", "Ссылок").json()["params"]
+    assert p["youtube_url"] == links[0] and p["youtube_alternatives"] == links[1:6]

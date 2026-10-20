@@ -184,9 +184,11 @@ class JobContext:
 
     def run_command(self, job_id: int, cmd: list[str], *, tracker: ProgressTracker | None = None,
                     cwd: str | Path | None = None, what: str = "UltraSinger",
-                    extra_env: Mapping[str, str] | None = None) -> list[str]:
+                    extra_env: Mapping[str, str] | None = None,
+                    json_out: list[str] | None = None) -> list[str]:
         """Запустить процесс, вести лог и прогресс; код ≠ 0 → JobFailed. Возвращает хвост лога.
-        ``extra_env`` дополняет окружение процесса и в лог не пишется (секреты — только так)."""
+        ``extra_env`` дополняет окружение процесса и в лог не пишется (секреты — только так).
+        ``json_out``: строки вывода, начинающиеся с ``{``, собираются туда, а не в лог (``yt-dlp -J``)."""
         self.log(job_id, "$ " + " ".join(shlex.quote(str(c)) for c in cmd))
         tail: deque[str] = deque(maxlen=40)
         hidden_values = [v for v in (extra_env or {}).values() if v]
@@ -196,6 +198,9 @@ class JobContext:
                 self.progress(job_id, tracker.feed(text))
             if final:
                 line = clean_line(text).strip()
+                if json_out is not None and line.startswith("{"):
+                    json_out.append(line)
+                    return
                 for value in hidden_values:  # процесс мог напечатать секрет — в лог он не попадёт
                     line = line.replace(value, "***")
                 if line:

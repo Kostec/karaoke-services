@@ -14,13 +14,14 @@ from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_PARAMS
 from karaoke_core.storage import Storage, StorageError
 from karaoke_core.trash import TrashError
 
-from .base import JobContext, JobFailed, remove_tree
+from .base import _NETWORK_MARKERS, JobContext, JobFailed, remove_tree
 from .progress import (IMPORT_PREPARE, PUBLISH, STAGE_DOWNLOAD, STAGE_POSTPROCESS, STAGE_PREPARE,
                        DownloadTracker, ProgressTracker)
 
 __all__ = ["Handler", "GenerateHandler", "InstrumentalHandler", "ImportHandler", "PublishHandler",
            "HANDLERS", "prepare_lyrics", "ultrasinger_args", "parse_lrc", "lyrics_lines", "lrc_matches", "audio_only_copy", "to_mp3",
-           "download_youtube", "download_link"]
+           "download_youtube", "download_link", "download_song_youtube", "search_youtube",
+           "rank_search_results", "song_end_ms"]
 
 
 
@@ -472,6 +473,21 @@ def _youtube_failed(reason: str, tail: str = "", what: str = YOUTUBE_FAILED) -> 
     return JobFailed("youtube", f"{msg}\n\n{tail}" if tail else msg)
 
 
+# Ролик убран с YouTube (удалён, закрыт, недоступен) — повод взять другую ссылку песни или поиск.
+# 403, сеть и «нет формата» сюда не относятся: это сбой загрузки, а не мёртвая ссылка.
+_GONE_MARKERS = ("video unavailable", "private video", "removed", "not available",
+                 "this video has been removed", "http error 404", "http error 410")
+_NOT_GONE_MARKERS = ("http error 403", "format is not available")
+YOUTUBE_GONE = "youtube_gone"
+
+
+def _is_gone(reason: str, tail: str) -> bool:
+    low = reason.lower()
+    if any(m in low for m in _NOT_GONE_MARKERS) or any(m in tail for m in _NETWORK_MARKERS):
+        return False
+    return any(m in low for m in _GONE_MARKERS)
+
+
 def _ytdlp_reason(tail: str) -> str:
     """Причина из вывода yt-dlp: последняя строка ``ERROR: …``."""
     errors = [ln.strip() for ln in tail.splitlines() if ln.strip().startswith("ERROR:")]
@@ -494,12 +510,121 @@ def download_youtube(ctx: JobContext, job_id: int, url: str, work: Path,
         ctx.run_command(job_id, cmd + ["--", url], tracker=DownloadTracker(), what="yt-dlp")
     except JobFailed as e:
         tail = _log_tail(e)
-        raise _youtube_failed(_ytdlp_reason(tail), tail, what) from None
+        reason = _ytdlp_reason(tail)
+        failed = _youtube_failed(reason, tail, what)
+        if _is_gone(reason, tail):
+            failed.reason = YOUTUBE_GONE
+        raise failed from None
     mp3 = work / "youtube.mp3"
     if not mp3.is_file():
         raise _youtube_failed("yt-dlp не создал mp3", what=what)
     jpg = work / "youtube.jpg"
     return mp3, (jpg if thumbnail and jpg.is_file() else None)
+
+
+SEARCH_COUNT = 5
+SEARCH_SLACK_MS = 2000  # ролик может быть короче конца нот не больше чем на 2 с
+SEARCH_NOTHING = ("Ролик из песни удалён с YouTube, а поиск не нашёл подходящего — вставьте свою ссылку "
+                  "или загрузите mp3 и перезапустите импорт")
+
+
+def song_end_ms(song: ultrastar.Song) -> float | None:
+    """Конец последней ноты в мс по #BPM/#GAP; None — нот нет, #RELATIVE или нет #BPM."""
+    notes = song.notes()
+    if not notes or song.relative:
+        return None
+    try:
+        return ultrastar.beat_to_ms(song, max(n.end for n in notes))
+    except ValueError:
+        return None
+
+
+def rank_search_results(entries: list[dict], end_ms: float | None) -> list[dict]:
+    """Кандидаты поиска YouTube от лучшего: длительность ближе к концу нот, при равенстве — раньше
+    в выдаче; короче ``end_ms − 2 с`` и без длительности — отброшены. Без ``end_ms`` — порядок выдачи."""
+    fit = []
+    for i, e in enumerate(entries):
+        dur = e.get("duration") if isinstance(e, dict) else None
+        if not isinstance(dur, (int, float)) or isinstance(dur, bool) or dur <= 0:
+            continue
+        if not (e.get("url") or e.get("id")):
+            continue
+        dur_ms = dur * 1000.0
+        if end_ms is not None and dur_ms < end_ms - SEARCH_SLACK_MS:
+            continue
+        fit.append((abs(dur_ms - end_ms) if end_ms is not None else 0.0, i, e))
+    fit.sort(key=lambda t: (t[0], t[1]))
+    return [e for _, _, e in fit]
+
+
+def entry_url(entry: dict) -> str:
+    url = entry.get("url") or ""
+    if url.startswith("http"):
+        return url
+    return f"https://www.youtube.com/watch?v={entry.get('id') or url}"
+
+
+def mmss(seconds: float) -> str:
+    total = int(round(seconds))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def search_youtube(ctx: JobContext, job_id: int, query: str, count: int = SEARCH_COUNT) -> list[dict]:
+    """``ytsearchN:<запрос>`` через ``yt-dlp -4 -J --flat-playlist`` (только метаданные)."""
+    out: list[str] = []
+    try:
+        ctx.run_command(job_id, ctx.ytdlp_cmd() + ["-4", "-J", "--flat-playlist", "--",
+                                                   f"ytsearch{count}:{query}"], what="yt-dlp", json_out=out)
+    except JobFailed as e:
+        tail = _log_tail(e)
+        raise _youtube_failed(_ytdlp_reason(tail), tail) from None
+    for line in reversed(out):
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        entries = data.get("entries") if isinstance(data, dict) else None
+        return [x for x in entries if isinstance(x, dict)] if isinstance(entries, list) else []
+    return []
+
+
+def download_song_youtube(ctx: JobContext, job: Job, url: str, work: Path, thumbnail: bool,
+                          end_ms: float | None) -> tuple[Path, Path | None]:
+    """Звук импорта с YouTube. Ролик песни убран → прочие её ссылки по порядку, затем (ссылка не своя)
+    поиск «исполнитель - название» с длительностью под ноты. 403, сеть и своя ссылка — ошибка как есть."""
+    p = job.params
+
+    def attempt(link: str) -> tuple[Path, Path | None]:
+        shutil.rmtree(work, ignore_errors=True)
+        return download_youtube(ctx, job.id, link, work, thumbnail=thumbnail)
+
+    try:
+        return attempt(url)
+    except JobFailed as e:
+        if e.reason != YOUTUBE_GONE or p.get("youtube_from_user"):
+            raise
+    for alt in p.get("youtube_alternatives") or []:
+        alt = (alt or "").strip()
+        if not alt or alt == url:
+            continue
+        ctx.log(job.id, f"Ссылка из песни недоступна — беру {alt}")
+        try:
+            return attempt(alt)
+        except JobFailed as e:
+            if e.reason != YOUTUBE_GONE:
+                raise
+    query = f"{job.artist} - {job.title}"
+    ctx.log(job.id, f"Ссылка из песни недоступна — беру поиск YouTube: {query}")
+    for entry in rank_search_results(search_youtube(ctx, job.id, query), end_ms):
+        ctx.check_cancel(job.id, force=True)
+        ctx.log(job.id, f"Найден ролик «{entry.get('title') or entry.get('id')}» ({mmss(entry['duration'])}) — "
+                        "ноты сделаны под другую запись, слова могут разъехаться")
+        try:
+            return attempt(entry_url(entry))
+        except JobFailed as e:
+            if e.reason != YOUTUBE_GONE:
+                raise
+    raise JobFailed(YOUTUBE_GONE, SEARCH_NOTHING)
 
 
 LINK_FAILED = "Не удалось скачать звук по ссылке"
@@ -623,7 +748,11 @@ class ImportHandler:
                 raise JobFailed("input", "Нужен звук: загрузите mp3 или вставьте ссылку на YouTube")
             ctx.progress(job.id, STAGE_DOWNLOAD)
             ctx.log(job.id, f"Звук с YouTube: {url}")
-            audio, thumb = download_youtube(ctx, job.id, url, work, thumbnail=cover is None)
+            try:
+                end_ms = song_end_ms(ultrastar.parse(txt.read_bytes()))
+            except ValueError:  # битый .txt упадёт ниже с понятной ошибкой
+                end_ms = None
+            audio, thumb = download_song_youtube(ctx, job, url, work, thumbnail=cover is None, end_ms=end_ms)
             if thumb is not None:
                 shutil.copy2(thumb, saved_thumb)
                 cover = saved_thumb
