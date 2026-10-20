@@ -1,0 +1,11 @@
+"""Общее для всех тестов: ``tests/`` в ``sys.path`` — общие фейки (``fakes_http``) импортируются
+напрямую (pytest запускается с ``--import-mode=importlib``, сам он папку не добавляет)."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_TESTS = str(Path(__file__).resolve().parent)
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)

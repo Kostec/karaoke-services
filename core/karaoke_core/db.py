@@ -22,6 +22,7 @@ __all__ = [
     "connect", "Jobs", "Job", "Settings", "OutputTarget", "Library", "LibraryItem",
     "Songs", "OwnSong", "song_id_for", "JOB_STATES", "FINAL_STATES",
     "INTERRUPTED_MESSAGE", "ACTIVE_STATES", "STAGE_PUBLISH", "GPU_STATUS_KEY",
+    "UsdbAccount", "USDB_KEY",
 ]
 
 JOB_STATES = ("queued", "running", "publishing", "done", "failed", "cancelled")
@@ -31,6 +32,8 @@ ACTIVE_STATES = tuple(s for s in JOB_STATES if s not in FINAL_STATES)
 STAGE_PUBLISH = "publish"
 # Ключ settings, куда воркер при старте пишет результат gpucheck.check().
 GPU_STATUS_KEY = "gpu_status"
+# Ключ settings с учёткой usdb (JSON {user, password}); API отдаёт только has_password.
+USDB_KEY = "usdb"
 INTERRUPTED_MESSAGE = "прервано перезапуском"
 
 _SCHEMA_V1 = """
@@ -352,6 +355,21 @@ class OutputTarget:
                           ensure_ascii=False)
 
 
+@dataclass(frozen=True)
+class UsdbAccount:
+    """Учётка usdb.animux.de (только из «Настроек», переменных окружения нет)."""
+    user: str = ""
+    password: str | None = field(default=None, repr=False)
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.user and self.password)
+
+    def public(self) -> dict:
+        """Для API: без пароля, только признак его наличия."""
+        return {"user": self.user, "has_password": bool(self.password)}
+
+
 class Settings:
     def __init__(self, conn: sqlite3.Connection, env: Mapping[str, str] | None = None):
         self.conn = conn
@@ -380,6 +398,26 @@ class Settings:
             target = OutputTarget(**{**asdict(target), "password": self.get_output().password})
         self._set("output", target._to_json())
         return target
+
+    def get_usdb(self) -> UsdbAccount:
+        raw = self._get(USDB_KEY)
+        if raw is None:
+            return UsdbAccount()
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return UsdbAccount()
+        return UsdbAccount(str(value.get("user") or ""), value.get("password") or None)
+
+    def set_usdb(self, account: UsdbAccount) -> UsdbAccount:
+        """Сохранить учётку. ``password=None`` при том же логине — оставить прежний пароль."""
+        if account.password is None and account.user:
+            old = self.get_usdb()
+            if old.user == account.user:
+                account = UsdbAccount(account.user, old.password)
+        self._set(USDB_KEY, json.dumps({"user": account.user, "password": account.password or ""},
+                                       ensure_ascii=False))
+        return account
 
     def get_gpu_status(self) -> dict | None:
         """Последний результат проверки GPU воркером (``gpucheck.check()``) или ``None``."""

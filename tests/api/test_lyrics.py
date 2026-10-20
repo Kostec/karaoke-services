@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
+from fakes_http import FakeHttp
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from fakes_http import FakeHttp  # noqa: E402
-
-from karaoke_core.http import HttpError  # noqa: E402
+from karaoke_core.http import HttpError
 
 LRCLIB = "https://lrclib.net/api/search"
 BY_FIELDS = LRCLIB + "?track_name="

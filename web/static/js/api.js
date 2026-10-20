@@ -103,6 +103,11 @@ export const api = {
   output: () => request('GET', '/api/settings/output'),
   saveOutput: (body) => request('PUT', '/api/settings/output', body),
   testOutput: (body) => request('POST', '/api/settings/output/test', body),
+  usdbAccount: () => request('GET', '/api/settings/usdb'),
+  saveUsdbAccount: (body) => request('PUT', '/api/settings/usdb', body),
+  testUsdbAccount: (body) => request('POST', '/api/settings/usdb/test', body),
+  usdbSearch: ({ artist = '', title = '', language = 'Russian', start = 0 } = {}) =>
+    request('GET', `/api/usdb/search?${new URLSearchParams({ artist, title, language, start: String(start) })}`),
 };
 
 // ---------------------------------------------------------------- общие помощники

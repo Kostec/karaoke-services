@@ -1,9 +1,10 @@
-// Раздел «Настройки»: папка результата (SMB-шара или локальная папка ПК) с проверкой.
+// Раздел «Настройки»: папка результата (SMB-шара или локальная папка ПК) с проверкой; учётка usdb.
 
 import { api } from './api.js';
 import { h, clear, toast, field } from './ui.js';
 
 let root, hooks, f = {}, current = null, built = false;
+let u = {}, usdbCurrent = null; // карточка «usdb»
 
 export function mount(section, ctx) {
   root = section;
@@ -19,6 +20,12 @@ export async function show() {
   } catch (e) {
     f.loadErr.textContent = `Не удалось загрузить настройки: ${e.detail}`;
     f.loadErr.hidden = false;
+  }
+  try {
+    usdbCurrent = await api.usdbAccount();
+    fillUsdb(usdbCurrent);
+  } catch (e) {
+    showUsdbResult('err', `Не удалось загрузить учётку usdb: ${e.detail}`);
   }
 }
 
@@ -61,7 +68,88 @@ function build() {
   form.addEventListener('submit', (e) => { e.preventDefault(); submit(true); });
   for (const el of [f.kindSmb, f.kindLocal]) el.addEventListener('change', updateKind);
   for (const el of [f.host, f.share, f.user, f.path]) el.addEventListener('input', updateKind);
-  clear(root).append(h('div', { class: 'view-head' }, h('h2', {}, 'Настройки')), f.loadErr, form);
+  clear(root).append(h('div', { class: 'view-head' }, h('h2', {}, 'Настройки')), f.loadErr, form, buildUsdb());
+}
+
+// ---------------------------------------------------------------- usdb
+
+function buildUsdb() {
+  u.current = h('div', { class: 'small muted' });
+  u.user = h('input', { type: 'text', autocomplete: 'off', name: 'usdb-user' });
+  u.pwd = h('input', { type: 'password', autocomplete: 'new-password', name: 'usdb-password' });
+  u.passHint = h('div', { class: 'small muted' });
+  u.result = h('div', { class: 'banner', hidden: true, role: 'status' });
+  u.test = h('button', { type: 'button', onclick: () => submitUsdb(false) }, 'Проверить');
+  u.save = h('button', { type: 'submit', class: 'primary' }, 'Сохранить');
+  const form = h('form', { class: 'card', novalidate: true },
+    h('h3', { style: 'margin-top:0' }, 'usdb'),
+    u.current,
+    h('p', { class: 'small muted' }, 'Учётка ',
+      h('a', { href: 'https://usdb.animux.de/', target: '_blank', rel: 'noopener' }, 'usdb.animux.de'),
+      ' — для поиска готовых песен в «Импорте».'),
+    h('div', { class: 'row2' }, field('Логин', u.user),
+      h('div', {}, field('Пароль', u.pwd), u.passHint)),
+    u.result,
+    h('div', { class: 'actions' }, u.test, u.save),
+    h('p', { class: 'small muted' }, 'Сохраняется только учётка, с которой usdb пустил. Пустой логин — удалить учётку.'));
+  form.addEventListener('submit', (e) => { e.preventDefault(); submitUsdb(true); });
+  u.user.addEventListener('input', updateUsdbHint);
+  return form;
+}
+
+function fillUsdb(acc) {
+  u.user.value = acc.user || '';
+  u.pwd.value = '';
+  u.current.textContent = acc.user ? `Сейчас: ${acc.user}` : 'Учётка не задана';
+  updateUsdbHint();
+}
+
+function updateUsdbHint() {
+  const same = usdbCurrent && usdbCurrent.has_password && u.user.value.trim() === usdbCurrent.user;
+  u.pwd.placeholder = same ? 'сохранён — оставьте пустым, чтобы не менять' : '';
+  u.passHint.textContent = !same && u.user.value.trim() && usdbCurrent?.user ? 'Логин изменился — введите пароль' : '';
+}
+
+function usdbBody() {
+  const b = { user: u.user.value.trim() };
+  if (u.pwd.value) b['password'] = u.pwd.value; // пусто — «не менять»
+  return b;
+}
+
+async function submitUsdb(save) {
+  const btn = save ? u.save : u.test;
+  u.test.disabled = u.save.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = save ? 'Сохранение…' : 'Проверка…';
+  u.result.hidden = true;
+  try {
+    if (save) {
+      usdbCurrent = await api.saveUsdbAccount(usdbBody());
+      fillUsdb(usdbCurrent);
+      showUsdbResult('ok', usdbCurrent.user ? `Сохранено: вход в usdb как ${usdbCurrent.user}` : 'Учётка usdb удалена');
+      toast('Учётка usdb сохранена');
+    } else {
+      await api.testUsdbAccount(usdbBody());
+      showUsdbResult('ok', 'Проверка пройдена: usdb пустил');
+    }
+  } catch (e) {
+    showUsdbResult('err', e.detail);
+    const el = e.data?.field === 'password' ? u.pwd : e.data?.field === 'user' ? u.user : null;
+    if (el) {
+      el.classList.add('invalid');
+      el.addEventListener('input', () => el.classList.remove('invalid'), { once: true });
+      el.focus();
+    }
+  } finally {
+    btn.textContent = label;
+    u.test.disabled = u.save.disabled = false;
+  }
+}
+
+function showUsdbResult(kind, text) {
+  u.result.className = `banner ${kind}`;
+  u.result.textContent = text;
+  u.result.hidden = false;
 }
 
 function fill(t) {

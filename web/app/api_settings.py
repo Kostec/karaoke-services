@@ -5,11 +5,13 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
 
-from karaoke_core.db import OutputTarget
+from karaoke_core.db import OutputTarget, UsdbAccount
 from karaoke_core.storage import StorageError
 
 from .api_jobs import ctx_of
+from .api_usdb import usdb_api_error
 from .context import ApiError, AppContext
+from .usdb import UsdbClient, UsdbError
 
 
 class OutputIn(BaseModel):
@@ -19,6 +21,11 @@ class OutputIn(BaseModel):
     path: str = ""
     user: str = ""
     password: str | None = None  # пусто или нет поля — «не менять»
+
+
+class UsdbIn(BaseModel):
+    user: str = ""
+    password: str | None = None  # пусто или нет поля — «не менять» (при том же логине)
 
 
 router = APIRouter(prefix="/api/settings", tags=["Настройки"])
@@ -94,3 +101,51 @@ def test_output(body: OutputIn, request: Request):
     target = _target(ctx, body)
     _probe(ctx, target)
     return {"ok": True, "label": target.label}
+
+
+# ---------------------------------------------------------------------- usdb
+
+
+def _usdb_account(ctx: AppContext, body: UsdbIn) -> UsdbAccount:
+    user = body.user.strip()
+    if not user:
+        raise ApiError(400, "Впишите логин usdb", field="user")
+    if body.password:
+        return UsdbAccount(user, body.password)
+    current = ctx.settings.get_usdb()
+    # тот же логин — прежний пароль
+    if current.user == user and current.password:
+        return UsdbAccount(user, current.password)
+    raise ApiError(400, "Введите пароль usdb", field="password")
+
+
+def _usdb_login(ctx: AppContext, account: UsdbAccount) -> None:
+    try:
+        UsdbClient(ctx.http, account.user, account.password or "").login()
+    except UsdbError as e:
+        raise usdb_api_error(e) from None
+
+
+@router.get("/usdb", summary="Учётка usdb (без пароля)")
+def get_usdb(request: Request):
+    return ctx_of(request).settings.get_usdb().public()
+
+
+@router.put("/usdb", summary="Сохранить учётку usdb (только принятую usdb); пустой логин — удалить")
+def put_usdb(body: UsdbIn, request: Request):
+    ctx = ctx_of(request)
+    if not body.user.strip() and not body.password:
+        saved = ctx.settings.set_usdb(UsdbAccount("", ""))
+    else:
+        account = _usdb_account(ctx, body)
+        _usdb_login(ctx, account)
+        saved = ctx.settings.set_usdb(account)
+    ctx.reset_usdb()
+    return saved.public()
+
+
+@router.post("/usdb/test", summary="Проверить вход в usdb (не сохраняет)")
+def test_usdb(body: UsdbIn, request: Request):
+    ctx = ctx_of(request)
+    _usdb_login(ctx, _usdb_account(ctx, body))
+    return {"ok": True}

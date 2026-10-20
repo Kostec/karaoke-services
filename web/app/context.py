@@ -16,6 +16,8 @@ from karaoke_core.db import Jobs, Library, LibraryItem, OutputTarget, Settings, 
 from karaoke_core.storage import Storage, StorageError, make_storage
 from karaoke_core.trash import Trash
 
+from .usdb import UsdbClient
+
 STATUS_TTL = 15.0  # с: как часто реально проверять доступность папки результата
 
 
@@ -44,6 +46,7 @@ class AppContext:
         self._local = threading.local()
         self._lock = threading.Lock()
         self._storage: tuple[str, Storage] | None = None
+        self._usdb: tuple[tuple[str, str], UsdbClient] | None = None  # (учётка, UsdbClient)
         self._probe: dict[str, tuple[float, str | None]] = {}
         self._scan_lock = threading.Lock()
         self.scan_state: dict[str, dict] = {}
@@ -139,6 +142,24 @@ class AppContext:
 
     def mark_output_error(self, err: Exception) -> None:
         self._probe[self.target().target_id] = (time.monotonic(), f"Папка результата недоступна: {err}")
+
+    # ------------------------------------------------------------------ usdb
+
+    def usdb(self):
+        """Клиент usdb сохранённой учётки (сессия живёт в памяти, пока учётка та же).
+        Учётки нет — ``ApiError(400, code="usdb_no_account")``."""
+        account = self.settings.get_usdb()
+        if not account.configured:
+            raise ApiError(400, "Впишите логин и пароль usdb в Настройках", code="usdb_no_account")
+        key = (account.user, account.password or "")
+        with self._lock:
+            if self._usdb is None or self._usdb[0] != key:
+                self._usdb = (key, UsdbClient(self.http, *key))
+            return self._usdb[1]
+
+    def reset_usdb(self) -> None:
+        with self._lock:
+            self._usdb = None
 
     # ------------------------------------------------------------------ индекс песен
 
