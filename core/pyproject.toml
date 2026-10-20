@@ -7,7 +7,7 @@ name = "karaoke-core"
 version = "0.1.0"
 description = "Общее ядро karaoke-services: БД, имена, формат UltraStar, постобработка"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["smbprotocol>=1.13"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

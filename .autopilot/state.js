@@ -11,7 +11,7 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-19T23:17:21+03:00",
-  "updatedAt": "2026-10-20T07:30:26+03:00",
+  "updatedAt": "2026-10-20T07:41:12+03:00",
   "finishedAt": null,
   "stages": [
     {
@@ -101,16 +101,19 @@ window.STATE =
       ],
       "status": "done",
       "retries": 0,
-      "repairs": 0,
+      "repairs": 1,
       "handoffs": 0,
       "startedAt": "2026-10-20T07:15:49+03:00",
       "finishedAt": "2026-10-20T07:30:26+03:00",
       "commit": "2fdec3e",
       "tests": {
-        "passed": 51,
+        "passed": 59,
         "failed": 0
       },
-      "concerns": []
+      "concerns": [],
+      "repairFindings": [
+        "имя исполнителя на двух уровнях, Cc, mp3-стемы, #VERSION, .env.example, LF"
+      ]
     },
     {
       "id": "02",
@@ -134,7 +137,7 @@ window.STATE =
         "tests/core/test_storage*",
         "tests/core/test_trash*"
       ],
-      "status": "in-progress",
+      "status": "review",
       "retries": 0,
       "repairs": 0,
       "handoffs": 0,
@@ -370,7 +373,10 @@ window.STATE =
     "tests/core/test_db.py:75 — запутанная подготовка теста fail_interrupted",
     "postprocess.py:111 — неназванное правило записи #AUDIO",
     "postprocess — #COVERURL тоже удаляется при несовпадении исполнителя (сверх истории 26)",
-    "db.Jobs.update не проверяет переходы конечного автомата §2"
+    "db.Jobs.update не проверяет переходы конечного автомата §2",
+    "db.py:272 — дефолты SMB-хоста захардкожены в ядре (дублируют compose/.env.example)",
+    ".gitattributes дублирует tests/core/fixtures/.gitattributes",
+    "test_repo_config сканирует env только в core/ — расширить на web/ и worker/"
   ],
   "reviewers": {
     "manifestSpec": "a489e47ea70f9876b",
