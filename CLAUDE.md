@@ -131,6 +131,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 - `.gitattributes` `* text=auto eol=lf`: Dockerfile/sh/py идут в Linux-контейнеры; фикстуры тестов — binary.
 - Форк `D:/Projects/UltraSinger` (ветка `karaoke-local`, remote `fork`) правится только с явного разрешения пользователя в текущей задаче; после правки — коммит в `karaoke-local`, `./scripts/export-ultrasinger-patch.ps1`, `git -C D:/Projects/UltraSinger push fork karaoke-local` — только с согласия (образ worker собирается из `ULTRASINGER_GIT`); проверка — `gpucheck`.
 - Сборка worker падает на `RUN python -m karaoke_worker selfcheck`, если rebase форка потерял правку (флаги `--lyrics/--vad_onset/--vad_offset/--lyrics_timing`, `lyrics_alignment`, `midi_creator`, SwiftF0).
+- yt-dlp не фиксируется по `uv.lock` (`lock_constraints.FRESH`) и ставится последним слоем образа: старая версия получает от YouTube HTTP 403. Обновить только его: `./scripts/compose.ps1 build --build-arg YTDLP_REFRESH=<дата> worker`, затем `./scripts/compose.ps1 up -d worker`.
 - yt-dlp без `deno` (в образе — `denoland/deno:bin-2.5.6`) получает с YouTube не все форматы; `selfcheck` проверяет оба.
 - Тома переживают `compose down`; `compose down -v` удаляет БД и корзину.
 

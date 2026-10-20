@@ -75,6 +75,15 @@ COPY --from=ultrasinger . /app/UltraSinger
 #     Фиксированная версия, бинарь в PATH; проверяет selfcheck (deno --version).
 COPY --from=denoland/deno:bin-2.5.6 /deno /usr/local/bin/deno
 
+# 3в) yt-dlp — всегда последняя версия: YouTube регулярно ломает старые (HTTP 403 на загрузке).
+#     Версия из uv.lock UltraSinger снята в lock_constraints.py. Обновить, не пересобирая остальное:
+#     ./scripts/compose.ps1 build --build-arg YTDLP_REFRESH=<сегодняшняя дата> worker
+ARG YTDLP_REFRESH=2026-10-20
+RUN --mount=type=cache,target=/root/.cache/uv \
+    echo "yt-dlp: обновление ${YTDLP_REFRESH}" \
+    && uv pip install --upgrade "yt-dlp[default]" \
+    && python -m yt_dlp --version
+
 # 4) Наши пакеты.
 COPY core/ /app/core/
 COPY worker/ /app/worker/

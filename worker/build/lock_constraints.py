@@ -2,7 +2,8 @@
 
 Вход — вывод `uv export --frozen --no-hashes` по uv.lock UltraSinger. Из него убираются пакеты,
 которые задаём мы: torch/torchaudio/torchvision (сборка cu126 вместо PyPI-сборки из lock),
-связанные с ними nvidia-*-cu12 и triton (их версии диктует torch cu126), numpy (у нас numpy<2.5).
+связанные с ними nvidia-*-cu12 и triton (их версии диктует torch cu126), numpy (у нас numpy<2.5),
+yt-dlp и yt-dlp-ejs (ставятся свежими отдельным слоем worker/Dockerfile: YouTube ломает старые версии).
 Остальные версии — ровно как в uv.lock (например swift-f0 0.1.2: в 0.3.0 другая сигнатура SwiftF0).
 Использование: python lock_constraints.py <export.txt> <constraints.txt>
 """
@@ -22,9 +23,13 @@ def norm(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+# Без версии: ставятся последними отдельным слоем образа (см. worker/Dockerfile, YTDLP_REFRESH).
+FRESH = {"yt-dlp", "yt-dlp-ejs"}
+
+
 def overridden(name: str) -> bool:
     n = norm(name)
-    return n in OURS or n.startswith("nvidia-") or n == "triton"
+    return n in OURS or n in FRESH or n.startswith("nvidia-") or n == "triton"
 
 
 def main(src: str, dst: str) -> None:
