@@ -88,3 +88,13 @@ class YandexMusic:
 - Импорт → «Ссылка»: если ссылка музыкальная (не zip и не GitHub) — `link/inspect` и список треков на генерацию, тем же видом и логикой, что группа «Музыка для генерации» во вкладке «Папка» (авто-поиск текста, «уже есть», параметры на группу, постановка по одному), только вместо файла — `audio_url`.
 - «Настройки» → карточка «Яндекс Музыка»: поле токена, «Проверить», «Сохранить», `has_token`, ссылка-подсказка, как получить токен (без ввода логина/пароля в сервис).
 - Аудио VK → текст ошибки сервера как есть.
+
+## Что построил таск A (сверх контракта)
+
+- `musiclink.is_yandex(link)`, `YANDEX_KINDS`; тексты ошибок `MSG_NEED_LOGIN` (нет токена), `MSG_REJECTED` (неверный токен), `MSG_NO_RIGHTS`, `MSG_UNAVAILABLE` (сеть → 503), `MSG_NOT_FOUND` («ничего по этой ссылке» → 400); `main(argv, env, client_factory)` — CLI для тестов
+- `YandexMusic.check()` — для `POST /api/settings/yandex/test` (нет uid → `MSG_REJECTED`); `YandexMusic.client()`
+- `db.YANDEX_KEY = "yandex_music"`; `set_yandex(None|"")` удаляет
+- `.env.example`: `YANDEX_MUSIC_TOKEN=` (читает CLI); `YTDLP_CMD` теперь в общем окружении web и worker
+- `ytdlp_info` чистит заголовки видео: «(Official Video)/[4K]/(клип)», повтор исполнителя, перестановка частей по имени канала
+- web без deno; метаданные YouTube без него работают
+- фикстура `tests/core/fixtures/fake_ytdlp_info.py` — фейк `yt-dlp -J`
