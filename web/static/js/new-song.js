@@ -4,11 +4,11 @@ import { api, PARAM_KEYS, generateForm, errorText } from './api.js';
 import { h, clear, toast, debounce, songName, field, confirmDialog } from './ui.js';
 import { readId3, planAutofill } from './id3.js';
 import {
-  usableHits, previewLines, fmtSeconds, searchBlocker, needsReplaceConfirm,
-  NOTHING_FOUND, REPLACE_QUESTION,
+  searchBlocker, needsReplaceConfirm, REPLACE_QUESTION,
   lrcPlainText, lrcTimingDefault, lrcAfterEdit, lrcForNewText, lrcFormPart, lrcShown, LRC_SAVED,
-  SYNCED_LABEL, LRC_TIMING_LABEL,
+  LRC_TIMING_LABEL,
 } from './lyrics-search.js';
+import { openLyricsDialog } from './lyrics-dialog.js';
 
 
 let root, form, f = {}, defaults = null, defaultsError = null;
@@ -18,8 +18,6 @@ let dupId = null; // song_id совпавшей песни
 let submitting = false;
 let alignTouched = false;
 let existsSeq = 0;
-let lyricsSeq = 0; // R01: ответ поиска текста, пришедший после закрытия/нового поиска, игнорируется
-let lyricsDlg = null;
 // G07: теги mp3 — значения, подставленные из тегов (их можно заменить тегами другого mp3),
 // и обложка из тегов (уходит в «Обложку», если своя не выбрана).
 let autoVals = {};
@@ -260,55 +258,11 @@ function updateFindLyrics() {
   f.findHint.textContent = why;
 }
 
-function lyricsDialog() {
-  if (lyricsDlg) return lyricsDlg;
-  const status = h('p', { class: 'small muted' });
-  const list = h('div', { class: 'lyrics-hits' });
-  const close = h('button', { type: 'button', onclick: () => lyricsDlg.el.close() }, 'Закрыть');
-  const el = h('dialog', { class: 'lyrics-dlg', 'aria-labelledby': 'lyrics-dlg-title' },
-    h('h3', { id: 'lyrics-dlg-title' }, 'Найти текст'), status, list, h('div', { class: 'actions' }, close));
-  el.addEventListener('close', () => { lyricsSeq++; });
-  document.body.append(el);
-  lyricsDlg = { el, status, list };
-  return lyricsDlg;
-}
-
-async function onFindLyrics() {
+function onFindLyrics() {
   const artist = f.artist.value.trim(), title = f.title.value.trim();
   if (searchBlocker(artist, title)) return;
-  const dlg = lyricsDialog();
-  const seq = ++lyricsSeq;
-  dlg.status.textContent = `Ищу текст «${songName(artist, title)}»…`;
-  dlg.status.className = 'small muted';
-  clear(dlg.list);
-  if (!dlg.el.open) {
-    if (typeof dlg.el.showModal === 'function') dlg.el.showModal(); else dlg.el.setAttribute('open', '');
-  }
   f.findLyrics.disabled = true;
-  let hits = [], error = '';
-  try {
-    hits = usableHits((await api.lyricsSearch(artist, title)).items);
-  } catch (e) {
-    error = errorText(e); // 503 и прочее — текст detail сервера
-  } finally {
-    updateFindLyrics();
-  }
-  if (seq !== lyricsSeq) return;
-  if (error || !hits.length) {
-    dlg.status.textContent = error || NOTHING_FOUND;
-    dlg.status.className = error ? 'banner err' : 'banner warn';
-    return;
-  }
-  dlg.status.textContent = 'Выберите вариант — текст попадёт в поле «Текст песни».';
-  for (const hit of hits) {
-    const meta = [hit.album, fmtSeconds(hit.duration), hit.synced ? SYNCED_LABEL : ''].filter(Boolean).join(' · ');
-    dlg.list.append(h('div', { class: 'card lyrics-hit' },
-      h('div', {}, h('strong', {}, songName(hit.artist, hit.title))),
-      meta ? h('div', { class: 'small muted' }, meta) : null,
-      h('div', { class: 'small lyrics-preview' }, previewLines(hit.text).join('\n')),
-      h('div', { class: 'actions' },
-        h('button', { type: 'button', class: 'primary', onclick: () => insertLyrics(hit) }, 'Вставить'))));
-  }
+  openLyricsDialog({ artist, title, onPick: insertLyrics, onSettled: updateFindLyrics });
 }
 
 async function insertLyrics(hit) {
@@ -317,15 +271,15 @@ async function insertLyrics(hit) {
   const fromLrc = hit.synced ? lrcPlainText(hit.synced) : '';
   const text = fromLrc || hit.text;
   if (needsReplaceConfirm(f.lyrics.value) && f.lyrics.value.trim() !== text.trim()) {
-    if (!(await confirmDialog(REPLACE_QUESTION, 'Заменить'))) return; // список вариантов остаётся открытым
+    if (!(await confirmDialog(REPLACE_QUESTION, 'Заменить'))) return false; // список вариантов остаётся открытым
   }
-  lyricsDlg?.el.close();
   setLrc(lrcForNewText(fromLrc ? hit : null, !!regen));
   f.lyrics.value = text;
   f.lyricsErr.hidden = true;
   f.lyrics.classList.remove('invalid');
   updateLyricsState();
   toast('Текст вставлен');
+  return true; // закрыть диалог
 }
 
 /** Держать LRC (или сбросить: null); recheck — заново выставить галочку по правилу 3 с. */

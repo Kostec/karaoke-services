@@ -151,13 +151,16 @@ export function generateForm({ artist, title, lyrics = '', params = {}, audio, c
   return fd;
 }
 
-/** multipart для POST /api/import/inspect: {source: 'usdb'|'files'|'url', usdb_id?, url?, files?}. */
+/**
+ * multipart для POST /api/import/inspect: {source: 'usdb'|'files'|'url', usdb_id?, url?, files?}.
+ * Файл из выбранной папки уходит с путём от неё (webkitRelativePath) — сервер сохраняет раскладку.
+ */
 export function inspectForm({ source, usdb_id: usdbId, url, files = [] }) {
   const fd = new FormData();
   fd.append('source', source);
   if (source === 'usdb') fd.append('usdb_id', String(usdbId));
   if (source === 'url') fd.append('url', (url || '').trim());
-  if (source === 'files') for (const file of files) fd.append('files', file);
+  if (source === 'files') for (const file of files) fd.append('files', file, file.webkitRelativePath || file.name);
   return fd;
 }
 

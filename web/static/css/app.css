@@ -309,3 +309,9 @@ dialog.lyrics-dlg { width: min(640px, calc(100vw - 32px)); }
 .import-submit .actions { margin-top: 0; }
 .ok-text { color: var(--ok); }
 .err-text { color: var(--err); }
+
+/* Импорт → Папка: строки треков на генерацию */
+.folder-music h3 { margin-top: 18px; }
+.folder-track .row2 { margin-top: 4px; }
+.folder-lyrics { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 6px 0; }
+.folder-track .banner { margin-top: 6px; }

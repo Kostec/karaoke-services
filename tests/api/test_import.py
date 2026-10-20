@@ -368,9 +368,53 @@ def test_import_job_rejects_paths_outside_files(env, ic, key, value):
 
 def test_loose_files_with_same_name_are_400(ic):
     song = txt("Ария", "Ангел", audio="a.mp3")
-    r = inspect_files(ic, [("one/Ария - Ангел.txt", song), ("two/Ария - Ангел.txt", song), ("a.mp3", MP3)])
+    r = inspect_files(ic, [("Ария - Ангел.txt", song), ("ария - ангел.TXT", song), ("a.mp3", MP3)])
     assert r.status_code == 400 and r.json()["field"] == "files"
-    assert "Ария - Ангел.txt" in r.json()["detail"]
+    assert "Ария - Ангел.txt" in r.json()["detail"] or "ария - ангел.TXT" in r.json()["detail"]
+    r = inspect_files(ic, [("one/Ария - Ангел.txt", song), ("One/ария - ангел.txt", song), ("a.mp3", MP3)])
+    assert r.status_code == 400 and r.json()["field"] == "files"
+
+
+# ------------------------------------------------------------------ папка с относительными путями
+
+
+def test_folder_upload_keeps_relative_paths(env, ic):
+    """Папка из браузера: одинаковые имена в разных подпапках — разные песни, пути сохраняются."""
+    kino = txt("Кино", "Группа крови", audio="song.mp3", cover="cover.jpg")
+    aria = txt("Ария", "Ангел", audio="song.mp3")
+    r = inspect_files(ic, [("Музыка/Кино - Группа крови/song.txt", kino),
+                           ("Музыка/Кино - Группа крови/song.mp3", MP3),
+                           ("Музыка/Кино - Группа крови/cover.jpg", JPG),
+                           ("Музыка/Ария - Ангел/song.txt", aria),
+                           ("Музыка/Ария - Ангел/song.mp3", MP3 + b"!"),
+                           ("Музыка/Сплин - Романс.mp3", MP3),
+                           ("Музыка/.hidden/x.txt", b"#TITLE:x"),
+                           ("Музыка/readme.md", b"x")])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    songs = by_title(body)
+    assert set(songs) == {"Группа крови", "Ангел"}
+    assert songs["Группа крови"]["audio"] == "song.mp3" and songs["Группа крови"]["cover"] is True
+    files = env.data / "imports" / body["token"] / "files"
+    assert (files / "Музыка/Ария - Ангел/song.mp3").read_bytes() == MP3 + b"!"
+    assert (files / "Музыка/Сплин - Романс.mp3").is_file()
+    assert not (files / "Музыка/.hidden").exists() and not (files / "Музыка/readme.md").exists()
+    meta = json.loads((env.data / "imports" / body["token"] / "meta.json").read_text("utf-8"))
+    aria_meta = next(s for s in meta["songs"] if s["title"] == "Ангел")
+    r = import_job(ic, body["token"], aria_meta["index"], "Ария", "Ангел")
+    assert r.status_code == 201, r.text
+    job = r.json()
+    audio = env.data / job["params"]["inputs"]["audio"]
+    assert audio.read_bytes() == MP3 + b"!"
+
+
+@pytest.mark.parametrize("name", ["../x/song.txt", "a/../../song.txt", "/etc/song.txt", "C:/Music/song.txt",
+                                  "a/C:/song.txt", "a\\..\\..\\song.txt"])
+def test_folder_upload_rejects_bad_paths(env, ic, name):
+    r = inspect_files(ic, [(name, txt("Ария", "Ангел", audio="a.mp3")), ("a.mp3", MP3)])
+    assert r.status_code == 400 and r.json()["field"] == "files", r.text
+    assert r.json()["detail"] == "Недопустимый путь в загрузке"
+    assert not any((env.data / "imports").iterdir())
 
 
 def test_loose_files_size_error_speaks_of_files(ic):
@@ -386,3 +430,14 @@ def test_url_download_over_limit_is_413_via_fake_download(ic, http):
     http.route("GET", "https://packs.example/huge.zip", body=b"PK\x03\x04" + bytes(1024 * 1024))
     r = ic.post("/api/import/inspect", data={"source": "url", "url": "https://packs.example/huge.zip"})
     assert r.status_code == 413 and r.json()["field"] == "url"
+
+
+@pytest.mark.parametrize("names", [["a/x.txt", "a/x.txt/song.txt"], ["a/X.TXT/song.txt", "a/x.txt"],
+                                   ["a/" + "я" * 200 + ".txt"], ["a/" + "d" * 300 + "/song.txt"]])
+def test_folder_upload_unwritable_paths_are_400(env, ic, names):
+    """Файл и папка с одним именем или слишком длинное имя — 400, ничего не записано."""
+    song = txt("Ария", "Ангел", audio="a.mp3")
+    r = inspect_files(ic, [(n, song) for n in names] + [("a/a.mp3", MP3)])
+    assert r.status_code == 400 and r.json()["field"] == "files", r.text
+    assert "Недопустим" not in r.json()["detail"] and r.json()["detail"]
+    assert not any((env.data / "imports").iterdir())

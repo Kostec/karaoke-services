@@ -1,14 +1,23 @@
-// Раздел «Импорт»: готовые UltraStar-песни из usdb, из файлов (zip или .txt + аудио + обложка)
-// и по ссылке (zip или GitHub). Сначала разбор (inspect), затем по заданию на отмеченную песню.
+// Раздел «Импорт»: готовые UltraStar-песни из usdb, из файлов (zip или .txt + аудио + обложка),
+// по ссылке (zip или GitHub) и из папки с компьютера. Сначала разбор (inspect), затем по заданию
+// на отмеченную песню. Папка (G08): готовые песни — тем же разбором, прочие mp3 — на генерацию
+// (по строке на трек, текст ищется сам по одному треку).
 
-import { api, getDefaults, inspectForm, importForm, errorText } from './api.js';
+import { api, getDefaults, inspectForm, importForm, generateForm, errorText } from './api.js';
 import { h, clear, toast, field, debounce, songName } from './ui.js';
+import { readId3 } from './id3.js';
+import { usableHits, LRC_TIMING_LABEL } from './lyrics-search.js';
+import { openLyricsDialog } from './lyrics-dialog.js';
+import {
+  splitFolder, trackMeta, initialTrack, withExisting, withHit, withDuration, generateBlocker, trackFields,
+  lyricsLabel, folderNotice, queuedText, nextLyricsRow, NO_FOLDER_PICKER,
+} from './folder-logic.js';
 import {
   pickAudioSource, importWarnings, initialCardState, importFields, importBlocker, importOutcome,
   expiredMessage, DUP_TEXT,
 } from './import-logic.js';
 
-const TABS = [['usdb', 'usdb'], ['files', 'Файлы'], ['url', 'Ссылка']];
+const TABS = [['usdb', 'usdb'], ['files', 'Файлы'], ['url', 'Ссылка'], ['folder', 'Папка']];
 const USDB_LANGUAGES = [['Russian', 'русский'], ['English', 'английский'], ['Ukrainian', 'украинский'], ['', 'любой']];
 const FILE_ACCEPT = '.zip,.txt,.mp3,.ogg,.m4a,.opus,.wav,.flac,.jpg,.jpeg,.png,.webp';
 const SOURCE_LABEL = { usdb: 'из usdb', files: 'из файлов', url: 'по ссылке' };
@@ -19,6 +28,7 @@ const view = {}; // элементы раздела: вкладки, формы,
 const usdbState = { start: 0, query: null, seq: 0 }; // поиск usdb: запрос, смещение, номер ответа
 let pack = null; // {token, source, items: [{song, state, card}]} — token разбора из inspect
 let importing = false;
+let shown = false; // раздел на экране (hide — поиск текстов на паузе)
 
 export function mount(section) {
   root = section;
@@ -30,6 +40,13 @@ export function show() {
   getDefaults().then((d) => {
     if (d.max_import_mb) view.filesHint.textContent = `zip-архив или файлы песни (.txt, аудио, обложка), до ${d.max_import_mb} МБ`;
   }).catch(() => {});
+  shown = true;
+  if (tab === 'folder') runLyricsQueue();
+}
+
+export function hide() {
+  shown = false;
+  stopLyrics(); // уход из раздела — поиск текстов на паузе, продолжится при возврате
 }
 
 // ---------------------------------------------------------------- построение
@@ -46,6 +63,7 @@ function build() {
   view.panels.usdb = buildUsdb();
   view.panels.files = buildFiles();
   view.panels.url = buildUrl();
+  view.panels.folder = buildFolder();
   for (const [id] of TABS) {
     Object.assign(view.panels[id], { id: `import-panel-${id}`, role: 'tabpanel' });
     view.panels[id].setAttribute('aria-labelledby', `import-tab-${id}`);
@@ -54,7 +72,7 @@ function build() {
   view.packBox = h('div', { class: 'import-pack', hidden: true });
   clear(root).append(
     h('div', { class: 'view-head' }, h('h2', {}, 'Импорт')),
-    buildTips(), tabs, view.panels.usdb, view.panels.files, view.panels.url, view.packBox);
+    buildTips(), tabs, view.panels.usdb, view.panels.files, view.panels.url, view.panels.folder, view.packBox);
   selectTab(tab);
 }
 
@@ -77,6 +95,7 @@ function selectTab(id) {
     view.tabBtns[k].setAttribute('aria-selected', String(k === id));
     view.panels[k].hidden = k !== id;
   }
+  if (id === 'folder') runLyricsQueue(); else stopLyrics();
 }
 
 function errorBanner() {
@@ -211,45 +230,48 @@ function buildUrl() {
 
 // ---------------------------------------------------------------- разбор
 
-async function inspect(src, btn, errEl, fields = {}) {
+/** Разбор источника; box — куда показать пак (у папки свой блок, без перехода в очередь). */
+async function inspect(src, btn, errEl, fields = {}, box = view.packBox) {
   if (importing) return;
-  btn.disabled = true;
-  const label = btn.textContent;
-  btn.textContent = 'Разбор…';
+  const label = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = 'Разбор…'; }
   showError(errEl, '');
   try {
     const res = await api.importInspect(inspectForm(src));
-    showPack(res);
+    showPack(res, box);
   } catch (e) {
     if (isNoAccount(e)) view.noAccount.hidden = false;
     showError(errEl, errorText(e));
     markInvalid(fields[e.data?.field]);
   } finally {
-    btn.disabled = false;
-    btn.textContent = label;
+    if (btn) { btn.disabled = false; btn.textContent = label; }
   }
 }
 
-function showPack(res) {
+function showPack(res, box = view.packBox) {
   const { token } = res;
-  pack = { token, source: res.source, items: res.songs.map((song) => ({ song, state: initialCardState(song) })) };
+  if (pack && pack.box !== box) { clear(pack.box); pack.box.hidden = true; } // пак один на раздел
+  const folder = box !== view.packBox;
+  pack = { token, source: res.source, box, folder, items: res.songs.map((song) => ({ song, state: initialCardState(song) })) };
   view.packErr = errorBanner();
   view.importBtn = h('button', { type: 'button', class: 'primary', onclick: runImport }, 'Импортировать выбранные');
-  view.blocker = h('div', { class: 'small muted' });
+  view.blocker = h('div', { class: 'small muted', role: 'status' });
   const n = pack.items.length;
-  clear(view.packBox).append(
-    h('h3', {}, n === 1 ? `Найдена песня ${SOURCE_LABEL[res.source] || ''}` : `Найдено песен: ${n} ${SOURCE_LABEL[res.source] || ''}`),
+  const from = SOURCE_LABEL[res.source] || '';
+  clear(box).append(
+    h('h3', {}, folder ? `Готовые песни UltraStar: ${n}` : n === 1 ? `Найдена песня ${from}` : `Найдено песен: ${n} ${from}`),
     ...pack.items.map(buildCard),
     view.packErr,
     h('div', { class: 'card import-submit' }, h('div', { class: 'actions' }, view.importBtn), view.blocker));
-  view.packBox.hidden = false;
+  box.hidden = false;
   updateSubmit();
-  view.packBox.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  if (!folder) box.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
 
 function closePack(text) {
+  const box = pack?.box || view.packBox;
   pack = null;
-  clear(view.packBox).append(h('div', { class: 'banner err', role: 'alert' }, text));
+  clear(box).append(h('div', { class: 'banner err', role: 'alert' }, text));
 }
 
 // ---------------------------------------------------------------- карточка песни
@@ -356,6 +378,7 @@ async function runImport() {
   try {
     for (const item of chosen) {
       const { song, state, card } = item;
+      view.blocker.textContent = queuedText(ok, chosen.length);
       card.status.className = 'small';
       card.status.textContent = 'Отправка…';
       try {
@@ -387,10 +410,318 @@ async function runImport() {
     if (view.importBtn) view.importBtn.textContent = label;
     updateSubmit();
   }
+  if (pack?.folder) { // на экране остаётся группа генерации — не уходим, а даём ссылку в очередь
+    view.blocker.replaceChildren(queuedText(ok, chosen.length), failed ? ' — ошибки в карточках выше. ' : '. ',
+      h('a', { href: '#queue' }, 'Открыть очередь'));
+    return;
+  }
   if (!failed) {
     toast(ok === 1 ? 'Песня поставлена в очередь' : `В очереди песен: ${ok}`);
     location.hash = '#queue';
   } else {
     showError(view.packErr, ok ? `Поставлено ${ok}, не получилось ${failed} — см. карточки выше` : 'Не получилось — см. карточки выше');
   }
+}
+
+// ---------------------------------------------------------------- папка (G08)
+
+// rows: [{state, file, card}] — mp3 на генерацию; lyricsSeq — номер прохода поиска текстов
+// (стоп/новая папка — +1, ответ старого прохода игнорируется).
+const folder = { seq: 0, rows: [], lyricsSeq: 0, searching: false, generating: false, defaults: null };
+
+function canPickFolder(input) {
+  return 'webkitdirectory' in input && !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+}
+
+function buildFolder() {
+  view.folder = h('input', { type: 'file', name: 'folder', multiple: true, webkitdirectory: '', directory: '' });
+  view.folderErr = errorBanner();
+  view.folderInfo = h('div', { class: 'small', role: 'status' });
+  view.folderWarn = h('div', { class: 'banner warn', hidden: true });
+  view.folderPack = h('div', { class: 'import-pack', hidden: true });
+  view.musicBox = h('div', { class: 'folder-music', hidden: true });
+  const supported = canPickFolder(view.folder);
+  const card = h('div', { class: 'card' },
+    supported
+      ? h('label', { class: 'field' }, h('span', {}, 'Папка с музыкой'), view.folder,
+        h('div', { class: 'small muted' }, 'готовые песни UltraStar (.txt с аудио) импортируются, остальные mp3 — на генерацию'))
+      : h('div', { class: 'banner warn' }, NO_FOLDER_PICKER),
+    view.folderWarn, view.folderErr, view.folderInfo);
+  view.folder.addEventListener('change', () => onFolderChosen([...view.folder.files]));
+  return h('div', {}, card, view.folderPack, view.musicBox);
+}
+
+/** Текст .txt: UTF-8, иначе cp1251 (старые песни UltraStar). */
+async function readText(file) {
+  if (file.size > 2 * 1024 * 1024) return '';
+  const bytes = await file.arrayBuffer();
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { /* не UTF-8 */ }
+  try { return new TextDecoder('windows-1251').decode(bytes); } catch { return ''; }
+}
+
+const relPath = (file) => file.webkitRelativePath || file.name;
+
+async function onFolderChosen(files) {
+  const my = ++folder.seq;
+  stopLyrics();
+  folder.rows = [];
+  if (pack?.folder) pack = null;
+  clear(view.folderPack); view.folderPack.hidden = true;
+  clear(view.musicBox); view.musicBox.hidden = true;
+  showError(view.folderErr, '');
+  const notice = folderNotice(files.length);
+  view.folderWarn.textContent = notice;
+  view.folderWarn.hidden = !notice;
+  if (!files.length) { view.folderInfo.textContent = 'Папка пуста'; return; }
+  view.folderInfo.textContent = 'Разбираю папку…';
+
+  const byPath = new Map(files.map((f) => [relPath(f), f]));
+  const entries = [];
+  for (const f of files) {
+    const path = relPath(f);
+    entries.push(/\.txt$/i.test(path) ? { path, text: await readText(f) } : { path });
+    if (my !== folder.seq) return;
+  }
+  const split = splitFolder(entries);
+  view.folderInfo.textContent = `Готовых песен: ${split.songCount} · mp3 на генерацию: ${split.music.length} · пропущено файлов: ${split.skipped}`;
+
+  if (split.songs.length) {
+    inspect({ source: 'files', files: split.songs.map((p) => byPath.get(p)) }, null, view.folderErr, {}, view.folderPack);
+  }
+  if (split.music.length) await showMusic(my, split.music.map((p) => byPath.get(p)));
+}
+
+// ---------------------------------------------------------------- группа «Музыка для генерации»
+
+async function showMusic(my, files) {
+  let d = {};
+  try { d = await getDefaults(); } catch (e) { showError(view.folderErr, errorText(e)); }
+  if (my !== folder.seq) return;
+  folder.defaults = d;
+  const max = d.max_upload_mb || 0;
+  view.gModel = h('select', { name: 'folder-whisper-model' }, (d.whisper_models || []).map((m) => h('option', { value: m }, m)));
+  view.gLang = h('select', { name: 'folder-language' }, (d.languages || []).map((l) => h('option', { value: l.code }, `${l.name} (${l.code})`)));
+  view.gModel.value = d.defaults?.whisper_model || '';
+  view.gLang.value = d.defaults?.language || '';
+  view.genBtn = h('button', { type: 'button', class: 'primary', onclick: runGenerate }, 'Сгенерировать выбранные');
+  view.genBlocker = h('div', { class: 'small muted', role: 'status' });
+  view.genList = h('div', {});
+  clear(view.musicBox).append(
+    h('h3', {}, `Музыка для генерации: ${files.length}`),
+    h('div', { class: 'card' },
+      h('div', { class: 'row2' }, field('Модель распознавания', view.gModel), field('Язык', view.gLang)),
+      h('div', { class: 'small muted' }, 'одни на все треки; прочие параметры — по умолчанию, как в «Новой песне»')),
+    view.genList,
+    h('div', { class: 'card import-submit' }, h('div', { class: 'actions' }, view.genBtn), view.genBlocker));
+  view.musicBox.hidden = false;
+
+  for (const file of files) {
+    let tags = null;
+    try { tags = await readId3(file); } catch { /* без тегов — из имени файла */ }
+    if (my !== folder.seq) return;
+    const row = { file, state: initialTrack(relPath(file), file.size, trackMeta(tags, relPath(file)), max) };
+    folder.rows.push(row);
+    view.genList.append(buildTrack(row));
+    refreshTrack(row);
+  }
+  for (const row of folder.rows) {
+    await checkTrackExists(row);
+    if (my !== folder.seq) return;
+  }
+  runLyricsQueue();
+}
+
+function groupParams() {
+  const d = folder.defaults || {};
+  const language = view.gLang.value;
+  return { ...(d.defaults || {}), whisper_model: view.gModel.value, language,
+    align_model: (d.align_models || {})[language] || '' };
+}
+
+function buildTrack(row) {
+  const { state } = row;
+  const card = {};
+  row.card = card;
+  card.select = h('input', { type: 'checkbox', checked: state.selected });
+  card.artist = h('input', { type: 'text', autocomplete: 'off', maxlength: '200', value: state.artist, placeholder: 'не определился — впишите' });
+  card.title = h('input', { type: 'text', autocomplete: 'off', maxlength: '200', value: state.title });
+  card.replace = h('input', { type: 'checkbox' });
+  card.big = h('div', { class: 'banner err', hidden: true }, state.tooBig);
+  card.dup = h('div', { class: 'banner warn', hidden: true },
+    h('div', {}, DUP_TEXT), h('label', { class: 'check' }, card.replace, 'Заменить (старая уйдёт в корзину)'));
+  card.lyrics = h('span', {});
+  card.pick = h('button', { type: 'button', onclick: () => pickTrackLyrics(row) }, 'Выбрать текст');
+  card.lrc = h('input', { type: 'checkbox' });
+  card.lrcHint = h('div', { class: 'small muted' });
+  card.lrcBox = h('div', { hidden: true }, h('label', { class: 'check' }, card.lrc, LRC_TIMING_LABEL), card.lrcHint);
+  card.status = h('div', { class: 'small', role: 'status' });
+  const mb = (state.size / 1024 / 1024).toFixed(1);
+  card.el = h('article', { class: 'card import-song folder-track' },
+    h('label', { class: 'check import-song-head' }, card.select, h('span', { class: 'song-title' }, state.path.split('/').pop())),
+    h('div', { class: 'small muted' }, `${state.path} · ${mb} МБ`),
+    h('div', { class: 'row2' }, field('Исполнитель', card.artist), field('Название', card.title)),
+    h('div', { class: 'folder-lyrics small' }, card.lyrics, card.pick),
+    card.lrcBox, card.big, card.dup, card.status);
+
+  const changed = debounce(() => {
+    if (!state.lyricsManual) { Object.assign(state, { lyrics: 'queued', hit: null, hits: [] }); runLyricsQueue(); }
+    checkTrackExists(row);
+  }, 600);
+  card.select.addEventListener('change', () => { Object.assign(state, { selected: card.select.checked, touched: true }); refreshTrack(row); });
+  card.artist.addEventListener('input', () => { state.artist = card.artist.value; refreshTrack(row); changed(); });
+  card.title.addEventListener('input', () => { state.title = card.title.value; refreshTrack(row); changed(); });
+  card.replace.addEventListener('change', () => { state.replace = card.replace.checked; });
+  card.lrc.addEventListener('change', () => { state.lrcTiming = card.lrc.checked; });
+  return card.el;
+}
+
+function refreshTrack(row) {
+  const { state, card } = row;
+  card.select.checked = state.selected;
+  card.artist.classList.toggle('invalid', !state.artist.trim());
+  card.lyrics.textContent = lyricsLabel(state);
+  card.lyrics.className = state.lyrics === 'found' ? 'ok-text' : '';
+  card.pick.hidden = !state.artist.trim() || !state.title.trim();
+  card.lrcBox.hidden = !state.hit?.synced;
+  card.lrc.checked = state.lrcTiming;
+  card.lrcHint.textContent = state.lrcHint;
+  card.big.hidden = !state.tooBig;
+  card.dup.hidden = !state.existing;
+  card.replace.checked = state.replace;
+  card.el.classList.toggle('off', !state.selected);
+  const locked = !!state.done || !!state.tooBig;
+  for (const el of [card.select, card.artist, card.title, card.replace, card.lrc, card.pick]) el.disabled = locked || folder.generating;
+  updateGenerate();
+}
+
+function setTrack(row, patch) {
+  Object.assign(row.state, patch);
+  refreshTrack(row);
+}
+
+async function checkTrackExists(row) {
+  const artist = row.state.artist.trim(), title = row.state.title.trim();
+  if (!artist || !title) return;
+  const my = (row.existsSeq = (row.existsSeq || 0) + 1);
+  try {
+    const r = await api.exists(artist, title);
+    if (my === row.existsSeq) setTrack(row, withExisting(row.state, r.exists ? r.song_id : null));
+  } catch { /* дубль проверит сервер при постановке */ }
+}
+
+function pickTrackLyrics(row) {
+  const { state } = row;
+  openLyricsDialog({
+    artist: state.artist.trim(), title: state.title.trim(),
+    hits: state.lyrics === 'found' && state.hits.length ? state.hits : undefined,
+    hint: 'Выберите вариант текста для этого трека.',
+    onPick: (hit) => { setTrack(row, { ...withHit(state, hit), lyricsManual: true }); return true; },
+  });
+}
+
+function updateGenerate() {
+  if (!view.genBtn) return;
+  const blocker = generateBlocker(folder.rows);
+  view.genBtn.disabled = folder.generating || !!blocker;
+  if (!folder.generating) view.genBlocker.textContent = blocker || '';
+}
+
+// ---------------------------------------------------------------- авто-поиск текста: по одному треку
+
+/** Длительность mp3 по метаданным <audio>; не вышло за 5 с — null. */
+function readDuration(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const el = new Audio();
+    let timer = null;
+    const done = (sec) => { clearTimeout(timer); URL.revokeObjectURL(url); el.removeAttribute('src'); resolve(sec); };
+    timer = setTimeout(() => done(null), 5000);
+    el.preload = 'metadata';
+    el.addEventListener('loadedmetadata', () => done(el.duration), { once: true });
+    el.addEventListener('error', () => done(null), { once: true });
+    el.src = url;
+  });
+}
+
+function stopLyrics() {
+  folder.lyricsSeq++;
+  folder.searching = false;
+  for (const row of folder.rows) if (row.state.lyrics === 'searching') setTrack(row, { lyrics: 'queued' });
+}
+
+async function runLyricsQueue() {
+  if (folder.searching || !shown || tab !== 'folder') return;
+  folder.searching = true;
+  const my = folder.lyricsSeq;
+  try {
+    // следующая строка выбирается заново после каждого трека: правка во время поиска
+    // (вписали исполнителя, сменили название) возвращает строку в очередь, и проход её возьмёт
+    for (let i = nextLyricsRow(folder.rows.map((r) => r.state)); i >= 0; i = nextLyricsRow(folder.rows.map((r) => r.state))) {
+      const row = folder.rows[i];
+      const { state } = row;
+      const artist = state.artist.trim(), title = state.title.trim();
+      setTrack(row, { lyrics: 'searching' });
+      if (state.duration == null) {
+        const sec = await readDuration(row.file);
+        if (my !== folder.lyricsSeq) return;
+        Object.assign(state, withDuration(state, sec));
+      }
+      let hits = null;
+      try {
+        hits = usableHits((await api.lyricsSearch(artist, title)).items);
+      } catch { /* сервис текстов недоступен — без текста */ }
+      if (my !== folder.lyricsSeq) return;
+      if (state.lyrics !== 'searching') continue; // правка вернула строку в очередь или выбрали вручную
+      if (state.artist.trim() !== artist || state.title.trim() !== title) { state.lyrics = 'queued'; continue; }
+      if (hits === null) setTrack(row, { lyrics: 'failed', hits: [] });
+      else setTrack(row, { hits, ...withHit(state, hits[0] || null) });
+    }
+  } finally {
+    if (my === folder.lyricsSeq) folder.searching = false;
+  }
+}
+
+// ---------------------------------------------------------------- постановка генерации
+
+async function runGenerate() {
+  if (folder.generating) return;
+  const chosen = folder.rows.filter((r) => r.state.selected && !r.state.done);
+  if (generateBlocker(chosen)) return;
+  folder.generating = true;
+  const params = groupParams();
+  let ok = 0, failed = 0;
+  for (const row of folder.rows) refreshTrack(row);
+  view.genBtn.textContent = 'Отправка…';
+  try {
+    for (const row of chosen) {
+      view.genBlocker.textContent = queuedText(ok, chosen.length);
+      const { state, card } = row;
+      card.status.className = 'small';
+      card.status.textContent = 'Отправка…';
+      try {
+        await api.generate(generateForm(trackFields(state, row.file, params)));
+        state.done = true;
+        ok += 1;
+        card.status.className = 'small ok-text';
+        card.status.textContent = 'Поставлено в очередь';
+      } catch (e) {
+        failed += 1;
+        if (e.status === 409 && e.data?.song_id) {
+          state.existing = e.data.song_id;
+          card.status.textContent = '';
+        } else {
+          card.status.className = 'small err-text';
+          card.status.textContent = errorText(e);
+        }
+      }
+      refreshTrack(row);
+    }
+  } finally {
+    folder.generating = false;
+    view.genBtn.textContent = 'Сгенерировать выбранные';
+    for (const row of folder.rows) refreshTrack(row);
+  }
+  view.genBlocker.replaceChildren(queuedText(ok, chosen.length), failed ? ' — ошибки в строках выше. ' : '. ',
+    h('a', { href: '#queue' }, 'Открыть очередь'));
+  if (ok) toast(ok === 1 ? 'Трек поставлен на генерацию' : `На генерацию поставлено: ${ok}`);
 }

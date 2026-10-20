@@ -109,33 +109,59 @@ def _from_files(ctx: AppContext, work: Path, files: list[UploadFile]) -> None:
         _save_upload(files[0], zip_path, limit_mb, total, f"Архив больше {limit_mb} МБ")
         _extract(ctx, zip_path, dest)
         return
+    # Сначала проверить все пути: плохой путь — 400 до записи хоть одного файла.
+    planned: list[tuple[UploadFile, str]] = []
     seen: set[str] = set()
     for f in files:
-        f.file.seek(0)
-        name = PurePosixPath(f.filename.replace("\\", "/")).name
-        if not name or name.startswith(".") or PurePosixPath(name).suffix.lower() not in songpack.ALLOWED_EXTS:
+        if f.filename.startswith(("/", "\\")):
+            raise ApiError(400, BAD_PATH, field="files")
+        rel = _safe_rel(f.filename, BAD_PATH, "files")  # папка из браузера: «папка/песня/файл»
+        parts = rel.split("/")
+        name = parts[-1]
+        if (not name or any(p.startswith(".") for p in parts)
+                or PurePosixPath(name).suffix.lower() not in songpack.ALLOWED_EXTS):
             if name.lower().endswith(".zip"):
                 raise ApiError(400, "Загрузите один zip или файлы песни без архива", field="files")
-            continue  # не файл песни — молча пропускаем, как при распаковке
-        if name.casefold() in seen:
-            raise ApiError(400, f"Два файла с именем «{name}» — оставьте один или загрузите zip",
+            continue  # не файл песни (или скрытая папка) — молча пропускаем, как при распаковке
+        if rel.casefold() in seen:
+            raise ApiError(400, f"Два файла с именем «{rel}» — оставьте один или загрузите zip",
                            field="files")
-        seen.add(name.casefold())
-        _save_upload(f, dest / name, limit_mb, total, f"Файлы вместе больше {limit_mb} МБ")
+        seen.add(rel.casefold())
+        planned.append((f, rel))
+    # файл и папка с одним именем («x.txt» и «x.txt/song.txt») не уживутся на диске
+    dirs = {"/".join(rel.casefold().split("/")[:i]) for _, rel in planned for i in range(1, rel.count("/") + 1)}
+    clash = next((rel for _, rel in planned if rel.casefold() in dirs), None)
+    if clash:
+        raise ApiError(400, f"«{clash}» — и файл, и папка с тем же именем; переименуйте одно из них",
+                       field="files")
+    for f, rel in planned:
+        f.file.seek(0)
+        target = dest / rel
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _save_upload(f, target, limit_mb, total, f"Файлы вместе больше {limit_mb} МБ")
+        except OSError:  # слишком длинное имя и прочее, чего не примет файловая система
+            raise ApiError(400, f"Не удалось сохранить «{rel}» — слишком длинное или недопустимое имя",
+                           field="files") from None
 
 
 BAD_PATH_URL = "Недопустимая папка в ссылке на GitHub"
 BAD_PATH = "Недопустимый путь в загрузке"
 
 
-def _safe_subdir(raw: str) -> str:
-    """Папка из ``/tree/<ветка>/<папка>``: раскодировать и отклонить ``..``, абсолютный путь,
-    букву диска — до любой загрузки."""
-    text = urllib.parse.unquote(raw).replace("\\", "/")
+def _safe_rel(raw: str, message: str, field: str) -> str:
+    """Относительный путь POSIX: ``\\`` → ``/``, пустые и ``.`` части убраны; ``..``, буква диска,
+    NUL → 400 до любой записи."""
+    text = raw.replace("\\", "/")
     parts = [p for p in text.split("/") if p not in ("", ".")]
     if "\0" in text or any(p == ".." or re.match(r"[A-Za-z]:", p) for p in parts):
-        raise ApiError(400, BAD_PATH_URL, field="url")
+        raise ApiError(400, message, field=field)
     return "/".join(parts)
+
+
+def _safe_subdir(raw: str) -> str:
+    """Папка из ``/tree/<ветка>/<папка>``: раскодировать и проверить, как путь файла загрузки."""
+    return _safe_rel(urllib.parse.unquote(raw), BAD_PATH_URL, "url")
 
 
 def _inside(work: Path, rel: str) -> Path:
