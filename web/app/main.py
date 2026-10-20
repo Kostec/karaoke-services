@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
+from .api_import import purge_imports, router as import_router
 from .api_jobs import ctx_of, router as jobs_router
 from .api_lyrics import router as lyrics_router
 from .api_settings import router as settings_router
@@ -63,16 +64,25 @@ class BasicAuthMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
+def _cleanup(ctx: AppContext) -> None:
+    """Очистка корзины по TRASH_DAYS и распаковок импорта старше часа."""
+    try:
+        removed = ctx.trash.purge()
+        if removed:
+            log.info("корзина: окончательно удалено записей: %s", removed)
+    except Exception:  # noqa: BLE001 — сбой очистки не должен ронять веб
+        log.exception("очистка корзины не удалась")
+    try:
+        purge_imports(ctx.paths)
+    except Exception:  # noqa: BLE001
+        log.exception("уборка imports/ не удалась")
+
+
 async def _purge_loop(ctx: AppContext) -> None:
-    """Окончательная очистка корзины каждые 6 часов (первый проход — при старте, в lifespan)."""
+    """Уборка каждые 6 часов (первый проход — при старте, в lifespan)."""
     while True:
         await asyncio.sleep(PURGE_EVERY_S)
-        try:
-            removed = await asyncio.to_thread(ctx.trash.purge)
-            if removed:
-                log.info("корзина: окончательно удалено записей: %s", removed)
-        except Exception:  # noqa: BLE001 — сбой очистки не должен ронять веб
-            log.exception("очистка корзины не удалась")
+        await asyncio.to_thread(_cleanup, ctx)
 
 
 def create_app(*, data_dir: str | Path | None = None, env: dict | None = None,
@@ -85,6 +95,7 @@ def create_app(*, data_dir: str | Path | None = None, env: dict | None = None,
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
         ctx.trash.purge()  # при старте — синхронно, до первого запроса
+        purge_imports(ctx.paths)
         task = asyncio.create_task(_purge_loop(ctx))
         try:
             yield
@@ -122,6 +133,7 @@ def create_app(*, data_dir: str | Path | None = None, env: dict | None = None,
     def defaults(request: Request):
         return defaults_payload(ctx_of(request))
 
+    app.include_router(import_router)  # раньше jobs: POST /api/jobs/import
     app.include_router(jobs_router)
     app.include_router(songs_router)
     app.include_router(settings_router)

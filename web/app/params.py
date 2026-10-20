@@ -56,6 +56,7 @@ def defaults_payload(ctx: AppContext) -> dict:
         "max_upload_mb": ctx.max_upload_mb,
         "max_cover_mb": MAX_COVER_MB,
         "max_lyrics_mb": MAX_LYRICS_MB,
+        "max_import_mb": ctx.int_env("MAX_IMPORT_MB", 500),
         "trash_days": ctx.trash.days,
     }
 
