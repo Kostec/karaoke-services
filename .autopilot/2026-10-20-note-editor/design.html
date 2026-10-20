@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Редактор нот — макет</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f4f5f7; --surface: #ffffff; --surface-2: #eef0f3; --text: #1b1d22; --muted: #5d6470;
+  --border: #d5d9e0; --accent: #2f5bd3; --accent-text: #fff; --ok: #1d7a3e; --ok-bg: #e3f4e8;
+  --warn: #8a5a00; --warn-bg: #fff4d6; --err: #b42318; --err-bg: #fde8e6;
+  --note: #2f5bd3; --note-sel: #f08c00; --gold: #c99400; --grid: rgba(0,0,0,.06); --grid-strong: rgba(0,0,0,.14);
+  --playhead: #e03131; --line-break: #7a8394; --wave: #9aa6bd;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111317; --surface: #1b1e24; --surface-2: #252932; --text: #e7e9ee; --muted: #a0a7b4;
+    --border: #353a45; --accent: #6b8cff; --accent-text: #0d1020; --ok: #5fd28a; --ok-bg: #173022;
+    --warn: #ffcf66; --warn-bg: #3a2f12; --err: #ff8a80; --err-bg: #3b1a19;
+    --note: #6b8cff; --note-sel: #ffa94d; --gold: #ffd43b; --grid: rgba(255,255,255,.05); --grid-strong: rgba(255,255,255,.12);
+    --playhead: #ff6b6b; --line-break: #8d95a5; --wave: #4a5468;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, "Segoe UI", Roboto, sans-serif; }
+button { font: inherit; color: inherit; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; cursor: pointer; min-height: 32px; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+button.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button.icon { min-width: 34px; padding: 5px 8px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+kbd { font: 12px ui-monospace, Consolas, monospace; background: var(--surface-2); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+.muted { color: var(--muted); } .small { font-size: 13px; }
+
+.mock-note { background: var(--warn-bg); color: var(--warn); padding: 6px 16px; font-size: 13px; text-align: center; }
+
+/* окно редактора */
+.ed { position: fixed; inset: 28px 12px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; display: grid;
+  grid-template-rows: auto auto 1fr auto; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+.head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.head h3 { margin: 0; font-size: 16px; } .head .titles { flex: 1; min-width: 0; }
+.status { font-size: 13px; color: var(--muted); }
+.status.dirty { color: var(--warn); }
+
+/* транспорт и инструменты */
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.bar .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+.time { font: 600 14px ui-monospace, Consolas, monospace; min-width: 120px; text-align: center; }
+.bar select { font: inherit; color: inherit; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px; min-height: 32px; }
+.grow { flex: 1; }
+
+/* середина: таймлайн + панель текста */
+.main { display: grid; grid-template-columns: 1fr auto; min-height: 0; }
+.center { display: grid; grid-template-rows: 1fr auto; min-height: 0; min-width: 0; }
+.tl { display: grid; grid-template-columns: 44px 1fr; min-height: 0; }
+.keys { border-right: 1px solid var(--border); position: relative; overflow: hidden; background: var(--surface); }
+.keys div { position: absolute; left: 0; right: 0; font: 10px ui-monospace, monospace; color: var(--muted); text-align: right; padding-right: 4px; }
+.keys .blk { background: var(--surface-2); }
+.scroll { overflow: auto; position: relative; min-width: 0; }
+.inner { position: relative; }
+.ruler { position: sticky; top: 0; z-index: 4; height: 24px; background: var(--surface); border-bottom: 1px solid var(--border); cursor: pointer; }
+.ruler span { position: absolute; top: 4px; font: 11px ui-monospace, monospace; color: var(--muted); transform: translateX(3px); }
+.ruler i { position: absolute; bottom: 0; width: 1px; height: 7px; background: var(--muted); }
+.wave { display: block; height: 44px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.roll { position: relative; cursor: crosshair; }
+.lane { position: relative; height: 40px; border-top: 1px solid var(--border); background: var(--surface-2); }
+
+.note { position: absolute; height: var(--nh, 9px); border-radius: 4px; background: var(--note); cursor: grab; touch-action: none; }
+.note::before, .note::after { content: ""; position: absolute; top: -4px; bottom: -4px; width: 7px; cursor: ew-resize; }
+.note::before { left: -3px; } .note::after { right: -3px; }
+.note.sel::before, .note.sel::after { top: -3px; bottom: -3px; width: 6px; border-radius: 3px; background: var(--surface); border: 2px solid var(--note-sel); }
+.note.sel::before { left: -4px; } .note.sel::after { right: -4px; }
+.note.gold { background: var(--gold); }
+.note.free { background: transparent; border: 2px dashed var(--note); }
+.note.sel { background: var(--note-sel); box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--note-sel); z-index: 2; }
+.note.live { filter: brightness(1.35); box-shadow: 0 0 10px var(--note); }
+.note.bad { background: var(--err); }
+.chip { position: absolute; top: 6px; height: 28px; display: flex; align-items: center; padding: 0 3px; font-size: 13px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; border-left: 1px solid var(--grid-strong); cursor: text; border-radius: 3px; }
+.chip.sel { background: color-mix(in srgb, var(--note-sel) 25%, transparent); font-weight: 600; }
+.chip.live { color: var(--accent); font-weight: 700; }
+.chip.empty { color: var(--err); }
+.chip input { width: 100%; min-width: 60px; font: inherit; padding: 2px 4px; border: 2px solid var(--accent); border-radius: 4px; background: var(--surface); color: var(--text); }
+.brk { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--line-break); z-index: 1; pointer-events: none; }
+.brk b { position: absolute; bottom: 2px; left: -9px; width: 16px; height: 16px; border-radius: 50%; background: var(--line-break); color: var(--surface);
+  font: 700 10px/16px system-ui; text-align: center; pointer-events: auto; cursor: ew-resize; }
+.playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--playhead); z-index: 5; pointer-events: none; }
+.playhead::before { content: ""; position: absolute; top: 0; left: -5px; border: 6px solid transparent; border-top-color: var(--playhead); }
+.marquee { position: absolute; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); pointer-events: none; z-index: 6; }
+
+.hint { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 6px 14px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
+
+/* панель текста справа */
+.panel { width: 320px; border-left: 1px solid var(--border); display: grid; grid-template-rows: auto 1fr auto; min-height: 0; background: var(--surface); transition: width .15s; }
+.panel.closed { width: 40px; }
+.panel .ph { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.panel .ph h4 { margin: 0; font-size: 14px; flex: 1; }
+.panel.closed .ph h4, .panel.closed .plist, .panel.closed .pfoot { display: none; }
+.panel.closed .ph { flex-direction: column; padding: 8px 2px; border: 0; }
+.panel .vlabel { display: none; writing-mode: vertical-rl; font-size: 13px; color: var(--muted); margin-top: 8px; cursor: pointer; }
+.panel.closed .vlabel { display: block; }
+.plist { overflow: auto; padding: 6px 8px; margin: 0; list-style: none; }
+.pl { display: grid; grid-template-columns: 22px 1fr; gap: 2px 6px; padding: 5px 6px; border-radius: 8px; align-items: start; }
+.pl.cur { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.pl.live { box-shadow: inset 3px 0 0 var(--playhead); }
+.pl .n { font-size: 12px; color: var(--muted); padding-top: 6px; text-align: right; cursor: pointer; }
+.pl input { width: 100%; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; }
+.pl input:hover { border-color: var(--border); } .pl input:focus { border-color: var(--accent); background: var(--surface); }
+.pl .st { grid-column: 2; font-size: 12px; padding-left: 7px; }
+.st.ok { color: var(--muted); } .st.warn { color: var(--warn); }
+.st button { min-height: 24px; padding: 1px 7px; font-size: 12px; margin-left: 6px; }
+.pfoot { padding: 8px 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+
+.toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); background: var(--text); color: var(--surface); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 50; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.toast.show { opacity: 1; }
+.tapbanner { background: var(--warn-bg); color: var(--warn); padding: 6px 14px; font-size: 13px; border-bottom: 1px solid var(--border); }
+dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); max-width: 560px; }
+dialog table { border-collapse: collapse; font-size: 14px; } dialog td { padding: 4px 10px 4px 0; vertical-align: top; }
+</style>
+</head>
+<body>
+<div class="mock-note">Макет на выдуманных данных для согласования — звука нет, «проигрывание» двигает курсор по таймеру. Всё остальное кликается по-настоящему.</div>
+
+<div class="ed" role="dialog" aria-label="Редактор нот">
+  <div class="head">
+    <div class="titles"><h3>Редактор нот</h3><div class="small muted">Тестовый исполнитель — Тестовая песня</div></div>
+    <button class="icon" id="undo" title="Отменить (Ctrl+Z)" aria-label="Отменить">↶</button>
+    <button class="icon" id="redo" title="Повторить (Ctrl+Shift+Z)" aria-label="Повторить">↷</button>
+    <span class="status" id="status">Правок нет</span>
+    <button class="primary" id="save" disabled>Сохранить</button>
+    <button class="icon" title="Закрыть (Esc)" aria-label="Закрыть">✕</button>
+  </div>
+
+  <div class="bar" role="toolbar" aria-label="Проигрывание и правка">
+    <button class="icon" id="play" title="Играть / пауза (Пробел)" aria-label="Играть">▶</button>
+    <button class="icon" id="playLine" title="Проиграть текущую строку (L)">▶ строка</button>
+    <span class="time" id="time">0:00.0 / 0:00</span>
+    <select id="rate" title="Скорость проигрывания — медленнее удобнее расставлять">
+      <option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option>
+    </select>
+    <button id="follow" class="on" title="Таймлайн едет за курсором">Следовать</button>
+    <span class="sep"></span>
+    <button class="icon" id="zout" title="Отдалить (−)">−</button>
+    <button class="icon" id="zin" title="Приблизить (+)">+</button>
+    <span class="sep"></span>
+    <button id="tap" title="Отстукивание: держи клавишу J, пока звучит слог (T)">⏺ Отстукивать</button>
+    <span class="grow"></span>
+    <button id="selall" title="Выделить все ноты (Ctrl+A) — сдвинуть песню по времени или тональность">Выделить всё</button>
+    <span class="small muted" id="selinfo">Ничего не выбрано</span>
+    <button id="tShiftL" title="Сдвинуть текст строки влево, начиная с ноты (Alt+←)" disabled>⇠ текст</button>
+    <button id="tShiftR" title="Сдвинуть текст вправо, начиная с ноты (Alt+→)" disabled>текст ⇢</button>
+    <button id="split" title="Разрезать ноту пополам (S)" disabled>Разрезать</button>
+    <button id="join" title="Слить со следующей нотой (J+Shift)" disabled>Слить</button>
+    <button id="nline" title="Начать новую строку с этой ноты (Enter)" disabled>↵ Строка</button>
+    <button id="gold" title="Золотая нота (G)" disabled>★</button>
+    <button id="del" title="Удалить (Delete)" disabled>Удалить</button>
+    <button class="icon" id="help" title="Все сочетания клавиш (?)">?</button>
+  </div>
+
+  <div class="main">
+    <div class="center">
+      <div class="tapbanner" id="tapbanner" hidden>Режим отстукивания: включи проигрывание и держи <kbd>J</kbd>, пока звучит каждый слог — ноты встанут по твоему ритму, начиная с выбранной. Текст и высота сохраняются. <kbd>Esc</kbd> — выйти.</div>
+      <div class="tl">
+        <div class="keys" id="keys"></div>
+        <div class="scroll" id="scroll">
+          <div class="inner" id="inner">
+            <div class="ruler" id="ruler" title="Клик — перейти сюда"></div>
+            <canvas class="wave" id="wave" title="Громкость трека — клик перемещает курсор"></canvas>
+            <div class="roll" id="roll"></div>
+            <div class="lane" id="lane"></div>
+            <div class="playhead" id="ph"></div>
+          </div>
+        </div>
+      </div>
+      <div class="hint">
+        <span><b>Двойной клик</b> по пустому месту — новая нота</span>
+        <span><b>Тяни ноту</b> — время и высота</span>
+        <span><b>Тяни край</b> — длительность</span>
+        <span><b>Двойной клик по слогу</b> — правка, <kbd>Tab</kbd> — к следующему</span>
+        <span><kbd>Delete</kbd> — удалить</span>
+        <span>рамка мышью — выделить несколько</span>
+      </div>
+    </div>
+
+    <aside class="panel" id="panel" aria-label="Текст песни">
+      <div class="ph">
+        <h4>Текст</h4>
+        <button class="icon" id="ptoggle" title="Свернуть / развернуть текст" aria-expanded="true">⟩</button>
+        <span class="vlabel" id="vlabel">Текст песни</span>
+      </div>
+      <ol class="plist" id="plist"></ol>
+      <div class="pfoot">Правь строку как обычный текст — слоги сами разложатся по нотам строки. Принудительный перенос слога — <kbd>|</kbd>. Клик по строке — переход к её первой ноте.</div>
+    </aside>
+  </div>
+</div>
+
+<dialog id="helpdlg">
+  <h3 style="margin-top:0">Сочетания клавиш</h3>
+  <table>
+    <tr><td><kbd>Пробел</kbd></td><td>играть / пауза</td></tr>
+    <tr><td><kbd>L</kbd></td><td>проиграть строку с выбранной нотой</td></tr>
+    <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>сдвинуть выбранное на 1 бит (<kbd>Shift</kbd> — на 4)</td></tr>
+    <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>выше / ниже на полутон</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>←</kbd> <kbd>→</kbd></td><td>короче / длиннее</td></tr>
+    <tr><td><kbd>Alt</kbd>+<kbd>←</kbd> <kbd>→</kbd></td><td>сдвинуть текст по нотам</td></tr>
+    <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>к следующей / предыдущей ноте</td></tr>
+    <tr><td><kbd>F2</kbd> или <kbd>Enter</kbd> на слоге</td><td>править текст слога</td></tr>
+    <tr><td><kbd>N</kbd></td><td>новая нота после выбранной</td></tr>
+    <tr><td><kbd>S</kbd> · <kbd>Shift</kbd>+<kbd>J</kbd></td><td>разрезать · слить со следующей</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>A</kbd></td><td>выделить всё — затем <kbd>←</kbd><kbd>→</kbd> сдвиг всей песни, <kbd>↑</kbd><kbd>↓</kbd> тональность</td></tr>
+    <tr><td><kbd>G</kbd></td><td>золотая нота</td></tr>
+    <tr><td><kbd>Delete</kbd></td><td>удалить выбранное</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>отменить / повторить</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>сохранить</td></tr>
+    <tr><td><kbd>T</kbd>, затем <kbd>J</kbd></td><td>режим отстукивания</td></tr>
+  </table>
+  <p><button onclick="this.closest('dialog').close()">Понятно</button></p>
+</dialog>
+<div class="toast" id="toast"></div>
+
+<script>
+// ---------- тестовые данные (выдуманный текст) ----------
+const BPM = 280, GAP = 1500; // UltraStar: ms = GAP + beat * 60000 / (BPM*4)
+const msPerBeat = 60000 / (BPM * 4);
+const RAW = [
+  'Ве|чер ти|хо ло|жит|ся на кры|ши',
+  'Мы и|дём по ули|це до|мой',
+  'Ве|тер пес|ню ста|ру|ю ко|лы|шет',
+  'И не ну|жен нам ни|кто дру|гой',
+  'Пусть го|рят ог|ни над го|ро|дом',
+  'Пусть зву|чит ги|та|ра до у|тра',
+];
+let seed = 7; const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+let uid = 1;
+let notes = []; // {id, start, length, pitch, text, type, ls (начало строки)}
+{
+  let beat = 0, pitch = 60;
+  for (const line of RAW) {
+    const syls = toSyllables(line);
+    syls.forEach((t, i) => {
+      const len = 2 + Math.floor(rnd() * 4) + (i === syls.length - 1 ? 3 : 0);
+      pitch = Math.max(52, Math.min(70, pitch + Math.round((rnd() - .5) * 6)));
+      notes.push({ id: uid++, start: beat, length: len, pitch, text: t, type: rnd() < .06 ? '*' : ':', ls: i === 0 });
+      beat += len + (rnd() < .25 ? 1 : 0);
+    });
+    beat += 10;
+  }
+  notes.find(n => n.text === ' ги').type = 'F';
+}
+
+// ---------- слоги ----------
+function toSyllables(text) {
+  // Слова → слоги по гласным; «|» — принудительная граница; пробел перед словом — граница слова (как в .txt)
+  const out = [];
+  const V = /[аеёиоуыэюяaeiouy]/i;
+  text.trim().split(/\s+/).forEach((word, wi) => {
+    const forced = word.split('|');
+    forced.forEach((part, pi) => {
+      const parts = [];
+      let cur = '', seenV = false;
+      for (let i = 0; i < part.length; i++) {
+        const ch = part[i];
+        if (V.test(ch) && seenV) {
+          // согласные между гласными: одну отдать следующему слогу
+          let k = cur.length - 1, cons = 0;
+          while (k >= 0 && !V.test(cur[k])) { k--; cons++; }
+          const give = cons >= 1 ? 1 : 0;
+          parts.push(cur.slice(0, cur.length - give));
+          cur = cur.slice(cur.length - give);
+        }
+        if (V.test(ch)) seenV = true;
+        cur += ch;
+      }
+      parts.push(cur);
+      parts.forEach((p, k) => { if (p) out.push((wi > 0 && pi === 0 && k === 0 ? ' ' : '') + p); });
+    });
+  });
+  return out;
+}
+
+// ---------- состояние ----------
+let ppb = 16; let ROW = 10;
+let sel = new Set(); let lastSel = null;
+let playing = false, posMs = 0, t0 = 0, p0 = 0, stopAtMs = null, raf = 0;
+let tapMode = false, tapIdx = null, tapDown = null;
+const history = [], future = []; let saved = JSON.stringify(notes);
+
+const $ = (id) => document.getElementById(id);
+const scroll = $('scroll'), inner = $('inner'), roll = $('roll'), lane = $('lane'), ruler = $('ruler'), keys = $('keys'), wave = $('wave'), ph = $('ph');
+
+const sorted = () => notes.slice().sort((a, b) => a.start - b.start);
+const beatMs = (b) => GAP + b * msPerBeat;
+const msBeat = (ms) => (ms - GAP) / msPerBeat;
+function linesOf() {
+  const ls = []; for (const n of sorted()) { if (n.ls || !ls.length) ls.push([]); ls[ls.length - 1].push(n); } return ls;
+}
+function snapshot() { history.push(JSON.stringify(notes)); if (history.length > 200) history.shift(); future.length = 0; }
+function commit(msg) { render(); if (msg) toast(msg); }
+function toast(t) { const el = $('toast'); el.textContent = t; el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 1600); }
+
+// ---------- отрисовка ----------
+let pmin, pmax;
+function render() {
+  const ns = sorted();
+  pmin = Math.min(...ns.map(n => n.pitch)) - 4; pmax = Math.max(...ns.map(n => n.pitch)) + 4;
+  ROW = Math.max(8, Math.min(22, Math.floor((scroll.clientHeight - 24 - 44 - 41 - 14) / (pmax - pmin + 1))));
+  const H = (pmax - pmin + 1) * ROW;
+  const lastBeat = Math.max(...ns.map(n => n.start + n.length)) + 48;
+  const W = lastBeat * ppb;
+  inner.style.width = W + 'px';
+  roll.style.height = H + 'px'; roll.style.setProperty('--nh', (ROW - 2) + 'px');
+  roll.style.background = `repeating-linear-gradient(90deg, var(--grid-strong) 0 1px, transparent 1px ${ppb * 16}px),
+    repeating-linear-gradient(90deg, var(--grid) 0 1px, transparent 1px ${ppb * 4}px),
+    repeating-linear-gradient(0deg, transparent 0 ${ROW - 1}px, var(--grid) ${ROW - 1}px ${ROW}px)`;
+
+  // клавиши
+  const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  keys.innerHTML = '';
+  keys.style.paddingTop = (24 + 44) + 'px';
+  for (let p = pmax; p >= pmin; p--) {
+    const d = document.createElement('div');
+    d.style.top = (24 + 44 + (pmax - p) * ROW) + 'px'; d.style.height = ROW + 'px';
+    if (names[p % 12].includes('#')) d.className = 'blk';
+    if (p % 12 === 0) d.textContent = 'C' + (Math.floor(p / 12) - 1);
+    keys.append(d);
+  }
+
+  // линейка (секунды)
+  ruler.innerHTML = '';
+  const totalMs = beatMs(lastBeat);
+  const step = ppb < 10 ? 5000 : ppb < 20 ? 2000 : 1000;
+  for (let ms = 0; ms < totalMs; ms += step) {
+    const x = msBeat(ms) * ppb; if (x < 0) continue;
+    const i = document.createElement('i'); i.style.left = x + 'px';
+    const s = document.createElement('span'); s.style.left = x + 'px'; s.textContent = fmt(ms, false);
+    ruler.append(i, s);
+  }
+
+  // волна (выдуманная)
+  wave.width = W; wave.style.width = W + 'px'; wave.height = 44;
+  const g = wave.getContext('2d'); g.clearRect(0, 0, W, 44);
+  g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--wave');
+  let s2 = 3; const r2 = () => (s2 = (s2 * 9301 + 49297) % 233280) / 233280;
+  for (let x = 0; x < W; x += 3) {
+    const b = x / ppb; const near = ns.some(n => b >= n.start - 1 && b <= n.start + n.length + 1);
+    const h = (near ? 14 + r2() * 18 : 4 + r2() * 8);
+    g.fillRect(x, 22 - h / 2, 2, h);
+  }
+
+  // ноты, разрывы, слоги
+  roll.innerHTML = ''; lane.innerHTML = ''; inner.querySelectorAll('.brk').forEach(b => b.remove());
+  const overl = new Set();
+  ns.forEach((n, i) => { const nx = ns[i + 1]; if (nx && n.start + n.length > nx.start) { overl.add(n.id); overl.add(nx.id); } });
+  ns.forEach((n, i) => {
+    const d = document.createElement('div');
+    d.className = 'note' + (n.type === '*' ? ' gold' : '') + (n.type === 'F' ? ' free' : '') + (sel.has(n.id) ? ' sel' : '') + (overl.has(n.id) ? ' bad' : '');
+    d.style.left = n.start * ppb + 'px'; d.style.width = Math.max(4, n.length * ppb - 2) + 'px';
+    d.style.top = ((pmax - n.pitch) * ROW) + 'px';
+    d.dataset.id = n.id; d.tabIndex = -1;
+    d.title = `«${n.text.trim() || '—'}» · ${fmt(beatMs(n.start))} · ${n.length} бит${overl.has(n.id) ? ' · перекрывается с соседней!' : ''}`;
+    roll.append(d);
+    const c = document.createElement('div');
+    c.className = 'chip' + (sel.has(n.id) ? ' sel' : '') + (n.text.trim() ? '' : ' empty');
+    c.style.left = n.start * ppb + 'px'; c.style.width = Math.max(8, n.length * ppb) + 'px';
+    c.textContent = n.text.trim() || '∅'; c.dataset.id = n.id;
+    c.title = 'Двойной клик — править слог';
+    lane.append(c);
+    if (n.ls && i > 0) {
+      const pv = ns[i - 1]; const x = ((pv.start + pv.length + n.start) / 2) * ppb;
+      const b = document.createElement('div'); b.className = 'brk'; b.style.left = x + 'px';
+      const h = document.createElement('b'); h.textContent = '↵'; h.title = 'Граница строки — клик убирает (склеить строки)'; h.dataset.id = n.id;
+      b.append(h); inner.append(b);
+    }
+  });
+  renderPanel(); renderPlayhead(); updateTools();
+}
+
+function renderPanel() {
+  const list = $('plist'); const focused = document.activeElement?.dataset?.li;
+  const ls = linesOf();
+  if (focused !== undefined) { updatePanelStatus(); return; }
+  list.innerHTML = '';
+  ls.forEach((line, li) => {
+    const item = document.createElement('li'); item.className = 'pl'; item.dataset.li = li;
+    const num = document.createElement('span'); num.className = 'n'; num.textContent = li + 1; num.title = 'Перейти к строке';
+    num.onclick = () => goLine(li);
+    const inp = document.createElement('input'); inp.value = line.map(n => n.text).join('').trim(); inp.dataset.li = li;
+    inp.setAttribute('aria-label', `Строка ${li + 1}`);
+    inp.onfocus = () => { snapshot(); };
+    inp.oninput = () => applyLineText(li, inp.value);
+    inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); list.querySelector(`input[data-li="${li + 1}"]`)?.focus(); } };
+    inp.onblur = () => setTimeout(render, 0);
+    const st = document.createElement('div'); st.className = 'st';
+    inp.addEventListener('click', () => goLine(li));
+    item.addEventListener('click', (e) => { if (e.target === item) goLine(li); });
+    item.append(num, inp, st); list.append(item);
+  });
+  updatePanelStatus();
+}
+function goLine(li) {
+  const line = linesOf()[li]; if (!line) return;
+  // переход к ноте: выделить первую ноту строки, курсор и таймлайн — на неё (фокус в поле строки не трогаем)
+  sel = new Set([line[0].id]); lastSel = line[0].id;
+  seekMs(beatMs(line[0].start) - 300, true);
+  for (const el of roll.children) el.classList.toggle('sel', sel.has(Number(el.dataset.id)));
+  for (const el of lane.children) el.classList.toggle('sel', sel.has(Number(el.dataset.id)));
+  updatePanelStatus(); updateTools();
+}
+function selectAll() { sel = new Set(notes.map(n => n.id)); lastSel = sorted()[0].id; render(); toast('Выделены все ноты: ←/→ сдвигают песню по времени, ↑/↓ меняют тональность'); }
+function updatePanelStatus() {
+  const ls = linesOf(); const items = $('plist').children;
+  ls.forEach((line, li) => {
+    const it = items[li]; if (!it) return;
+    const inp = it.querySelector('input'); const st = it.querySelector('.st');
+    const syl = toSyllables(inp.value.replace(/~/g, ''));
+    const cur = line.some(n => sel.has(n.id)); it.classList.toggle('cur', cur);
+    const playMs = posMs; it.classList.toggle('live', playing && playMs >= beatMs(line[0].start) && playMs <= beatMs(line.at(-1).start + line.at(-1).length));
+    st.innerHTML = '';
+    const real = line.filter(n => n.text.trim() !== '~').length;
+    if (syl.length > line.length) {
+      st.className = 'st warn'; st.textContent = `${syl.length} слогов, а нот ${line.length}`;
+      const b = document.createElement('button'); b.textContent = `+ ${syl.length - line.length} нот`;
+      b.title = 'Добавить недостающие ноты в конец строки';
+      b.onmousedown = (e) => e.preventDefault();
+      b.onclick = () => { addNotesToLine(li, syl.length - line.length); applyLineText(li, inp.value); render(); };
+      st.append(b);
+    } else if (syl.length < line.length) {
+      st.className = 'st ok'; st.textContent = `${syl.length} слогов на ${line.length} нот — лишние ноты тянут гласную (~)`;
+    } else { st.className = 'st ok'; st.textContent = `${line.length} нот`; }
+  });
+}
+function applyLineText(li, text) {
+  const line = linesOf()[li]; const syl = toSyllables(text);
+  line.forEach((n, i) => {
+    if (i < syl.length) n.text = (i === line.length - 1 && syl.length > line.length) ? syl.slice(i).join('') : syl[i];
+    else n.text = '~';
+  });
+  renderNotesOnly(); updatePanelStatus(); updateTools();
+}
+function renderNotesOnly() {
+  for (const c of lane.children) { const n = notes.find(x => x.id == c.dataset.id); if (n) { c.textContent = n.text.trim() || '∅'; c.classList.toggle('empty', !n.text.trim()); } }
+}
+function addNotesToLine(li, k) {
+  const line = linesOf()[li]; let last = line.at(-1);
+  for (let i = 0; i < k; i++) { const n = { id: uid++, start: last.start + last.length, length: 3, pitch: last.pitch, text: '', type: ':', ls: false }; notes.push(n); last = n; }
+}
+function renderPlayhead() {
+  ph.style.left = msBeat(posMs) * ppb + 'px';
+  $('time').textContent = `${fmt(posMs)} / ${fmt(beatMs(Math.max(...notes.map(n => n.start + n.length)) + 30), false)}`;
+  const b = msBeat(posMs);
+  for (const el of roll.children) { const n = notes.find(x => x.id == el.dataset.id); el.classList.toggle('live', playing && n && b >= n.start && b < n.start + n.length); }
+  for (const el of lane.children) { const n = notes.find(x => x.id == el.dataset.id); el.classList.toggle('live', playing && n && b >= n.start && b < n.start + n.length); }
+  if (playing) updatePanelStatus();
+}
+function fmt(ms, tenth = true) { const s = Math.max(0, ms) / 1000; const m = Math.floor(s / 60); const r = s - m * 60; return `${m}:${tenth ? r.toFixed(1).padStart(4, '0') : String(Math.floor(r)).padStart(2, '0')}`; }
+
+function updateTools() {
+  const n = sel.size; const one = n === 1 ? notes.find(x => sel.has(x.id)) : null;
+  $('selinfo').textContent = n === 0 ? 'Ничего не выбрано' : n === notes.length && n > 1 ? `Выбраны все ноты (${n})` : n === 1 ? `«${one.text.trim() || '∅'}» · ${one.length} бит · ${fmt(beatMs(one.start))}` : `Выбрано нот: ${n}`;
+  for (const id of ['tShiftL', 'tShiftR', 'split', 'nline', 'join']) $(id).disabled = !one;
+  $('gold').disabled = $('del').disabled = n === 0;
+  $('undo').disabled = !history.length; $('redo').disabled = !future.length;
+  const dirty = JSON.stringify(notes) !== saved;
+  $('save').disabled = !dirty; $('status').textContent = dirty ? 'Есть несохранённые правки' : 'Правок нет';
+  $('status').classList.toggle('dirty', dirty);
+}
+
+// ---------- проигрывание (в макете — таймер) ----------
+function seekMs(ms, scrollTo) { posMs = Math.max(0, ms); if (playing) { t0 = performance.now(); p0 = posMs; } renderPlayhead(); if (scrollTo) scroll.scrollLeft = msBeat(posMs) * ppb - 120; }
+function play(from, until) {
+  if (playing) { stop(); return; }
+  if (from !== undefined) posMs = from; stopAtMs = until ?? null;
+  playing = true; t0 = performance.now(); p0 = posMs; $('play').textContent = '❚❚';
+  const loop = () => {
+    if (!playing) return;
+    posMs = p0 + (performance.now() - t0) * Number($('rate').value);
+    if (stopAtMs !== null && posMs >= stopAtMs) { stop(); return; }
+    renderPlayhead();
+    if ($('follow').classList.contains('on')) { const x = msBeat(posMs) * ppb; if (x > scroll.scrollLeft + scroll.clientWidth * .7 || x < scroll.scrollLeft) scroll.scrollLeft = x - scroll.clientWidth * .25; }
+    raf = requestAnimationFrame(loop);
+  };
+  raf = requestAnimationFrame(loop);
+}
+function stop() { playing = false; cancelAnimationFrame(raf); $('play').textContent = '▶'; renderPlayhead(); updatePanelStatus(); }
+$('play').onclick = () => play();
+$('playLine').onclick = () => {
+  const id = lastSel ?? sorted()[0].id; const line = linesOf().find(l => l.some(n => n.id === id));
+  play(beatMs(line[0].start) - 200, beatMs(line.at(-1).start + line.at(-1).length) + 300);
+};
+$('follow').onclick = (e) => e.currentTarget.classList.toggle('on');
+const seekFromEvent = (e) => { const r = inner.getBoundingClientRect(); seekMs(beatMs((e.clientX - r.left) / ppb)); };
+ruler.onclick = seekFromEvent; wave.onclick = seekFromEvent;
+
+// ---------- зум ----------
+function zoom(f) { const c = (scroll.scrollLeft + scroll.clientWidth / 2) / ppb; ppb = Math.max(4, Math.min(48, ppb * f)); render(); scroll.scrollLeft = c * ppb - scroll.clientWidth / 2; }
+$('zin').onclick = () => zoom(1.25); $('zout').onclick = () => zoom(0.8);
+scroll.addEventListener('wheel', (e) => { if (e.ctrlKey) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 0.87); } }, { passive: false });
+
+// ---------- мышь: выбор, перетаскивание, края, рамка, новая нота ----------
+let drag = null;
+roll.addEventListener('pointerdown', (e) => {
+  const el = e.target.closest('.note'); const r = roll.getBoundingClientRect();
+  if (!el) {
+    if (!e.shiftKey) sel.clear();
+    drag = { kind: 'marquee', x0: e.clientX - r.left, y0: e.clientY - r.top, box: Object.assign(document.createElement('div'), { className: 'marquee' }) };
+    roll.append(drag.box); roll.setPointerCapture(e.pointerId); render(); roll.append(drag.box); return;
+  }
+  const id = Number(el.dataset.id); const n = notes.find(x => x.id === id);
+  if (e.shiftKey) { sel.has(id) ? sel.delete(id) : sel.add(id); lastSel = id; render(); return; }
+  if (!sel.has(id)) sel = new Set([id]); lastSel = id;
+  const bx = el.getBoundingClientRect(); const off = e.clientX - bx.left;
+  const edge = Math.min(10, bx.width / 3); const kind = off < edge ? 'left' : off > bx.width - edge ? 'right' : 'move';
+  drag = { kind, x0: e.clientX, y0: e.clientY, orig: notes.filter(x => sel.has(x.id)).map(x => ({ ...x })), moved: false };
+  roll.setPointerCapture(e.pointerId); render();
+});
+roll.addEventListener('pointermove', (e) => {
+  if (!drag) {
+    const el = e.target.closest('.note'); if (!el) return;
+    const bx = el.getBoundingClientRect(); const off = e.clientX - bx.left;
+    const edge = Math.min(10, bx.width / 3); el.style.cursor = off < edge || off > bx.width - edge ? 'ew-resize' : 'grab'; return;
+  }
+  if (drag.kind === 'marquee') {
+    const r = roll.getBoundingClientRect(); const x = e.clientX - r.left, y = e.clientY - r.top;
+    const L = Math.min(x, drag.x0), T = Math.min(y, drag.y0), Wd = Math.abs(x - drag.x0), Hd = Math.abs(y - drag.y0);
+    Object.assign(drag.box.style, { left: L + 'px', top: T + 'px', width: Wd + 'px', height: Hd + 'px' });
+    drag.rect = { L, T, R: L + Wd, B: T + Hd }; return;
+  }
+  const db = Math.round((e.clientX - drag.x0) / ppb); const dp = -Math.round((e.clientY - drag.y0) / ROW);
+  if (!drag.moved && (db || dp)) { snapshot(); drag.moved = true; }
+  if (!drag.moved) return;
+  for (const o of drag.orig) {
+    const n = notes.find(x => x.id === o.id);
+    if (drag.kind === 'move') { n.start = Math.max(0, o.start + db); n.pitch = o.pitch + dp; }
+    if (drag.kind === 'right') n.length = Math.max(1, o.length + db);
+    if (drag.kind === 'left') { const nl = Math.max(1, o.length - db); n.start = o.start + o.length - nl; n.length = nl; }
+  }
+  render();
+});
+roll.addEventListener('pointerup', () => {
+  if (drag?.kind === 'marquee' && drag.rect) {
+    for (const n of notes) {
+      const x1 = n.start * ppb, x2 = (n.start + n.length) * ppb, y = (pmax - n.pitch) * ROW + 4;
+      if (x2 > drag.rect.L && x1 < drag.rect.R && y > drag.rect.T && y < drag.rect.B) sel.add(n.id);
+    }
+  }
+  drag?.box?.remove(); drag = null; render();
+});
+roll.addEventListener('dblclick', (e) => {
+  if (e.target.closest('.note')) { editChip(Number(e.target.closest('.note').dataset.id)); return; }
+  const r = roll.getBoundingClientRect(); const b = Math.floor((e.clientX - r.left) / ppb); const p = pmax - Math.floor((e.clientY - r.top) / ROW);
+  snapshot();
+  const n = { id: uid++, start: b, length: 4, pitch: p, text: '', type: ':', ls: false };
+  notes.push(n); sel = new Set([n.id]); lastSel = n.id; render(); editChip(n.id);
+});
+inner.addEventListener('click', (e) => {
+  const h = e.target.closest('.brk b'); if (!h) return;
+  snapshot(); notes.find(x => x.id == h.dataset.id).ls = false; commit('Строки склеены');
+});
+
+// ---------- правка слога на дорожке ----------
+lane.addEventListener('click', (e) => { const c = e.target.closest('.chip'); if (!c) return; sel = new Set([Number(c.dataset.id)]); lastSel = Number(c.dataset.id); render(); });
+lane.addEventListener('dblclick', (e) => { const c = e.target.closest('.chip'); if (c) editChip(Number(c.dataset.id)); });
+function editChip(id) {
+  const c = lane.querySelector(`.chip[data-id="${id}"]`); if (!c) return;
+  const n = notes.find(x => x.id === id);
+  sel = new Set([id]); lastSel = id;
+  const inp = document.createElement('input'); inp.value = n.text; c.textContent = ''; c.append(inp); c.style.overflow = 'visible'; c.style.zIndex = 9;
+  inp.focus(); inp.select();
+  let done = false;
+  const finish = (move) => {
+    if (done) return; done = true;
+    if (inp.value !== n.text) { snapshot(); n.text = inp.value; }
+    render();
+    if (move) { const ns = sorted(); const i = ns.findIndex(x => x.id === id) + move; if (ns[i]) editChip(ns[i].id); }
+  };
+  inp.onkeydown = (e) => {
+    if (e.key === 'Tab') { e.preventDefault(); finish(e.shiftKey ? -1 : 1); }
+    else if (e.key === 'Enter') finish(0);
+    else if (e.key === 'Escape') { e.stopPropagation(); inp.value = n.text; finish(0); }
+    e.stopPropagation();
+  };
+  inp.onblur = () => finish(0);
+}
+
+// ---------- операции ----------
+const one = () => notes.find(x => x.id === lastSel && sel.has(x.id));
+function shiftText(dir) {
+  const n = one(); if (!n) return; const line = linesOf().find(l => l.includes(n)); const i = line.indexOf(n);
+  snapshot();
+  const texts = line.map(x => x.text);
+  if (dir > 0) { // текст уезжает вправо, на выбранной ноте остаётся «~»
+    if (texts.at(-1).trim() && texts.at(-1).trim() !== '~') { history.pop(); toast('Справа нет свободной ноты — добавь ноту в конец строки'); return; }
+    for (let k = line.length - 1; k > i; k--) line[k].text = texts[k - 1]; line[i].text = '~';
+  } else {
+    if (i === 0 || (texts[i - 1].trim() && texts[i - 1].trim() !== '~')) { history.pop(); toast('Слева занятая нота — текст некуда сдвинуть'); return; }
+    for (let k = i - 1; k < line.length - 1; k++) line[k].text = texts[k + 1]; line.at(-1).text = '~';
+  }
+  commit();
+}
+$('tShiftL').onclick = () => shiftText(-1); $('tShiftR').onclick = () => shiftText(1);
+$('split').onclick = () => { const n = one(); if (!n || n.length < 2) return toast('Нота в 1 бит — резать нечего'); snapshot(); const a = Math.ceil(n.length / 2);
+  notes.push({ id: uid++, start: n.start + a, length: n.length - a, pitch: n.pitch, text: '~', type: n.type, ls: false }); n.length = a; commit('Нота разрезана — вторая половина тянет гласную (~)'); };
+$('join').onclick = () => { const n = one(); const ns = sorted(); const nx = ns[ns.indexOf(n) + 1]; if (!nx || nx.ls) return toast('Следующая нота в другой строке'); snapshot();
+  n.length = nx.start + nx.length - n.start; if (nx.text.trim() !== '~') n.text += nx.text; notes = notes.filter(x => x !== nx); commit('Ноты слиты'); };
+$('nline').onclick = () => { const n = one(); if (!n) return; if (n.ls) return toast('Эта нота уже начинает строку'); snapshot(); n.ls = true; commit('Новая строка'); };
+$('gold').onclick = () => { snapshot(); const all = notes.filter(x => sel.has(x.id)); const g = !all.every(x => x.type === '*'); all.forEach(x => x.type = g ? '*' : ':'); commit(g ? 'Золотые ноты' : 'Обычные ноты'); };
+$('del').onclick = () => delSel();
+function delSel() {
+  if (!sel.size) return; if (sel.size >= notes.length) return toast('В песне должна остаться хотя бы одна нота');
+  snapshot(); const ns = sorted();
+  for (const id of sel) { const i = ns.findIndex(x => x.id === id); if (ns[i].ls && ns[i + 1] && !sel.has(ns[i + 1].id)) ns[i + 1].ls = true; }
+  notes = notes.filter(x => !sel.has(x.id)); const k = sel.size; sel.clear(); commit(`Удалено нот: ${k} — Ctrl+Z вернёт`);
+}
+function undo() { if (!history.length) return; future.push(JSON.stringify(notes)); notes = JSON.parse(history.pop()); render(); toast('Отменено'); }
+function redo() { if (!future.length) return; history.push(JSON.stringify(notes)); notes = JSON.parse(future.pop()); render(); }
+$('undo').onclick = undo; $('redo').onclick = redo;
+$('save').onclick = () => {
+  const ns = sorted(); const bad = ns.findIndex((n, i) => ns[i + 1] && n.start + n.length > ns[i + 1].start);
+  if (bad >= 0) { sel = new Set([ns[bad].id]); lastSel = ns[bad].id; seekMs(beatMs(ns[bad].start) - 300, true); render(); return toast('Ноты перекрываются — они подсвечены красным'); }
+  saved = JSON.stringify(notes); render(); toast('Сохранено. Прежняя версия .txt — в корзине');
+};
+
+// ---------- режим отстукивания ----------
+$('tap').onclick = () => setTap(!tapMode);
+function setTap(on) {
+  tapMode = on; $('tap').classList.toggle('on', on); $('tapbanner').hidden = !on;
+  tapIdx = on ? Math.max(0, sorted().findIndex(x => x.id === lastSel)) : null;
+  if (on) { snapshot(); toast('Включи ▶ и держи J на каждом слоге'); }
+}
+
+// ---------- клавиатура ----------
+document.addEventListener('keydown', (e) => {
+  if (e.target.matches('input, select, textarea')) return;
+  const k = e.key;
+  if (tapMode && (k === 'j' || k === 'J' || k === 'о' || k === 'О') && !e.repeat && !e.shiftKey) {
+    tapDown = Math.round(msBeat(posMs)); e.preventDefault(); return;
+  }
+  if (k === ' ') { e.preventDefault(); play(); return; }
+  if (k === 'Escape') { if (tapMode) setTap(false); else { sel.clear(); render(); } return; }
+  if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'я')) { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if ((e.ctrlKey || e.metaKey) && (k === 's' || k === 'ы')) { e.preventDefault(); $('save').click(); return; }
+  if ((e.ctrlKey || e.metaKey) && (k === 'a' || k === 'ф')) { e.preventDefault(); selectAll(); return; }
+  if (k === '?') { $('helpdlg').showModal(); return; }
+  if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); delSel(); return; }
+  if (k === 'Tab') { e.preventDefault(); const ns = sorted(); let i = ns.findIndex(x => x.id === lastSel); i = Math.max(0, Math.min(ns.length - 1, i + (e.shiftKey ? -1 : 1))); sel = new Set([ns[i].id]); lastSel = ns[i].id; render(); return; }
+  if (k === 'F2' || k === 'Enter') { if (one()) { e.preventDefault(); editChip(lastSel); } return; }
+  if (k === 'l' || k === 'L' || k === 'д') { $('playLine').click(); return; }
+  if (k === 't' || k === 'T' || k === 'е') { setTap(!tapMode); return; }
+  if (k === 'g' || k === 'G' || k === 'п') { if (sel.size) $('gold').click(); return; }
+  if (k === 's' || k === 'S' || k === 'ы') { $('split').click(); return; }
+  if ((k === 'J' || k === 'О') && e.shiftKey) { $('join').click(); return; }
+  if (k === 'n' || k === 'N' || k === 'т') { const n = one(); if (!n) return; snapshot(); const m = { id: uid++, start: n.start + n.length, length: 3, pitch: n.pitch, text: '', type: ':', ls: false }; notes.push(m); sel = new Set([m.id]); lastSel = m.id; render(); editChip(m.id); return; }
+  if (k.startsWith('Arrow') && sel.size) {
+    e.preventDefault();
+    if (e.altKey && (k === 'ArrowLeft' || k === 'ArrowRight')) { shiftText(k === 'ArrowLeft' ? -1 : 1); return; }
+    snapshot(); const st = e.shiftKey ? 4 : 1;
+    for (const n of notes.filter(x => sel.has(x.id))) {
+      if (e.ctrlKey && k === 'ArrowRight') n.length += 1; else if (e.ctrlKey && k === 'ArrowLeft') n.length = Math.max(1, n.length - 1);
+      else if (k === 'ArrowRight') n.start += st; else if (k === 'ArrowLeft') n.start = Math.max(0, n.start - st);
+      else if (k === 'ArrowUp') n.pitch++; else if (k === 'ArrowDown') n.pitch--;
+    }
+    render();
+  }
+});
+document.addEventListener('keyup', (e) => {
+  if (!tapMode || tapDown === null) return;
+  if (!['j', 'J', 'о', 'О'].includes(e.key)) return;
+  const ns = sorted(); const n = ns[tapIdx]; if (!n) { setTap(false); return; }
+  n.start = tapDown; n.length = Math.max(1, Math.round(msBeat(posMs)) - tapDown); tapDown = null;
+  sel = new Set([n.id]); lastSel = n.id; tapIdx++; render();
+  if (tapIdx >= ns.length) { setTap(false); toast('Все ноты расставлены'); }
+});
+
+// ---------- панель текста ----------
+$('ptoggle').onclick = $('vlabel').onclick = () => {
+  const p = $('panel'); const closed = p.classList.toggle('closed');
+  $('ptoggle').textContent = closed ? '⟨' : '⟩'; $('ptoggle').setAttribute('aria-expanded', String(!closed));
+};
+$('help').onclick = () => $('helpdlg').showModal();
+$('selall').onclick = selectAll;
+
+render();
+scroll.scrollLeft = 0;
+let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(render, 100); });
+</script>
+</body>
+</html>

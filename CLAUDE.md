@@ -11,9 +11,9 @@ Docker — только Linux-движок: `docker --context desktop-linux comp
 - Проверка GPU и правок UltraSinger: `./scripts/compose.ps1 run --rm worker gpucheck` (успех — RC=0, последняя строка `gpucheck: OK …`).
 - Только образ worker (15–30 мин с нуля): `./scripts/compose.ps1 build worker`.
 - Логи: `./scripts/compose.ps1 logs --tail 100 worker` (или `web`).
-- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 564 passed, 2 skipped (после смены зависимостей — `run --build`).
+- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 585 passed, 2 skipped (после смены зависимостей — `run --build`).
 - Подмножество: `docker --context desktop-linux compose --profile test run --rm tests pytest -q tests/worker/test_runner_queue.py`.
-- Фронт-тесты (Node 24, встроенный node:test): `node --test tests/frontend/` → 76 pass.
+- Фронт-тесты (Node 24, встроенный node:test): `node --test tests/frontend/` → 116 pass.
 - Бэкап патча UltraSinger в `patches/karaoke-local.patch`: `./scripts/export-ultrasinger-patch.ps1` (читает `D:/Projects/UltraSinger`).
 - CLI воркера внутри образа: `python -m karaoke_worker gpucheck|selfcheck|run`; entrypoint пропускает эти слова в CLI, прочее (`bash`, `python`) исполняет как есть.
 
@@ -25,7 +25,7 @@ core/karaoke_core/storage/  Storage: base (интерфейс, SongEntry), local
 core/Dockerfile.test      образ сервиса tests (editable core+web, pytest по tests/)
 web/app/                  FastAPI: main (create_app, Basic-auth, очистка корзины), api_jobs/songs/settings/import/lyrics/usdb, context, params, notes, lyrics (LRCLIB), usdb (клиент)
 web/static/js/            SPA по хэшу (#queue #new #import #songs #trash #settings), api.js, ui.js, id3.js, import.js, import-logic.js, folder-logic.js, lyrics-search.js, lyrics-dialog.js
-web/static/js/editors/    редакторы песни: lyrics (перегенерация с новым текстом), lines (слоги/строки)
+web/static/js/editors/    редакторы песни: lyrics (перегенерация с новым текстом), notes-* («Редактор нот»: таймлайн, звук, волна, панель текста), shell (общее окно)
 worker/karaoke_worker/    runner (цикл очереди), handlers, base (JobContext, процессы), progress, gpucheck, selfcheck
 worker/build/             entrypoint.sh, lock_constraints.py (uv.lock → constraints), check_torch_arch.py, link_hyphen_dir.py
 worker/Dockerfile         CUDA 12.6 + Python 3.12 + torch cu126 + UltraSinger из контекста `ultrasinger`
@@ -62,6 +62,12 @@ patches/karaoke-local.patch  резервная копия правок форк
 - `web/static/js/folder-logic.js` (`splitFolder`, `trackMeta`, `nextLyricsRow`, `trackFields`) — вкладка «Импорт → Папка»: готовые .txt-песни → inspect `source=files` с относительными путями (`webkitRelativePath`), прочие mp3 → `generate` по одному с авто-поиском текста; `web/static/js/lyrics-dialog.js` — общий диалог поиска текста (форма новой песни и папка).
 - `web/static/js/import-logic.js` (`pickAudioSource`, `importWarnings`, `importOutcome`) и `web/static/js/lyrics-search.js` (`stripLrc`, `usableHits`, `lrcPlainText`, `lrcTimingDefault`) — чистая логика под node-тесты.
 - `web/static/js/extensions.js` — `registerSongEditor(id, {label, open, enabled})`; редакторы подключаются одной строкой в `web/static/js/app.js` (`import './editors/index.js'`).
+- `web/app/notes.py` — `notes_payload` (GET), `apply_notes(song, NotesIn)` (PUT: сопоставление по `id`, неизменённое — байт в байт, строки тела удалённых нот переходят к следующей уцелевшей), `read_only_reason` (`DUET_REASON`/`RELATIVE_REASON`/`NO_BPM_REASON`), `_fmt_gap` (до 3 знаков, без «.0»).
+- `web/static/js/editors/notes-model.js` — чистая модель «Редактора нот»: State `{editable, reason, bpm, gap, headers, notes, nextId, created}`, нота `{id, src, type, start, length, pitch, text, ls, brk}` (`id` — ключ в редакторе, `src` — `id` из GET, у новых null); `fromPayload/toPayload`, операции (move, resize, addNote, splitNote, joinNext, setLineText, shiftText, retime…) неизменяемы, ошибка — `throw Error` по-русски; `validate`, `isDirty`, `history()`, `beatToMs/msToBeat`.
+- `web/static/js/editors/syllables.js` — `toSyllables(text)`: слог на гласную, `й ь ъ` остаются с предыдущим, `|` — принудительная граница, пробел перед словом — в начале первого слога.
+- `web/static/js/editors/notes-editor.js` — `openNotesEditor(song, {reload})` (DOM, мышь, `<audio>`, сохранение `api.saveNotes`); `addNotesEditorPlugin(fn)` — `fn(ctx)` на каждом открытии (`ctx.els.slot*`/`panel`, `apply(fn, okText, {amend})`, `select`, `play`, `addKey`, `onRender/onSelect/onTick`); плагины регистрируются в `editors/index.js`.
+- `web/static/js/editors/notes-text-panel.js` (`textPanelPlugin`: панель «Текст», `localStorage` `notesEditor.textPanelClosed`) и `notes-tools.js` (`toolsPlugin`: ⇠/⇢ текст, Разрезать, Слить, ↵ Строка, отстукивание `T`/`J`, справка `?`); их чистая логика — `notes-panel-logic.js` (`lineAt`, `lineStatus`, `plural`, `tapTiming`, `tapQueue`).
+- `web/static/js/editors/timeline-math.js` (координаты, масштаб `ZOOM_MIN..MAX`, `peaks`, `rebaseBeat`) и `waveform.js` (`loadPeaks` — fetch `/audio` → `decodeAudioData`, пики по 10 мс, лимит `WAVE_MAX_BYTES` 60 МБ; `drawWave` — только видимая часть).
 
 ## Архитектура
 
@@ -83,7 +89,10 @@ patches/karaoke-local.patch  резервная копия правок форк
 - Эндпоинты: `/api/status`, `/api/defaults` (+`max_import_mb`), `/api/jobs` (`generate`, `instrumental`, `import`, `{id}`, `cancel`, `restart`, `republish`, `log`, `log/stream`), `/api/import/inspect`, `/api/lyrics/search`, `/api/usdb/search` (по 50; без `language` — `Russian`, пустой — без фильтра), `/api/songs` (`rescan`, `exists`, `{id}` с `source`, `lyrics`, `notes` GET/PUT, `audio` с Range, `cover`, DELETE), `/api/trash` (+`restore`), `/api/settings/output` и `/api/settings/usdb` (GET/PUT, `test`).
 - `import_router` подключается раньше `jobs_router` (`web/app/main.py`), иначе `POST /api/jobs/import` уйдёт в маршруты `/api/jobs/{id}`.
 - SSE лога: первым `event: start` с байтовым смещением, `id:` = смещение, в конце `event: end`; без `from` — последние 500 строк.
-- PUT notes меняет только текст слогов, склейку/разбивку строк и удаление нот; тайминги, высоты и заголовки — только чтение; дуэты и `#RELATIVE` — только просмотр.
+- GET `/api/songs/{id}/notes` → `{editable, reason?, bpm, gap, headers:[[k,v]], lines:[{break_beat, player?, notes:[{id, type, start, length, pitch, text}]}]}`; `id` ноты — её порядковый номер в файле (0…N-1), `break_beat` — разрыв после строки (у последней `null`).
+- PUT тот же адрес `{gap, lines:[{break_beat, notes:[{id|null, type, start, length, pitch, text}]}]}`: тайминги, высоты, типы, текст, новые (`id: null`) и удалённые (нет в теле) ноты, границы строк; `editable/reason/bpm/headers` игнорируются, прочие заголовки не меняются; `break_beat: null` у непоследней строки → конец её последней ноты; `gap` null или равен текущему → `#GAP` не трогается.
+- PUT 400: нет нот, неизвестный тип, начало < 0, длина < 1, высота вне −40…100, перевод строки в слоге, перекрытие, разрыв не между строками, чужой/повторный `id`, `gap` < 0; 409: дуэт, `#RELATIVE`, нет `#BPM` (GET тогда `editable:false` + `reason`), сбой корзины. Изменился файл → старая версия в корзину, `write_atomic`; ответ — карточка песни.
+
 
 ## Соглашения кода
 
@@ -92,7 +101,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 - Ошибки задания: `raise JobFailed(reason, user_message)`; `user_message` попадает в `Job.error` как есть (+ последние 5 строк лога).
 - Ошибки API: `raise ApiError(status, "текст", field=...)`, не `HTTPException`.
 - Новая переменная окружения обязана появиться в `.env.example` с русским комментарием строкой выше — проверяет `tests/core/test_repo_config.py`.
-- Фронт: модуль раздела экспортирует `mount(section, ctx)`, `show(params)`, опц. `hide()`; чистая логика выносится в отдельные модули (`editors/lines.js`, `editors/lyrics-text.js`, `id3.js`) ради node-тестов.
+- Фронт: модуль раздела экспортирует `mount(section, ctx)`, `show(params)`, опц. `hide()`; чистая логика выносится в отдельные модули (`editors/notes-model.js`, `editors/lyrics-text.js`, `id3.js`) ради node-тестов.
 - Исходящий HTTP — только через `karaoke_core.http.Http` (`AppContext.http`); в тестах — `create_app(..., http=FakeHttp())`, реальные LRCLIB/usdb/GitHub/YouTube не трогать.
 - `test_repo_config` считает секретом любое `password`/`token`/`secret` (и `*_PASSWORD…`), за которым через двоеточие или знак равенства идёт значение, во всех файлах вне `tests/` — в коде/JS писать `b['password']`, передавать позиционно или назвать переменную иначе.
 - LRC пишется в UTF-8 (читается `utf-8-sig`); нормализация строк в `handlers.py` (`_norm_line`, `parse_lrc`, `lyrics_lines`) повторяет форк `src/modules/Speech_Recognition/lrc_timing.py` один в один — менять только синхронно.
@@ -119,6 +128,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 - 2 skipped — `tests/core/test_storage_smb_integration.py` без `TEST_SMB_HOST/TEST_SMB_SHARE` (передавать `-e TEST_SMB_…` в `run`).
 - `tests/core/test_repo_config.py` сканирует весь репозиторий (кроме `tests/`, `.autopilot/`, `.env`), включая этот файл, на `PASSWORD|SECRET|TOKEN` со значением после `=`/`:`.
 - Настоящий GPU проверяется только `gpucheck` и реальной генерацией.
+- Редактор нот: швы — `PUT/GET /api/songs/{id}/notes` в `tests/api/test_songs.py` и чистые модули (`notes-model`, `syllables`, `timeline`, `notes-panel` `*.test.mjs`); экран (`notes-editor.js`, плагины) — только вручную в браузере.
 
 ## Подводные камни
 
@@ -138,6 +148,9 @@ patches/karaoke-local.patch  резервная копия правок форк
 - yt-dlp не фиксируется по `uv.lock` (`lock_constraints.FRESH`) и ставится последним слоем образа: старая версия получает от YouTube HTTP 403. Обновить только его: `./scripts/compose.ps1 build --build-arg YTDLP_REFRESH=<дата> worker`, затем `./scripts/compose.ps1 up -d worker`.
 - yt-dlp без `deno` (в образе — `denoland/deno:bin-2.5.6`) получает с YouTube не все форматы; `selfcheck` проверяет оба.
 - Тома переживают `compose down`; `compose down -v` удаляет БД и корзину.
+- Формат UltraSinger: пробел-граница слова стоит в конце слога, «~» — продолжение гласной (бывает с пробелом с любой стороны); `lineText`/`joinNext`/`setLineText` в `notes-model.js` это учитывают — не «чинить» пробелы при правке.
+- Сдвиг ноты левее бита 0 (move, resize, addNote, retime) не ошибка: модель сдвигает всю песню вправо и уменьшает `gap` (`settle`); ошибка только при `#GAP` < 0. Предпросмотр перетаскивания пересчитывает биты через `rebaseBeat`.
+- Шара отдаёт 503 при параллельном чтении одного файла (`<audio>` и волна одновременно) — `loadPeaks` повторяет до 3 раз через 1,5 с.
 
 ## Как здесь работает Autopilot
 
