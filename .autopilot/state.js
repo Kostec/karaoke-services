@@ -11,7 +11,7 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-19T23:17:21+03:00",
-  "updatedAt": "2026-10-20T07:43:24+03:00",
+  "updatedAt": "2026-10-20T08:28:45+03:00",
   "finishedAt": null,
   "stages": [
     {
@@ -49,13 +49,13 @@ window.STATE =
       "id": "build",
       "status": "active",
       "startedAt": "2026-10-20T07:15:36+03:00",
-      "note": "1 из 8 тасков готов"
+      "note": "2 из 8 тасков готовы"
     },
     {
       "id": "review",
       "status": "active",
       "startedAt": "2026-10-20T07:27:48+03:00",
-      "note": "проверено 1 из 8"
+      "note": "проверено 2 из 8"
     },
     {
       "id": "final",
@@ -137,15 +137,20 @@ window.STATE =
         "tests/core/test_storage*",
         "tests/core/test_trash*"
       ],
-      "status": "repair",
+      "status": "done",
       "retries": 0,
       "repairs": 1,
       "handoffs": 0,
       "startedAt": "2026-10-20T07:30:26+03:00",
-      "commit": "521d1b2",
+      "commit": "39a517e",
       "repairFindings": [
         "единый target_id, один поиск .txt, restore в чужую цель, ошибки SMB при передаче, probe, .part-тест, save_version, пустая папка исполнителя"
-      ]
+      ],
+      "finishedAt": "2026-10-20T07:49:10+03:00",
+      "tests": {
+        "passed": 208,
+        "failed": 0
+      }
     },
     {
       "id": "03",
@@ -173,7 +178,7 @@ window.STATE =
         "worker",
         "docker-compose.yml"
       ],
-      "status": "in-progress",
+      "status": "review",
       "retries": 0,
       "repairs": 0,
       "handoffs": 0,
@@ -255,10 +260,17 @@ window.STATE =
         "web",
         "docker-compose.yml"
       ],
-      "status": "pending",
+      "status": "review",
       "retries": 0,
-      "repairs": 0,
-      "handoffs": 0
+      "repairs": 1,
+      "handoffs": 0,
+      "startedAt": "2026-10-20T07:49:10+03:00",
+      "repairFindings": [
+        "статус GPU через ядро",
+        "раскладка тома по §3 (uploads/<hex> → songs/<A>/<A - T>/jobs/<id>/in)",
+        "пароль не уходит на новый хост",
+        "503/413, константы, умолчания из env, WEB_PORT 8090"
+      ]
     },
     {
       "id": "06",
@@ -346,7 +358,7 @@ window.STATE =
   ],
   "singlePass": null,
   "tests": {
-    "passed": 51,
+    "passed": 208,
     "failed": 0
   },
   "debt": {
@@ -381,7 +393,9 @@ window.STATE =
     "db.py:272 — дефолты SMB-хоста захардкожены в ядре (дублируют compose/.env.example)",
     ".gitattributes дублирует tests/core/fixtures/.gitattributes",
     "test_repo_config сканирует env только в core/ — расширить на web/ и worker/",
-    "storage/trash: публичные sizes/listdir/delete_file/close/Trash.get сверх «Границ» (записаны в interfaces.md)"
+    "storage/trash: публичные sizes/listdir/delete_file/close/Trash.get сверх «Границ» (записаны в interfaces.md)",
+    "tests/core/test_trash.py:683 — тест save_version завязан на то, что sizes() не вызывается (деталь реализации)",
+    "storage.delete_dir — ошибки удаления пустой папки исполнителя глотаются молча"
   ],
   "reviewers": {
     "manifestSpec": "a489e47ea70f9876b",

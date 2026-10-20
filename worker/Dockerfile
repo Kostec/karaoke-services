@@ -1,3 +1,85 @@
-# Заглушка: настоящий образ worker (CUDA 12.6 + UltraSinger) собирает таск 03.
-FROM python:3.12-slim
-CMD ["python", "-c", "print('worker: заглушка, образ ещё не собран')"]
+# Образ worker: CUDA 12.6 + cuDNN 9, Python 3.12, ffmpeg, UltraSinger из ULTRASINGER_GIT,
+# PyTorch 2.8.0 с индекса cu126 (код Pascal / GTX 1080), пакеты karaoke_core и karaoke_worker.
+#
+# Исходники UltraSinger приходят как именованный контекст сборки `ultrasinger`
+# (docker-compose.yml → additional_contexts: git-URL ветки или локальная папка).
+# Собирать: docker --context desktop-linux compose build worker
+
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=600 \
+    UV_CONCURRENT_DOWNLOADS=4 \
+    UV_PYTHON=python3.12 \
+    UV_SYSTEM_PYTHON=1
+
+# Python 3.12 (deadsnakes), ffmpeg, компилятор (для пакетов без колёс), git, tzdata.
+# PPA подключается вручную (без add-apt-repository и API launchpad — меньше точек отказа сети).
+ARG DEADSNAKES_KEY=F23C5A6CF475977595C89F51BA6932366A755776
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && curl -fsSL --retry 5 "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${DEADSNAKES_KEY}" \
+        | gpg --dearmor -o /usr/share/keyrings/deadsnakes.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/deadsnakes.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main" \
+        > /etc/apt/sources.list.d/deadsnakes.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-dev python3.12-venv \
+        ffmpeg git tzdata build-essential \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python3
+
+# uv — быстрый установщик пакетов (тот же, что использует UltraSinger).
+COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /usr/local/bin/uv
+
+# 1) PyTorch строго с индекса cu126: Linux-колёса cu128 собраны без Pascal.
+#    Кэш uv в cache-mount: оборванная загрузка не начинается заново с нуля.
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cu126
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --index-url "${TORCH_INDEX}" torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0
+
+# Сборка падает с понятным сообщением, если в torch нет кода для GTX 1080 (sm_61 / sm_60).
+COPY worker/build/check_torch_arch.py /tmp/check_torch_arch.py
+RUN python /tmp/check_torch_arch.py
+
+# 2) Зависимости UltraSinger из его pyproject.toml (без -e: исходники кладём отдельно).
+#    Ограничения держат torch на сборке cu126; numba требует numpy<2.5.
+COPY --from=ultrasinger pyproject.toml /app/UltraSinger/pyproject.toml
+RUN --mount=type=cache,target=/root/.cache/uv \
+    printf 'torch==2.8.0+cu126\ntorchaudio==2.8.0+cu126\ntorchvision==0.23.0+cu126\nnumpy<2.5\n' > /etc/uv-constraints.txt \
+    && uv pip install -r /app/UltraSinger/pyproject.toml "numpy<2.5" \
+        --constraint /etc/uv-constraints.txt \
+        --extra-index-url "${TORCH_INDEX}" --index-strategy unsafe-best-match \
+    && python /tmp/check_torch_arch.py
+
+# 3) Исходники UltraSinger (ветка с нашими правками).
+COPY --from=ultrasinger . /app/UltraSinger
+
+# 4) Наши пакеты.
+COPY core/ /app/core/
+COPY worker/ /app/worker/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --constraint /etc/uv-constraints.txt -e /app/core -e /app/worker \
+    && sed -i 's/\r$//' /app/worker/build/entrypoint.sh
+
+# Кэши моделей — в постоянном томе /models (каталоги создаёт entrypoint при старте).
+ENV ULTRASINGER_DIR=/app/UltraSinger \
+    MODELS_DIR=/models \
+    HF_HOME=/models/huggingface \
+    TORCH_HOME=/models/torch \
+    XDG_CACHE_HOME=/models/xdg \
+    PYHYPHEN_DIR=/models/hyphen
+
+# Словари pyhyphen: каталог словарей пакета → /models/hyphen (симлинк).
+RUN python /app/worker/build/link_hyphen_dir.py "${PYHYPHEN_DIR}"
+
+# Правки UltraSinger на месте — иначе сборка падает с названием пропавшей правки.
+RUN python -m karaoke_worker selfcheck
+
+WORKDIR /app/UltraSinger/src
+ENTRYPOINT ["sh", "/app/worker/build/entrypoint.sh"]
+CMD ["run"]

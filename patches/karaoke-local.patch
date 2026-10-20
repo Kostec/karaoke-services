@@ -1,0 +1,478 @@
+From 4c0ffaa5f90d80fa3b37b72036168bef5ada455d Mon Sep 17 00:00:00 2001
+From: Kostec <rad-koc@yandex.ru>
+Date: Mon, 19 Oct 2026 23:25:47 +0300
+Subject: [PATCH 1/2] fixes for lyrics and empty notes
+
+---
+ src/Settings.py                           |  4 +++
+ src/UltraSinger.py                        | 29 +++++++++++++++-
+ src/modules/Midi/midi_creator.py          |  2 ++
+ src/modules/Speech_Recognition/Whisper.py | 42 ++++++++++++++++++++++-
+ 4 files changed, 75 insertions(+), 2 deletions(-)
+
+diff --git a/src/Settings.py b/src/Settings.py
+index ce254a7..8722ca7 100644
+--- a/src/Settings.py
++++ b/src/Settings.py
+@@ -33,6 +33,10 @@ class Settings:
+     output_folder_path = ""
+     
+     language = None
++    # Local patch: lyrics-guided transcription and VAD tuning
++    lyrics_path = None  # --lyrics; default: <input>.lyrics.txt next to the input file
++    vad_onset = None    # --vad_onset (whisperx default 0.5); higher = ignore more non-singing
++    vad_offset = None   # --vad_offset (whisperx default 0.363)
+     format_version = FormatVersion.V1_2_0
+ 
+     # Demucs
+diff --git a/src/UltraSinger.py b/src/UltraSinger.py
+index 5fbf43f..44fc96a 100644
+--- a/src/UltraSinger.py
++++ b/src/UltraSinger.py
+@@ -51,6 +51,8 @@ from modules.Speech_Recognition.hyphenation import (
+     hyphenate_each_word,
+ )
+ from modules.Speech_Recognition.Whisper import transcribe_with_whisper
++from modules.Speech_Recognition.lyrics_alignment import find_lyrics_file, read_lyrics
++import hashlib
+ from modules.Ultrastar import (
+     ultrastar_writer,
+ )
+@@ -618,7 +620,21 @@ def transcribe_audio(cache_folder_path: str, processing_audio_path: str) -> Tran
+         if not settings.whisper_align_model is None:
+             whisper_align_model_string = settings.whisper_align_model.replace("/", "_")
+         whisper_device = "cpu" if settings.force_whisper_cpu else settings.pytorch_device
+-        transcription_config = f"{settings.transcriber}_{settings.whisper_model.value}_{whisper_device}_{whisper_align_model_string}_{settings.whisper_batch_size}_{settings.whisper_compute_type}_{settings.language}"
++        # Local patch: optional real lyrics + VAD options
++        lyrics_lines = None
++        lyrics_file = find_lyrics_file(settings.input_file_path, settings.lyrics_path)
++        if lyrics_file is not None:
++            lyrics_lines = read_lyrics(lyrics_file)
++            print(f"{ULTRASINGER_HEAD} Using lyrics from {blue_highlighted(lyrics_file)} ({len(lyrics_lines)} lines)")
++        elif settings.lyrics_path:
++            print(f"{ULTRASINGER_HEAD} {red_highlighted('Lyrics file not found:')} {settings.lyrics_path}")
++        vad_options = {}
++        if settings.vad_onset is not None:
++            vad_options["vad_onset"] = settings.vad_onset
++        if settings.vad_offset is not None:
++            vad_options["vad_offset"] = settings.vad_offset
++        lyrics_hash = hashlib.md5("\n".join(lyrics_lines).encode("utf-8")).hexdigest()[:8] if lyrics_lines else "none"
++        transcription_config = f"{settings.transcriber}_{settings.whisper_model.value}_{whisper_device}_{whisper_align_model_string}_{settings.whisper_batch_size}_{settings.whisper_compute_type}_{settings.language}_lyrics-{lyrics_hash}_vad-{settings.vad_onset}-{settings.vad_offset}"
+         transcription_path = os.path.join(cache_folder_path, f"{transcription_config}.json")
+         cached_transcription_available = check_file_exists(transcription_path)
+         if settings.skip_cache_transcription or not cached_transcription_available:
+@@ -631,6 +647,8 @@ def transcribe_audio(cache_folder_path: str, processing_audio_path: str) -> Tran
+                 settings.whisper_compute_type,
+                 settings.language,
+                 settings.keep_numbers,
++                lyrics_lines,
++                vad_options or None,
+             )
+             with open(transcription_path, "w", encoding=FILE_ENCODING) as file:
+                 file.write(transcription_result.to_json())
+@@ -797,6 +815,12 @@ def init_settings(argv: list[str]) -> Settings:
+             settings.keep_numbers = True
+         elif opt in ("--language"):
+             settings.language = arg
++        elif opt in ("--lyrics"):
++            settings.lyrics_path = arg
++        elif opt in ("--vad_onset"):
++            settings.vad_onset = float(arg)
++        elif opt in ("--vad_offset"):
++            settings.vad_offset = float(arg)
+         elif opt in ("--crepe"):
+             settings.crepe_model_capacity = arg
+         elif opt in ("--crepe_step_size"):
+@@ -879,6 +903,9 @@ def arg_options():
+         "whisper_batch_size=",
+         "whisper_compute_type=",
+         "language=",
++        "lyrics=",
++        "vad_onset=",
++        "vad_offset=",
+         "plot",
+         "midi",
+         "disable_hyphenation",
+diff --git a/src/modules/Midi/midi_creator.py b/src/modules/Midi/midi_creator.py
+index 97446e1..86b54ab 100644
+--- a/src/modules/Midi/midi_creator.py
++++ b/src/modules/Midi/midi_creator.py
+@@ -28,6 +28,8 @@ def create_midi_instrument(midi_segments: list[MidiSegment]) -> object:
+     velocity = 100
+ 
+     for i, midi_segment in enumerate(midi_segments):
++        if midi_segment.end <= midi_segment.start:
++            continue  # пропускаем ноты нулевой длины
+         note = pretty_midi.Note(velocity, librosa.note_to_midi(midi_segment.note), midi_segment.start, midi_segment.end)
+         instrument.notes.append(note)
+ 
+diff --git a/src/modules/Speech_Recognition/Whisper.py b/src/modules/Speech_Recognition/Whisper.py
+index c0cd6e4..a99bc18 100644
+--- a/src/modules/Speech_Recognition/Whisper.py
++++ b/src/modules/Speech_Recognition/Whisper.py
+@@ -28,6 +28,7 @@ from torch.cuda import OutOfMemoryError
+ from modules.Speech_Recognition.TranscriptionResult import TranscriptionResult
+ from modules.console_colors import ULTRASINGER_HEAD, blue_highlighted, red_highlighted
+ from modules.Speech_Recognition.TranscribedData import TranscribedData, from_whisper
++from modules.Speech_Recognition.lyrics_alignment import filter_hallucinations, build_lyrics_segments
+ 
+ #Addition for numbers to words
+ import re
+@@ -97,6 +98,8 @@ def transcribe_with_whisper(
+     compute_type: str = None,
+     language: str = None,
+     keep_numbers: bool = False,
++    lyrics_lines: list = None,
++    vad_options: dict = None,
+ ) -> TranscriptionResult:
+     """Transcribe with whisper"""
+     # Info: Regardless of the audio sampling rate used in the original audio file, whisper resample the audio signal to 16kHz (via ffmpeg). So the standard input from (44.1 or 48 kHz) should work.
+@@ -114,7 +117,8 @@ def transcribe_with_whisper(
+     try:
+         torch.cuda.empty_cache()
+         loaded_whisper_model = whisperx.load_model(
+-            model.value, language=language, device=device, compute_type=compute_type
++            model.value, language=language, device=device, compute_type=compute_type,
++            vad_options=vad_options,
+         )
+ 
+         audio = whisperx.load_audio(audio_path)
+@@ -126,6 +130,9 @@ def transcribe_with_whisper(
+         )
+ 
+         detected_language = result["language"]
++
++        # Local patch: drop subtitle-credit hallucinations ("Субтитры сделал ...")
++        result["segments"] = filter_hallucinations(result["segments"])
+         if language is None:
+             language = detected_language
+ 
+@@ -158,6 +165,39 @@ def transcribe_with_whisper(
+             return_char_alignments=False,
+         )
+ 
++        # Local patch: replace whisper's words with the real lyrics, using whisper only for timing
++        if lyrics_lines:
++            audio_duration = len(audio) / 16000
++            lyrics_segments = build_lyrics_segments(result_aligned, lyrics_lines, audio_duration)
++            try:
++                import json as _json
++                _dbg = {"whisper": [{"text": s.get("text"), "start": s.get("start"), "end": s.get("end"),
++                                      "words": [[w.get("word"), w.get("start"), w.get("end")] for w in s.get("words", [])]}
++                                     for s in result_aligned.get("segments", [])],
++                        "lyrics_windows": lyrics_segments}
++                with open(os.path.join(os.path.dirname(audio_path), "lyrics_debug.json"), "w", encoding="utf-8") as _f:
++                    _json.dump(_dbg, _f, ensure_ascii=False, indent=1, default=float)
++            except Exception as _e:
++                print(f"lyrics debug dump failed: {_e}")
++            if keep_numbers == False:
++                for obj in lyrics_segments:
++                    obj["text"] = number_to_words(obj["text"], language)
++            result_aligned = whisperx.align(
++                lyrics_segments,
++                model_a,
++                metadata,
++                audio,
++                device,
++                return_char_alignments=False,
++            )
++            try:
++                _dbg["lyrics_aligned"] = [[w.get("word"), w.get("start"), w.get("end"), w.get("score")]
++                                         for s in result_aligned.get("segments", []) for w in s.get("words", [])]
++                with open(os.path.join(os.path.dirname(audio_path), "lyrics_debug.json"), "w", encoding="utf-8") as _f:
++                    _json.dump(_dbg, _f, ensure_ascii=False, indent=1, default=float)
++            except Exception as _e:
++                print(f"lyrics debug dump failed: {_e}")
++
+         transcribed_data = convert_to_transcribed_data(result_aligned)
+ 
+         return TranscriptionResult(transcribed_data, detected_language)
+From a3dee18d7acaf706df671085e0f359636e87ee4a Mon Sep 17 00:00:00 2001
+From: Kostec <rad-koc@yandex.ru>
+Date: Mon, 19 Oct 2026 23:30:02 +0300
+Subject: [PATCH 2/2] missed file
+
+---
+ .../Speech_Recognition/lyrics_alignment.py    | 273 ++++++++++++++++++
+ 1 file changed, 273 insertions(+)
+ create mode 100644 src/modules/Speech_Recognition/lyrics_alignment.py
+
+diff --git a/src/modules/Speech_Recognition/lyrics_alignment.py b/src/modules/Speech_Recognition/lyrics_alignment.py
+new file mode 100644
+index 0000000..905b8dc
+--- /dev/null
++++ b/src/modules/Speech_Recognition/lyrics_alignment.py
+@@ -0,0 +1,273 @@
++"""Lyrics-guided transcription helpers (local patch).
++
++Whisper is good at *when* something is sung, but often wrong at *what* is sung
++(metal vocals, screams) and hallucinates subtitle credits on instrumental parts.
++If the user provides the real lyrics, we keep Whisper only as a timing anchor:
++the real lyric lines are placed into time windows found by matching them
++against Whisper's words, and then wav2vec2 forced alignment (whisperx.align)
++places every real word precisely inside its window.
++"""
++
++import os
++import re
++from difflib import SequenceMatcher
++
++from modules.console_colors import ULTRASINGER_HEAD, blue_highlighted, red_highlighted
++
++# Typical Whisper hallucinations (mostly from subtitle credits in its training data)
++HALLUCINATION_PATTERNS = [
++    r"субтитр",
++    r"dimatorzok",
++    r"продолжение\s+следует",
++    r"спасибо\s+за\s+просмотр",
++    r"подпис(ывайтесь|ывайся)",
++    r"ставьте\s+лайк",
++    r"редактор\s+субтитров",
++    r"корректор",
++    r"amara\.org",
++    r"thanks?\s+(you\s+)?for\s+watching",
++    r"subtitles?\s+by",
++    r"untertitel",
++]
++_HALLUCINATION_RE = re.compile("|".join(HALLUCINATION_PATTERNS), re.IGNORECASE)
++
++MIN_WORD_SIMILARITY = 0.6     # whisper word vs lyric word to count as the same word
++MIN_LINE_SIMILARITY = 0.55    # unmatched whisper segment vs lyric line (repeated chorus)
++GAP_PENALTY = -0.4
++SECONDS_PER_UNMATCHED_WORD = 0.5
++LINE_PAD = 0.25
++MIN_WINDOW = 0.3
++MAX_GAP_INSIDE_LINE = 3.0     # seconds between two consecutive words of one sung line
++
++
++def is_hallucination(text: str) -> bool:
++    return bool(_HALLUCINATION_RE.search(text or ""))
++
++
++def filter_hallucinations(segments: list) -> list:
++    """Drop whisper segments that look like subtitle-credit hallucinations."""
++    kept = []
++    for seg in segments:
++        if is_hallucination(seg.get("text", "")):
++            print(f"{ULTRASINGER_HEAD} {red_highlighted('Removed hallucination:')} {seg.get('text', '').strip()}")
++        else:
++            kept.append(seg)
++    return kept
++
++
++def find_lyrics_file(input_file_path: str, explicit_path: str = None):
++    """<song>.lyrics.txt next to the input file, or an explicit --lyrics path."""
++    if explicit_path:
++        return explicit_path if os.path.isfile(explicit_path) else None
++    if not input_file_path or input_file_path.startswith("http"):
++        return None
++    base, _ = os.path.splitext(input_file_path)
++    for candidate in (base + ".lyrics.txt", base + ".txt.lyrics", base + ".lrc.txt"):
++        if os.path.isfile(candidate):
++            return candidate
++    return None
++
++
++def read_lyrics(path: str) -> list:
++    """Non-empty lines; [Chorus]-style tags and LRC timestamps are removed."""
++    with open(path, encoding="utf-8-sig") as f:
++        raw = f.read().splitlines()
++    lines = []
++    for line in raw:
++        line = re.sub(r"\[\d{1,2}:\d{2}(\.\d+)?\]", "", line)   # LRC timestamps
++        line = re.sub(r"^\s*\[[^\]]*\]\s*$", "", line)          # [Припев], [Chorus]
++        line = re.sub(r"\s+", " ", line).strip()
++        if line and _norm_words(line):
++            lines.append(line)
++    return lines
++
++
++def _norm_word(word: str) -> str:
++    word = word.lower().replace("ё", "е")
++    return re.sub(r"[^\w]", "", word)
++
++
++def _norm_words(text: str) -> list:
++    return [w for w in (_norm_word(t) for t in text.split()) if w]
++
++
++def _sim(a: str, b: str) -> float:
++    if a == b:
++        return 1.0
++    return SequenceMatcher(None, a, b).ratio()
++
++
++def _align_words(lyric_words: list, whisper_words: list) -> dict:
++    """Needleman-Wunsch over words with fuzzy matching. Returns {lyric_idx: whisper_idx}."""
++    n, m = len(lyric_words), len(whisper_words)
++    neg = float("-inf")
++    score = [[0.0] * (m + 1) for _ in range(n + 1)]
++    back = [[0] * (m + 1) for _ in range(n + 1)]  # 1 = diag, 2 = up (skip lyric), 3 = left (skip whisper)
++    for i in range(1, n + 1):
++        score[i][0] = i * GAP_PENALTY
++        back[i][0] = 2
++    for j in range(1, m + 1):
++        score[0][j] = j * GAP_PENALTY
++        back[0][j] = 3
++    for i in range(1, n + 1):
++        lw = lyric_words[i - 1]
++        for j in range(1, m + 1):
++            s = _sim(lw, whisper_words[j - 1])
++            diag = score[i - 1][j - 1] + (2 * s - 0.2) if s >= MIN_WORD_SIMILARITY else neg
++            up = score[i - 1][j] + GAP_PENALTY
++            left = score[i][j - 1] + GAP_PENALTY
++            best = max(diag, up, left)
++            score[i][j] = best
++            back[i][j] = 1 if best == diag else (2 if best == up else 3)
++    mapping = {}
++    i, j = n, m
++    while i > 0 or j > 0:
++        b = back[i][j]
++        if b == 1:
++            mapping[i - 1] = j - 1
++            i, j = i - 1, j - 1
++        elif b == 2:
++            i -= 1
++        else:
++            j -= 1
++    return mapping
++
++
++def build_lyrics_segments(whisper_aligned: dict, lyrics_lines: list, audio_duration: float) -> list:
++    """Place lyric lines into time windows using aligned whisper words as anchors.
++
++    whisper_aligned: result of whisperx.align on whisper's own transcription.
++    Returns whisperx-style segments [{"text", "start", "end"}] for a second whisperx.align pass.
++    """
++    # Whisper words with timing
++    w_words, w_times, w_seg = [], [], []
++    for seg_idx, seg in enumerate(whisper_aligned.get("segments", [])):
++        for w in seg.get("words", []):
++            if "start" not in w or "end" not in w:
++                continue
++            for token in _norm_words(w.get("word", "")):
++                w_words.append(token)
++                w_times.append((float(w["start"]), float(w["end"])))
++                w_seg.append(seg_idx)
++
++    # Lyric words
++    l_words, l_line = [], []
++    line_words = []
++    for line_idx, line in enumerate(lyrics_lines):
++        words = _norm_words(line)
++        line_words.append(words)
++        for token in words:
++            l_words.append(token)
++            l_line.append(line_idx)
++
++    mapping = _align_words(l_words, w_words) if w_words else {}
++
++    n_lines = len(lyrics_lines)
++    first_word_index = []
++    idx = 0
++    for words in line_words:
++        first_word_index.append(idx)
++        idx += len(words)
++
++    # A line is sung in one go: keep only the biggest time-contiguous cluster of its
++    # matched words (otherwise one chorus line can stretch over several repeats).
++    for li in range(n_lines):
++        start_idx = first_word_index[li]
++        keys = [k for k in range(start_idx, start_idx + len(line_words[li])) if k in mapping]
++        if len(keys) < 2:
++            continue
++        clusters, current = [], [keys[0]]
++        for prev_k, k in zip(keys, keys[1:]):
++            if w_times[mapping[k]][0] - w_times[mapping[prev_k]][1] > MAX_GAP_INSIDE_LINE:
++                clusters.append(current)
++                current = []
++            current.append(k)
++        clusters.append(current)
++        best = max(clusters, key=len)
++        for cluster in clusters:
++            if cluster is not best:
++                for k in cluster:
++                    del mapping[k]
++
++    matched_whisper = set(mapping.values())
++
++    raw = []
++    for li in range(n_lines):
++        start_idx = first_word_index[li]
++        count = len(line_words[li])
++        matched = [(k - start_idx, mapping[k]) for k in range(start_idx, start_idx + count) if k in mapping]
++        if not matched:
++            raw.append(None)
++            continue
++        first_pos, first_w = matched[0]
++        last_pos, last_w = matched[-1]
++        missing_before = first_pos
++        missing_after = count - 1 - last_pos
++        start = w_times[first_w][0] - LINE_PAD - missing_before * SECONDS_PER_UNMATCHED_WORD
++        end = w_times[last_w][1] + LINE_PAD + missing_after * SECONDS_PER_UNMATCHED_WORD
++        raw.append([start, end, len(matched) / count])
++
++    # Make windows monotonic and fill unmatched lines into gaps
++    segments = []
++    unplaced = []
++    prev_end = 0.0
++    for li in range(n_lines):
++        if raw[li] is not None:
++            start, end, _ = raw[li]
++            start = max(start, prev_end)
++            next_start = next((raw[k][0] for k in range(li + 1, n_lines) if raw[k] is not None), audio_duration)
++            end = min(end, max(next_start, start + MIN_WINDOW), audio_duration)
++            if end - start < MIN_WINDOW:
++                end = min(start + MIN_WINDOW, audio_duration)
++        else:
++            next_start = next((raw[k][0] for k in range(li + 1, n_lines) if raw[k] is not None), audio_duration)
++            next_start = max(next_start, prev_end)
++            wanted = len(line_words[li]) * SECONDS_PER_UNMATCHED_WORD * 1.6 + 2 * LINE_PAD
++            start = prev_end
++            end = min(next_start, start + max(wanted, MIN_WINDOW))
++            if end - start < MIN_WINDOW:
++                unplaced.append(lyrics_lines[li])
++                continue
++        segments.append({"text": lyrics_lines[li], "start": round(start, 3), "end": round(end, 3)})
++        prev_end = end
++
++    # Repeated parts: whisper segments that matched nothing but resemble a lyric line
++    lyric_norm_lines = [" ".join(w) for w in line_words]
++    repeats = 0
++    for seg_idx, seg in enumerate(whisper_aligned.get("segments", [])):
++        seg_word_ids = [k for k, s in enumerate(w_seg) if s == seg_idx]
++        if not seg_word_ids:
++            continue
++        matched_share = sum(1 for k in seg_word_ids if k in matched_whisper) / len(seg_word_ids)
++        if matched_share > 0.3:
++            continue
++        seg_text = " ".join(w_words[k] for k in seg_word_ids)
++        best_line, best_sim = None, 0.0
++        for li, norm in enumerate(lyric_norm_lines):
++            s = _sim(seg_text, norm)
++            if s > best_sim:
++                best_line, best_sim = li, s
++        if best_line is None or best_sim < MIN_LINE_SIMILARITY:
++            continue
++        start = w_times[seg_word_ids[0]][0] - LINE_PAD
++        end = w_times[seg_word_ids[-1]][1] + LINE_PAD
++        overlap = any(min(end, s["end"]) - max(start, s["start"]) > 0.5 * (end - start) for s in segments)
++        if overlap:
++            continue
++        segments.append({"text": lyrics_lines[best_line], "start": round(max(start, 0.0), 3),
++                         "end": round(min(end, audio_duration), 3)})
++        repeats += 1
++
++    segments.sort(key=lambda s: s["start"])
++
++    # Resolve overlaps created by inserted repeats
++    for a, b in zip(segments, segments[1:]):
++        if b["start"] < a["end"]:
++            a["end"] = max(a["start"] + MIN_WINDOW / 2, b["start"])
++
++    matched_lines = sum(1 for r in raw if r is not None)
++    print(f"{ULTRASINGER_HEAD} Lyrics: {blue_highlighted(str(matched_lines))}/{n_lines} lines anchored by whisper, "
++          f"{blue_highlighted(str(repeats))} repeated parts detected")
++    for line in unplaced:
++        print(f"{ULTRASINGER_HEAD} {red_highlighted('Lyrics line could not be placed, skipped:')} {line}")
++    return segments

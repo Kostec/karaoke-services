@@ -30,7 +30,7 @@ services:
       dockerfile: web/Dockerfile
     restart: unless-stopped
     ports:
-      - "${WEB_PORT:-8080}:8080"
+      - "${WEB_PORT:-8090}:8080"
     environment:
       <<: *app-env
       WEB_PASSWORD: ${WEB_PASSWORD:-}
@@ -43,14 +43,17 @@ services:
     build:
       context: .
       dockerfile: worker/Dockerfile
-      args:
-        ULTRASINGER_GIT: ${ULTRASINGER_GIT:-https://github.com/Kostec/UltraSinger.git#karaoke-local}
+      # Исходники UltraSinger: git-URL ветки (…git#karaoke-local) или путь к локальной папке.
+      additional_contexts:
+        ultrasinger: ${ULTRASINGER_GIT:-https://github.com/Kostec/UltraSinger.git#karaoke-local}
+    image: karaoke-services-worker
     restart: unless-stopped
     environment:
       <<: *app-env
       HF_HOME: /models/huggingface
       TORCH_HOME: /models/torch
       XDG_CACHE_HOME: /models/xdg
+      PYHYPHEN_DIR: /models/hyphen
     volumes:
       - data:/data
       - models:/models
