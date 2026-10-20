@@ -16,16 +16,21 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 __all__ = [
     "connect", "Jobs", "Job", "Settings", "OutputTarget", "Library", "LibraryItem",
     "Songs", "OwnSong", "song_id_for", "JOB_STATES", "FINAL_STATES",
-    "INTERRUPTED_MESSAGE",
+    "INTERRUPTED_MESSAGE", "ACTIVE_STATES", "STAGE_PUBLISH", "GPU_STATUS_KEY",
 ]
 
 JOB_STATES = ("queued", "running", "publishing", "done", "failed", "cancelled")
 FINAL_STATES = ("done", "failed", "cancelled")
+ACTIVE_STATES = tuple(s for s in JOB_STATES if s not in FINAL_STATES)
+# Значение jobs.stage, когда задание упало на выкладке: по нему веб предлагает «Выложить повторно».
+STAGE_PUBLISH = "publish"
+# Ключ settings, куда воркер при старте пишет результат gpucheck.check().
+GPU_STATUS_KEY = "gpu_status"
 INTERRUPTED_MESSAGE = "прервано перезапуском"
 
 _SCHEMA_V1 = """
@@ -185,6 +190,25 @@ class Jobs:
                 " VALUES (?, 'queued', ?, ?, ?, ?, ?, ?) RETURNING *",
                 (type, artist, title, song_id, json.dumps(params or {}, ensure_ascii=False),
                  parent_id, now()),
+            ).fetchone()
+        return Job.from_row(row)
+
+    def enqueue_with(self, type: str, song_ref: Any, make_params: Callable[[int], dict],
+                     *, parent_id: int | None = None) -> Job:
+        """Поставить задание, параметры которого зависят от его id (например, папка входа
+        ``jobs/<id>/in``). ``make_params(id)`` вызывается внутри той же транзакции, поэтому
+        воркер не увидит задание без параметров; исключение в ней — задания нет."""
+        artist, title, song_id = _song_ref(song_ref)
+        with _tx(self.conn):
+            job_id = self.conn.execute(
+                "INSERT INTO jobs (type, state, artist, title, song_id, params, parent_id, created_at)"
+                " VALUES (?, 'queued', ?, ?, ?, '{}', ?, ?) RETURNING id",
+                (type, artist, title, song_id, parent_id, now()),
+            ).fetchone()[0]
+            params = make_params(job_id)
+            row = self.conn.execute(
+                "UPDATE jobs SET params=? WHERE id=? RETURNING *",
+                (json.dumps(params or {}, ensure_ascii=False), job_id),
             ).fetchone()
         return Job.from_row(row)
 
@@ -349,6 +373,22 @@ class Settings:
             target = OutputTarget(**{**asdict(target), "password": self.get_output().password})
         self._set("output", target._to_json())
         return target
+
+    def get_gpu_status(self) -> dict | None:
+        """Последний результат проверки GPU воркером (``gpucheck.check()``) или ``None``."""
+        raw = self._get(GPU_STATUS_KEY)
+        if raw is None:
+            return None
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def set_gpu_status(self, status: Mapping[str, Any]) -> None:
+        """Записать результат проверки GPU (воркер — при старте); ``checked_at`` ставится сам."""
+        self._set(GPU_STATUS_KEY, json.dumps({**status, "checked_at": status.get("checked_at") or now()},
+                                             ensure_ascii=False, default=str))
 
 
 # --------------------------------------------------------------------------- индекс песен

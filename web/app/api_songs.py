@@ -1,0 +1,237 @@
+"""Песни папки результата: индекс, карточка, текст, ноты, аудио, удаление; корзина."""
+
+from __future__ import annotations
+
+import mimetypes
+import re
+
+from fastapi import APIRouter, BackgroundTasks, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from karaoke_core import ultrastar
+from karaoke_core.paths import INPUT_LYRICS
+from karaoke_core.storage import StorageError, StorageNotFound
+from karaoke_core.trash import TrashError
+
+from .api_jobs import ctx_of
+from .context import ApiError, AppContext, not_found
+from .notes import NotesIn, apply_notes, notes_payload, read_only_reason
+
+router = APIRouter(prefix="/api", tags=["Песни"])
+
+
+def _storage_call(ctx: AppContext, fn, *a):
+    """Вызов папки результата: недоступна → 503 с понятной причиной."""
+    try:
+        return fn(*a)
+    except StorageNotFound as e:
+        _not_found_or_unavailable(ctx, e)
+    except StorageError as e:
+        ctx.mark_output_error(e)
+        raise ApiError(503, f"Папка результата недоступна: {e}") from None
+
+
+def _not_found_or_unavailable(ctx: AppContext, e: StorageNotFound):
+    """Нет файла — 404; но если пропал сам корень папки результата — 503."""
+    status = ctx.output_status(fresh=True)
+    if not status["ok"]:
+        raise ApiError(503, status["error"]) from None
+    raise ApiError(404, str(e)) from None
+
+
+def _read_txt(ctx: AppContext, item) -> bytes:
+    return _storage_call(ctx, ctx.storage().read, f"{item.rel_dir}/{item.txt_name}")
+
+
+@router.get("/songs", summary="Список песен из индекса")
+def list_songs(request: Request, background: BackgroundTasks, q: str | None = None):
+    ctx = ctx_of(request)
+    target = ctx.target()
+    storage = ctx.storage()
+    items = ctx.library.list(storage.target_id, q)
+    state = ctx.scan_state.get(storage.target_id, {})
+    if not state and not ctx.library.list(storage.target_id):
+        background.add_task(ctx.rescan)  # первый показ этой цели — просканировать
+    return {"scanned_at": ctx.scanned_at(storage.target_id, items),
+            "scanning": bool(state.get("running")),
+            "output": ctx.output_status(), "target": target.public(),
+            "items": [ctx.song_dict(i) for i in items]}
+
+
+@router.post("/songs/rescan", status_code=202, summary="Пересканировать папку в фоне")
+def rescan(request: Request, background: BackgroundTasks):
+    background.add_task(ctx_of(request).rescan)
+    return {"scanning": True}
+
+
+@router.get("/songs/exists", summary="Есть ли такая песня в папке результата")
+def exists(request: Request, artist: str = "", title: str = ""):
+    if not artist.strip() or not title.strip():
+        raise ApiError(400, "Укажите исполнителя и название")
+    item = ctx_of(request).find_by_name(artist, title)
+    return {"exists": True, "song_id": item.song_id} if item else {"exists": False}
+
+
+def _own_lyrics(ctx: AppContext, item) -> str | None:
+    path = ctx.paths.source(item.rel_dir) / INPUT_LYRICS
+    return path.read_text("utf-8") if item.own_song_id and path.is_file() else None
+
+
+@router.get("/songs/{song_id}", summary="Карточка песни")
+def get_song(song_id: str, request: Request):
+    ctx = ctx_of(request)
+    item = ctx.find_song(song_id)
+    out = ctx.song_dict(item)
+    if item.own_song_id:
+        own = ctx.songs.get(item.own_song_id)
+        out["params"] = own.params if own else None
+        out["lyrics"] = _own_lyrics(ctx, item)
+    return out
+
+
+@router.get("/songs/{song_id}/lyrics", summary="Текст песни: свой исходный или извлечённый из .txt")
+def get_lyrics(song_id: str, request: Request):
+    ctx = ctx_of(request)
+    item = ctx.find_song(song_id)
+    own = _own_lyrics(ctx, item)
+    if own is not None:
+        return {"text": own, "source": "own"}
+    return {"text": ultrastar.extract_lyrics(ultrastar.parse(_read_txt(ctx, item))),
+            "source": "extracted"}
+
+
+@router.get("/songs/{song_id}/notes", summary="Ноты песни структурой")
+def get_notes(song_id: str, request: Request):
+    ctx = ctx_of(request)
+    return notes_payload(ultrastar.parse(_read_txt(ctx, ctx.find_song(song_id))))
+
+
+@router.put("/songs/{song_id}/notes", summary="Сохранить правку текста нот (старая версия — в корзину)")
+def put_notes(song_id: str, body: NotesIn, request: Request):
+    ctx = ctx_of(request)
+    item = ctx.find_song(song_id)
+    original = _read_txt(ctx, item)
+    song = ultrastar.parse(original)
+    reason = read_only_reason(song)
+    if reason:
+        raise ApiError(409, reason)
+    apply_notes(song, body)
+    try:
+        data = ultrastar.render(song)
+    except UnicodeEncodeError:
+        raise ApiError(400, f"Символ не поддерживается кодировкой файла ({song.encoding})") from None
+    if data != original:
+        rel = f"{item.rel_dir}/{item.txt_name}"
+        storage = ctx.storage()
+        try:
+            _storage_call(ctx, lambda: ctx.trash.save_version(storage, rel, reason="правка нот в редакторе"))
+        except TrashError as e:
+            raise ApiError(409, str(e)) from None
+        _storage_call(ctx, storage.write_atomic, rel, data)
+        item = ctx.refresh_song(item.rel_dir) or item
+    return ctx.song_dict(item)
+
+
+_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+def _media(ctx: AppContext, item, name: str | None, request: Request, default_type: str):
+    if not name:
+        raise not_found("У песни нет такого файла")
+    storage = ctx.storage()
+    rel = f"{item.rel_dir}/{name}"
+    st = _storage_call(ctx, storage.stat, rel)
+    if st is None or st.is_dir:
+        _not_found_or_unavailable(ctx, StorageNotFound("Файл песни не найден в папке результата"))
+    size = st.size
+    ctype = mimetypes.guess_type(name)[0] or default_type
+    start, end, status = 0, size - 1, 200
+    rng = request.headers.get("range")
+    if rng:
+        m = _RANGE_RE.match(rng.strip())
+        if not m or not (m.group(1) or m.group(2)):
+            raise ApiError(416, "Неверный диапазон")
+        if m.group(1):
+            start = int(m.group(1))
+            end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+        else:
+            start = max(0, size - int(m.group(2)))
+        if start >= size or start > end:
+            return JSONResponse({"detail": "Неверный диапазон"}, status_code=416,
+                                headers={"Content-Range": f"bytes */{size}"})
+        status = 206
+    f = _storage_call(ctx, storage.open_read, rel)
+
+    def body():
+        try:
+            f.seek(start)
+            left = end - start + 1
+            while left > 0:
+                chunk = f.read(min(1 << 16, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+                yield chunk
+        finally:
+            f.close()
+
+    headers = {"Accept-Ranges": "bytes", "Content-Length": str(end - start + 1)}
+    if status == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return StreamingResponse(body(), status_code=status, media_type=ctype, headers=headers)
+
+
+@router.get("/songs/{song_id}/audio", summary="Оригинал песни (поддерживает Range)")
+def get_audio(song_id: str, request: Request):
+    ctx = ctx_of(request)
+    item = ctx.find_song(song_id)
+    return _media(ctx, item, item.audio, request, "audio/mpeg")
+
+
+@router.get("/songs/{song_id}/cover", summary="Обложка")
+def get_cover(song_id: str, request: Request):
+    ctx = ctx_of(request)
+    item = ctx.find_song(song_id)
+    return _media(ctx, item, item.cover, request, "image/jpeg")
+
+
+@router.delete("/songs/{song_id}", summary="Удалить в корзину")
+def delete_song(song_id: str, request: Request):
+    ctx = ctx_of(request)
+    item = ctx.find_song(song_id)
+    try:
+        trash_item = ctx.trash.move_to_trash(ctx.storage(), item.rel_dir, reason="удалено из веба")
+    except StorageNotFound as e:
+        _not_found_or_unavailable(ctx, e)
+    except StorageError as e:
+        ctx.mark_output_error(e)
+        raise ApiError(503, f"Папка результата недоступна: {e}") from None
+    except TrashError as e:
+        status = ctx.output_status(fresh=True)  # «песня не найдена» при пропавшем корне — это 503
+        raise ApiError(409, str(e)) if status["ok"] else ApiError(503, status["error"]) from None
+    ctx.library.remove(item.target_id, item.rel_dir)
+    return trash_item.to_dict(ctx.trash.days)
+
+
+@router.get("/trash", tags=["Корзина"], summary="Корзина")
+def list_trash(request: Request):
+    ctx = ctx_of(request)
+    return [i.to_dict(ctx.trash.days) for i in ctx.trash.list()]
+
+
+@router.post("/trash/{item_id}/restore", tags=["Корзина"], summary="Восстановить на прежнее место")
+def restore(item_id: str, request: Request):
+    ctx = ctx_of(request)
+    try:
+        ctx.trash.get(item_id)
+    except TrashError:
+        raise not_found("Запись корзины не найдена") from None
+    storage = ctx.storage()
+    try:
+        item = ctx.trash.restore(storage, item_id)
+    except TrashError as e:
+        raise ApiError(409, str(e)) from None
+    except StorageError as e:
+        raise ApiError(503, f"Папка результата недоступна: {e}") from None
+    ctx.refresh_song(item.rel_dir)
+    return item.to_dict(ctx.trash.days)

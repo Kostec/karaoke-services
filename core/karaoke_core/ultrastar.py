@@ -15,7 +15,7 @@ from typing import ClassVar
 __all__ = [
     "Song", "Header", "Note", "LineBreak", "PlayerMark", "End", "RawLine",
     "parse", "render", "set_header_line", "fix_zero_length", "beat_to_ms",
-    "extract_lyrics", "NOTE_TYPES",
+    "extract_lyrics", "NOTE_TYPES", "decode", "number",
 ]
 
 NOTE_TYPES = (":", "*", "F", "R", "G")
@@ -207,7 +207,8 @@ class Song:
 
 # --------------------------------------------------------------------------- разбор
 
-def _decode(data: bytes) -> tuple[str, str, bool]:
+def decode(data: bytes) -> tuple[str, str, bool]:
+    """Текст .txt из байтов: (текст, кодировка, был ли BOM). BOM UTF-8 → UTF-8 → cp1251."""
     if data.startswith(_BOM):
         return data[len(_BOM):].decode("utf-8"), "utf-8", True
     for enc in ("utf-8", "cp1251"):
@@ -256,7 +257,7 @@ def _parse_body_line(content: str, eol: str, player: int | None):
 
 def parse(data: bytes) -> Song:
     """Разобрать .txt (байты) в модель :class:`Song`."""
-    text, encoding, bom = _decode(data)
+    text, encoding, bom = decode(data)
     lines = _split(text)
     song = Song(encoding=encoding, bom=bom, newline=_detect_newline(lines))
     in_headers = True
@@ -318,7 +319,7 @@ def set_header_line(data: bytes, key: str, value: str) -> bytes:
     строк сохраняются. Если значение нельзя записать в кодировке файла —
     ``ValueError``.
     """
-    text, encoding, bom = _decode(data)
+    text, encoding, bom = decode(data)
     lines = _split(text)
     newline = _detect_newline(lines)
     key_u = key.upper()
@@ -398,7 +399,8 @@ def fix_zero_length(song: Song) -> int:
     return fixed
 
 
-def _number(value: str | None, default: float) -> float:
+def number(value: str | None, default: float | None) -> float | None:
+    """Число заголовка (#BPM, #GAP; запятая как точка). Пусто — default; мусор — ValueError."""
     if value is None or not value.strip():
         return default
     return float(value.strip().replace(",", "."))
@@ -406,10 +408,10 @@ def _number(value: str | None, default: float) -> float:
 
 def beat_to_ms(song: Song, beat: float) -> float:
     """Время бита в миллисекундах: ``GAP + beat * 60000 / (BPM * 4)``."""
-    bpm = _number(song.header("BPM"), 0.0)
+    bpm = number(song.header("BPM"), 0.0)
     if bpm <= 0:
         raise ValueError("В файле нет корректного #BPM")
-    gap = _number(song.header("GAP"), 0.0)
+    gap = number(song.header("GAP"), 0.0)
     return gap + beat * 60000.0 / (bpm * 4)
 
 
