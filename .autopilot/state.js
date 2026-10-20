@@ -1,7 +1,7 @@
 window.STATE =
 {
   "slug": "karaoke-services",
-  "dir": "2026-10-19-karaoke-services--wip",
+  "dir": "2026-10-19-karaoke-services",
   "title": "Сервис генерации караоке-песен (UltraSinger в docker-compose)",
   "mode": "manual",
   "depth": "normal",
@@ -11,8 +11,8 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-19T23:17:21+03:00",
-  "updatedAt": "2026-10-20T09:23:01+03:00",
-  "finishedAt": null,
+  "updatedAt": "2026-10-20T09:29:21+03:00",
+  "finishedAt": "2026-10-20T09:29:21+03:00",
   "stages": [
     {
       "id": "preflight",
@@ -61,16 +61,18 @@ window.STATE =
     },
     {
       "id": "final",
-      "status": "active",
-      "startedAt": "2026-10-20T09:23:01+03:00"
+      "status": "done",
+      "startedAt": "2026-10-20T09:23:01+03:00",
+      "finishedAt": "2026-10-20T09:29:21+03:00",
+      "note": "слепая приёмка: расхождений нет"
     }
   ],
   "requirements": {
-    "total": 45,
-    "done": 1,
-    "inTicket": 41,
+    "total": 48,
+    "done": 44,
+    "inTicket": 0,
     "inSpec": 0,
-    "placeholder": 0,
+    "placeholder": 1,
     "deferred": 3,
     "dropped": 0
   },
@@ -439,10 +441,13 @@ window.STATE =
   },
   "debt": {
     "placeholders": [
-      "Цель выкладки сейчас — локальная /output; вернуть SMB в «Настройках» (пользователь сам); тестовые задания №1–2 и песни в ./output остались"
+      "Цель выкладки сейчас — локальная /output; вернуть SMB в «Настройках» (пользователь сам); тестовые задания №1–2 и песни в ./output остались",
+      "R22: первая выкладка на //192.168.0.129/karaoke — после возврата SMB-цели в «Настройках»"
     ],
     "assumptions": [],
-    "emptyEnv": []
+    "emptyEnv": [
+      "WEB_PASSWORD (пусто — по решению пользователя)"
+    ]
   },
   "additions": [],
   "coverage": {
@@ -495,5 +500,13 @@ window.STATE =
     "manifestSpec": "a489e47ea70f9876b",
     "craft": "acc007efbffd7f351"
   },
-  "blind": null
+  "blind": {
+    "agreed": 44,
+    "drift": 0,
+    "notes": [
+      "R20 нулевые ноты: при слепой проверке не встретились — подтверждено двумя GPU-прогонами T04/T08 («исправлено 1»)",
+      "R22 выкладка на шару Pi не проверялась вживую — цель local, проверит пользователь",
+      "R37i пароль веба проверен по коду и тестам, не вживую (WEB_PORT открыт, WEB_PASSWORD пуст)"
+    ]
+  }
 }
