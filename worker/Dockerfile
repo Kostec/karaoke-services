@@ -43,8 +43,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --index-url "${TORCH_INDEX}" torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0
 
 # Сборка падает с понятным сообщением, если в torch нет кода для GTX 1080 (sm_61 / sm_60).
-COPY worker/build/check_torch_arch.py /tmp/check_torch_arch.py
-RUN python /tmp/check_torch_arch.py
+COPY worker/build/check_torch_arch.py worker/karaoke_worker/gpucheck.py /tmp/archcheck/
+RUN python /tmp/archcheck/check_torch_arch.py
 
 # 2) Зависимости UltraSinger из его pyproject.toml (без -e: исходники кладём отдельно).
 #    Ограничения держат torch на сборке cu126; numba требует numpy<2.5.
@@ -54,7 +54,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && uv pip install -r /app/UltraSinger/pyproject.toml "numpy<2.5" \
         --constraint /etc/uv-constraints.txt \
         --extra-index-url "${TORCH_INDEX}" --index-strategy unsafe-best-match \
-    && python /tmp/check_torch_arch.py
+    && python /tmp/archcheck/check_torch_arch.py
 
 # 3) Исходники UltraSinger (ветка с нашими правками).
 COPY --from=ultrasinger . /app/UltraSinger

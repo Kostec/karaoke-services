@@ -1,7 +1,8 @@
 """Проверка, что в UltraSinger на месте наши правки из ветки karaoke-local (история 56).
 
 Проверяется:
-- флаги командной строки --lyrics, --vad_onset, --vad_offset (список getopt в arg_options);
+- флаги --lyrics, --vad_onset, --vad_offset принимает getopt со списком UltraSinger.arg_options()
+  (тот же вызов, что в init_settings);
 - модуль modules.Speech_Recognition.lyrics_alignment импортируется;
 - midi_creator не падает на сегменте нулевой длины и не пишет такую ноту в MIDI.
 
@@ -11,7 +12,6 @@
 
 from __future__ import annotations
 
-import ast
 import os
 import subprocess
 import sys
@@ -33,29 +33,6 @@ def ultrasinger_dir() -> Path:
     return Path(os.environ.get("ULTRASINGER_DIR", DEFAULT_ULTRASINGER_DIR))
 
 
-def _getopt_long_options(entry: Path) -> set[str]:
-    """Строки из функции arg_options() файла UltraSinger.py — без импорта UltraSinger."""
-    tree = ast.parse(entry.read_text(encoding="utf-8"), filename=str(entry))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "arg_options":
-            return {n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
-    raise ValueError("в UltraSinger.py нет функции arg_options()")
-
-
-def check_flags(src: Path) -> CheckResult:
-    name = "флаги --lyrics / --vad_onset / --vad_offset"
-    entry = src / "UltraSinger.py"
-    try:
-        options = _getopt_long_options(entry)
-    except (OSError, SyntaxError, ValueError) as exc:
-        return CheckResult(name, False, f"не удалось прочитать {entry}: {exc}")
-    missing = [f"--{flag}" for flag in REQUIRED_FLAGS if f"{flag}=" not in options]
-    if missing:
-        return CheckResult(name, False, "пропала правка karaoke-local: UltraSinger не знает флаг(и) "
-                                        + ", ".join(missing))
-    return CheckResult(name, True, "флаги на месте")
-
-
 def _run_in_ultrasinger(src: Path, code: str, timeout: float = 300) -> tuple[bool, str]:
     """Выполнить код отдельным процессом в src/ UltraSinger. Возвращает (успех, вывод)."""
     env = dict(os.environ, PYTHONPATH=str(src), PYTHONDONTWRITEBYTECODE="1")
@@ -71,6 +48,35 @@ def _run_in_ultrasinger(src: Path, code: str, timeout: float = 300) -> tuple[boo
 def _last_line(text: str) -> str:
     lines = [ln for ln in text.splitlines() if ln.strip()]
     return lines[-1] if lines else "без вывода"
+
+
+_FLAGS_CODE = """
+import getopt, sys
+import UltraSinger
+long_opts, short_opts = UltraSinger.arg_options()
+missing = []
+for flag in FLAGS:
+    try:
+        getopt.getopt(["--" + flag, "1"], short_opts, long_opts)
+    except getopt.GetoptError:
+        missing.append("--" + flag)
+if missing:
+    print("MISSING:" + ",".join(missing))
+    sys.exit(3)
+"""
+
+
+def check_flags(src: Path) -> CheckResult:
+    """Флаги проверяются тем же getopt и тем же списком arg_options(), что и при запуске UltraSinger."""
+    name = "флаги --lyrics / --vad_onset / --vad_offset"
+    ok, out = _run_in_ultrasinger(src, f"FLAGS = {REQUIRED_FLAGS!r}\n" + _FLAGS_CODE)
+    if ok:
+        return CheckResult(name, True, "флаги принимаются getopt UltraSinger")
+    missing = [ln[len("MISSING:"):] for ln in out.splitlines() if ln.startswith("MISSING:")]
+    if missing:
+        return CheckResult(name, False, "пропала правка karaoke-local: UltraSinger не принимает флаг(и) "
+                                        + missing[-1].replace(",", ", "))
+    return CheckResult(name, False, "не удалось получить флаги UltraSinger (arg_options): " + _last_line(out))
 
 
 _LYRICS_CODE = """

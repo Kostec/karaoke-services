@@ -14,9 +14,13 @@ import sys
 
 def _run(_args: argparse.Namespace) -> int:
     # Место для исполнителя очереди (karaoke_worker.runner.run_forever) — добавляет таск runner.
+    # Пропускаем только отсутствие самого модуля runner; любая другая ошибка импорта
+    # (сломанная зависимость внутри runner) всплывает — контейнер падает с трассой.
     try:
-        from karaoke_worker import runner  # type: ignore[attr-defined]
-    except ImportError:
+        import karaoke_worker.runner as runner
+    except ModuleNotFoundError as exc:
+        if exc.name != "karaoke_worker.runner":
+            raise
         import signal
 
         print("worker: исполнитель заданий ещё не установлен в этот образ; ожидаю остановки", flush=True)

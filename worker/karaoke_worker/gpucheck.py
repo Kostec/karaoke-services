@@ -4,16 +4,16 @@
 результат умножения тензоров на cuda, CUDA-устройства ctranslate2 и поддержку int8,
 затем проверяет правки UltraSinger (selfcheck). Код выхода 0 — только если всё прошло.
 
-`check()` возвращает словарь для записи в БД при старте воркера:
-{ok, name, vram_mb, error, torch, cuda, arch_list, matmul_ok, ct2_devices, ct2_int8}.
+`check()` возвращает словарь для записи в БД при старте воркера; ключи есть всегда:
+  ok (bool), error (str|None, по-русски), name (имя GPU), vram_mb (int), capability ("6.1"),
+  torch (версия), cuda (версия CUDA torch), arch_list ([sm_XY]), kernel_arch (sm_XY|None —
+  код, который исполняется на этом GPU), matmul_ok (bool), matmul (результат 2x2),
+  ct2_version, ct2_devices (int), ct2_int8 (bool), ct2_compute_types ([str]).
 """
 
 from __future__ import annotations
 
 from typing import Any
-
-REQUIRED_ARCH = "sm_61"  # GTX 1080 (Pascal)
-
 
 def runnable_arch(arch_list: list[str], major: int, minor: int) -> str | None:
     """Архитектура из сборки torch, чей машинный код исполняется на GPU major.minor.
@@ -28,13 +28,16 @@ def runnable_arch(arch_list: list[str], major: int, minor: int) -> str | None:
             if amaj == major and amin <= minor and (best is None or amin > int(best[-1])):
                 best = a
     return best
+
+
 CT2_COMPUTE_TYPE = "int8"  # для GTX 1080 только int8, никогда float16
 
 
 def check() -> dict[str, Any]:
-    info: dict[str, Any] = {"ok": False, "name": None, "vram_mb": None, "error": None, "torch": None,
-                            "cuda": None, "arch_list": [], "matmul_ok": False, "ct2_devices": 0,
-                            "ct2_int8": False}
+    info: dict[str, Any] = {"ok": False, "error": None, "name": None, "vram_mb": None, "capability": None,
+                            "torch": None, "cuda": None, "arch_list": [], "kernel_arch": None,
+                            "matmul_ok": False, "matmul": None, "ct2_version": None, "ct2_devices": 0,
+                            "ct2_int8": False, "ct2_compute_types": []}
     errors: list[str] = []
     try:
         import torch
@@ -101,7 +104,7 @@ def main() -> int:
     cap = f", compute capability {info['capability']}" if info.get("capability") else ""
     print(f"GPU:                {info['name'] or '—'}{cap}, VRAM {vram}")
     print(f"Тензоры на cuda:    {'OK ' + str(info.get('matmul')) if info['matmul_ok'] else 'ОШИБКА'}")
-    print(f"ctranslate2:        {info.get('ct2_version', '—')}, CUDA-устройств: {info['ct2_devices']}, "
+    print(f"ctranslate2:        {info['ct2_version'] or '—'}, CUDA-устройств: {info['ct2_devices']}, "
           f"int8: {'да' if info['ct2_int8'] else 'НЕТ'}"
           + (f" (типы: {', '.join(info['ct2_compute_types'])})" if info.get("ct2_compute_types") else ""))
     print("--- правки UltraSinger ---")

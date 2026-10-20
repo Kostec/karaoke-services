@@ -135,3 +135,25 @@ def test_midi_creator_crash_on_zero_length_is_reported_by_name(tmp_path):
 
     assert len(bad) == 1
     assert "midi_creator" in bad[0].message
+
+
+def test_flag_only_in_help_text_or_dead_branch_does_not_pass(tmp_path):
+    # Строка «lyrics=» есть в тексте справки и в мёртвой ветке, но getopt её не получает.
+    dead = '''
+HELP = "  --lyrics=<file>  --vad_onset=<x>  --vad_offset=<x>   (lyrics= vad_onset= vad_offset=)"
+
+def arg_options():
+    """Справка: lyrics= vad_onset= vad_offset="""
+    short = "hi:o:amv:"
+    long = ["ifile=", "ofile=", "language=", "midi"]
+    if False:
+        long += ["lyrics=", "vad_onset=", "vad_offset="]
+    return long, short
+'''
+    us = make_ultrasinger(tmp_path, arg_options=dead)
+
+    bad = failed(selfcheck.run_checks(us))
+
+    assert len(bad) == 1
+    for flag in ("--lyrics", "--vad_onset", "--vad_offset"):
+        assert flag in bad[0].message
