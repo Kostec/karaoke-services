@@ -141,3 +141,9 @@ GET    /api/defaults                    → модели, языки, значе
 - `editors/shell.js`: `openShell({title,subtitle,isDirty})`, `fmtTime`. Подключение — `editors/index.js` одной строкой в `app.js`.
 - (доработка 03, D02) Версии зависимостей UltraSinger фиксируются по его `uv.lock`: `uv export --frozen --no-hashes --no-dev --no-emit-project` → `worker/build/lock_constraints.py` → `/etc/uv-constraints.txt`; наши пины важнее: torch/torchaudio/torchvision cu126 и `numpy<2.5`, пины nvidia-*/triton отброшены. selfcheck — 4 проверки, включая сигнатуру `SwiftF0(fmin, fmax, confidence_threshold)`. В образе: swift-f0 0.1.2, ctranslate2 4.7.1, whisperx 3.8.1.
 - (доработка 07) `api.js`: `PARAM_KEYS`, `pickParams(src)`, `generateForm({...}) -> FormData` (единственная сборка multipart generate), `errorText(e, fallback)`. `lines.canPlay(song, data) -> true | причина`. Обложка из тегов — только по сигнатуре jpg/png/webp.
+
+### Доработка 04
+
+- `Jobs.claim_next(types=None)` — атомарный захват первого задания из указанных типов (без GPU воркер берёт только задания без GPU).
+- `JobContext.storage()` кэшируется по OutputTarget, `reset_storage()`; `progress.PUBLISH = (db.STAGE_PUBLISH, 97)`.
+- Зависание: убивается только после трассировки «in <module>» и 30 с полной тишины. Замена в ту же папку: корзина → выкладка → при сбое откат из корзины; в другую папку: выкладка → старая в корзину. Отмена сохраняет `in/`. Отладка — `song_at(rel_dir)/debug`. Уборка при старте: рабочие папки отменённых/упавших старше LOG_DAYS.

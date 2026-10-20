@@ -175,3 +175,14 @@ def test_songs_upsert_and_lookup(path):
     assert songs.by_rel_dir("Кино/Кино - Группа крови").id == s.id
     assert songs.by_rel_dir("нет") is None
     assert songs.get("нет") is None
+
+
+def test_claim_next_with_types_takes_oldest_of_those_types_only(jobs):
+    gen = jobs.enqueue("generate", REF, {})
+    pub = jobs.enqueue("publish", REF, {})
+    got = jobs.claim_next(types=["publish"])
+    assert got.id == pub.id and got.state == "running"
+    assert jobs.get(gen.id).state == "queued"
+    assert jobs.claim_next(types=["publish"]) is None
+    assert jobs.claim_next(types=[]) is None
+    assert jobs.claim_next().id == gen.id

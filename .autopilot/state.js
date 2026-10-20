@@ -11,7 +11,7 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-19T23:17:21+03:00",
-  "updatedAt": "2026-10-20T09:10:26+03:00",
+  "updatedAt": "2026-10-20T09:12:33+03:00",
   "finishedAt": null,
   "stages": [
     {
@@ -49,13 +49,13 @@ window.STATE =
       "id": "build",
       "status": "active",
       "startedAt": "2026-10-20T07:15:36+03:00",
-      "note": "5 из 8 тасков готовы"
+      "note": "6 из 8 тасков готовы, 04 на доработке"
     },
     {
       "id": "review",
       "status": "active",
       "startedAt": "2026-10-20T07:27:48+03:00",
-      "note": "проверено 6 из 8"
+      "note": "проверено 7 из 8"
     },
     {
       "id": "final",
@@ -368,14 +368,14 @@ window.STATE =
         "web/static/",
         "web/static/js/new-song.js"
       ],
-      "status": "repair",
+      "status": "done",
       "retries": 0,
       "repairs": 1,
       "handoffs": 0,
       "startedAt": "2026-10-20T08:57:19+03:00",
-      "commit": "958ff23",
+      "commit": "09a8a28",
       "tests": {
-        "passed": 18,
+        "passed": 29,
         "failed": 0
       },
       "repairFindings": [
@@ -384,7 +384,8 @@ window.STATE =
         "тесты веток parseV2",
         "PARAM_KEYS и сборка multipart в одном месте",
         "▶ неактивна без BPM"
-      ]
+      ],
+      "finishedAt": "2026-10-20T09:12:33+03:00"
     },
     {
       "id": "08",
@@ -469,7 +470,8 @@ window.STATE =
     "отмена новой песни удаляет in/ — «Перезапустить» отменённую без source/ невозможно",
     "songs.js: title кнопки подменяет её доступное имя (неактивные кнопки редакторов читаются причиной)",
     "фикстурные сохранения T07 положили 3 версии тестовой песни в корзину тома data",
-    "lock_constraints.py: фильтр nvidia- слишком широкий (нужен nvidia-.*-cu12); версии torch в двух местах; нет теста преобразования"
+    "lock_constraints.py: фильтр nvidia- слишком широкий (нужен nvidia-.*-cu12); версии torch в двух местах; нет теста преобразования",
+    "ui.js:128 runAction считает текст ошибки сам — перевести на api.errorText"
   ],
   "reviewers": {
     "manifestSpec": "a489e47ea70f9876b",

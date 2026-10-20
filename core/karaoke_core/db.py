@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Iterable, Any, Callable, Iterator, Mapping
 
 __all__ = [
     "connect", "Jobs", "Job", "Settings", "OutputTarget", "Library", "LibraryItem",
@@ -212,14 +212,21 @@ class Jobs:
             ).fetchone()
         return Job.from_row(row)
 
-    def claim_next(self) -> Job | None:
-        """Атомарно забрать самое старое задание из очереди (queued → running)."""
+    def claim_next(self, types: Iterable[str] | None = None) -> Job | None:
+        """Атомарно забрать самое старое задание из очереди (queued → running).
+        ``types`` — только задания этих типов (например, без GPU — только выкладка)."""
+        where, args = "state='queued'", []
+        if types is not None:
+            args = list(types)
+            if not args:
+                return None
+            where += f" AND type IN ({', '.join('?' * len(args))})"
         with _tx(self.conn):
             row = self.conn.execute(
                 "UPDATE jobs SET state='running', started_at=?"
-                " WHERE id = (SELECT id FROM jobs WHERE state='queued' ORDER BY id LIMIT 1)"
+                f" WHERE id = (SELECT id FROM jobs WHERE {where} ORDER BY id LIMIT 1)"
                 " RETURNING *",
-                (now(),),
+                (now(), *args),
             ).fetchone()
         return Job.from_row(row) if row else None
 
