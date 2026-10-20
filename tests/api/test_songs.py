@@ -1,5 +1,7 @@
 """Песни: индекс, exists, карточка, текст, ноты, аудио/обложка, удаление, корзина."""
 
+import pytest
+
 from karaoke_core.db import Songs, connect
 
 
@@ -109,13 +111,7 @@ def test_notes_merge_split_delete(env, client, song):
     assert txt.read_text("utf-8").endswith(": 0 4 5 При\n- 4\n: 4 4 5 вет\n: 12 4 7 мир\nE\n")
 
 
-def test_notes_reject_timing_change_and_duet(env, client, song):
-    sid = song["song_id"]
-    notes = client.get(f"/api/songs/{sid}/notes").json()
-    notes["lines"][0]["notes"][0]["start"] = 1
-    r = client.put(f"/api/songs/{sid}/notes", json=notes)
-    assert r.status_code == 400 and r.json()["detail"] == "Тайминги и высоты нот менять нельзя — только текст"
-
+def test_notes_duet_is_read_only(env, client):
     env.put_song("Pair/Pair - Duet", env.DUET_TXT, "Pair - Duet")
     client.post("/api/songs/rescan")
     duet = next(i for i in client.get("/api/songs").json()["items"] if i["is_duet"])
@@ -200,3 +196,134 @@ def test_song_source_from_import_params(env, client):
 def test_foreign_song_has_no_source(env, client, song):
     assert client.get(f"/api/songs/{song['song_id']}").json()["source"] is None
     assert client.get("/api/songs").json()["items"][0]["source"] is None
+
+
+# --------------------------------------------------------------------------- редактор нот
+
+def _add_song(env, client, artist: str, title: str, txt: bytes) -> str:
+    base = f"{artist} - {title}"
+    env.put_song(f"{artist}/{base}", txt, base)
+    assert client.post("/api/songs/rescan").status_code == 202
+    return next(i["song_id"] for i in client.get("/api/songs").json()["items"] if i["title"] == title)
+
+
+def test_notes_have_ids_in_file_order(client, song):
+    notes = client.get(f"/api/songs/{song['song_id']}/notes").json()
+    assert [[n["id"] for n in ln["notes"]] for ln in notes["lines"]] == [[0, 1], [2, 3]]
+
+
+def test_notes_without_bpm_are_read_only(env, client):
+    sid = _add_song(env, client, "Solo", "NoBpm", "#TITLE:NoBpm\n#ARTIST:Solo\n#GAP:0\n: 0 4 5 Раз\nE\n".encode())
+    n = client.get(f"/api/songs/{sid}/notes").json()
+    assert n["editable"] is False and n["reason"] == "В песне нет #BPM — редактор только для просмотра"
+    r = client.put(f"/api/songs/{sid}/notes", json=n)
+    assert r.status_code == 409 and r.json()["detail"] == n["reason"]
+
+
+RICH_TXT = b"\xef\xbb\xbf" + (
+    "#TITLE:Rich\r\n#ARTIST:Band\r\n#MP3:Band - Rich.mp3\r\n#BPM:200,5\r\n#GAP:500.0\r\n"
+    ":  0  4  5 Раз\r\n# комментарий\r\n: 4 4 5 два\r\n- 9\r\n: 10 2 3 три\r\nE\r\nхвост\r\n"
+).encode("utf-8")
+
+
+def _rich(env, client):
+    sid = _add_song(env, client, "Band", "Rich", RICH_TXT)
+    return sid, env.out / "Band" / "Band - Rich" / "Band - Rich.txt", client.get(f"/api/songs/{sid}/notes").json()
+
+
+def test_notes_put_one_note_changes_only_its_line(env, client):
+    sid, txt, notes = _rich(env, client)
+    assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
+    assert txt.read_bytes() == RICH_TXT and client.get("/api/trash").json() == []
+
+    notes["lines"][1]["notes"][0]["pitch"] = 4
+    assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
+    assert txt.read_bytes() == RICH_TXT.replace(": 10 2 3 три".encode(), ": 10 2 4 три".encode())
+
+
+def test_notes_put_raw_lines_follow_surviving_note(env, client):
+    sid, txt, notes = _rich(env, client)
+    del notes["lines"][0]["notes"][1]  # «два», перед ней стоял комментарий
+    assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
+    assert txt.read_bytes() == b"\xef\xbb\xbf" + (
+        "#TITLE:Rich\r\n#ARTIST:Band\r\n#MP3:Band - Rich.mp3\r\n#BPM:200,5\r\n#GAP:500.0\r\n"
+        ":  0  4  5 Раз\r\n# комментарий\r\n- 9\r\n: 10 2 3 три\r\nE\r\nхвост\r\n").encode("utf-8")
+
+
+def test_notes_put_timing_pitch_type_add_delete_and_lines(env, client, song):
+    sid = song["song_id"]
+    txt = env.out / "Artist" / "Artist - Song" / "Artist - Song.txt"
+    notes = client.get(f"/api/songs/{sid}/notes").json()
+    (pri, _vet), (mir, excl) = (ln["notes"] for ln in notes["lines"])
+    pri.update(type="*", start=1, length=2, pitch=6)
+    excl.update(type="F", start=20, length=3, pitch=9)
+    new = {"id": None, "type": ":", "start": 4, "length": 3, "pitch": 8, "text": " нов"}
+    notes["lines"] = [{"break_beat": 8, "notes": [pri, new]}, {"break_beat": None, "notes": [mir]},
+                      {"break_beat": None, "notes": [excl]}]
+    r = client.put(f"/api/songs/{sid}/notes", json=notes)
+    assert r.status_code == 200, r.text
+    head = env.SONG_TXT.decode("utf-8").split(": 0 4 5")[0]
+    assert txt.read_text("utf-8") == head + "* 1 2 6 При\n: 4 3 8  нов\n- 8\n: 12 4 7 мир\n- 16\nF 20 3 9 !\nE\n"
+
+    back = client.get(f"/api/songs/{sid}/notes").json()
+    assert [[(n["id"], n["type"], n["start"], n["length"], n["pitch"], n["text"]) for n in ln["notes"]]
+            for ln in back["lines"]] == [[(0, "*", 1, 2, 6, "При"), (1, ":", 4, 3, 8, " нов")],
+                                         [(2, ":", 12, 4, 7, "мир")], [(3, "F", 20, 3, 9, "!")]]
+    assert [ln["break_beat"] for ln in back["lines"]] == [8, 16, None]
+
+
+def test_notes_put_gap(env, client, song):
+    sid = song["song_id"]
+    txt = env.out / "Artist" / "Artist - Song" / "Artist - Song.txt"
+    notes = client.get(f"/api/songs/{sid}/notes").json()
+    notes["gap"] = 1234.0
+    assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
+    assert txt.read_bytes() == env.SONG_TXT.replace(b"#GAP:1000\n", b"#GAP:1234\n")
+    notes["gap"] = 987.5
+    assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
+    assert txt.read_bytes() == env.SONG_TXT.replace(b"#GAP:1000\n", b"#GAP:987.5\n")
+    notes["gap"] = 1000.1 + 0.2  # 1000.3000000000001 после сдвига на клиенте
+    assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
+    assert txt.read_bytes() == env.SONG_TXT.replace(b"#GAP:1000\n", b"#GAP:1000.3\n")
+
+
+def _first(n):
+    return n["lines"][0]["notes"][0]
+
+
+@pytest.mark.parametrize("change, detail", [
+    (lambda n: n.update(lines=[]), "В песне должна остаться хотя бы одна нота"),
+    (lambda n: _first(n).update(type="X"), "Неизвестный тип ноты «X»: строка 1, слог «При»"),
+    (lambda n: _first(n).update(start=-1), "Начало ноты раньше бита 0: строка 1, слог «При»"),
+    (lambda n: _first(n).update(length=0), "Длина ноты — не меньше 1 бита: строка 1, слог «При»"),
+    (lambda n: _first(n).update(pitch=101), "Высота ноты — от −40 до 100: строка 1, слог «При»"),
+    (lambda n: _first(n).update(pitch=-41), "Высота ноты — от −40 до 100: строка 1, слог «При»"),
+    (lambda n: _first(n).update(text="При\nвет"), "В слоге не может быть перевода строки: строка 1"),
+    (lambda n: _first(n).update(length=5), "Ноты перекрываются: строка 1, слог «вет»"),
+    (lambda n: n["lines"][1]["notes"][0].update(start=6), "Ноты перекрываются: строка 2, слог «мир»"),
+    (lambda n: n["lines"][0].update(break_beat=7),
+     "Разрыв строки 1 должен стоять между концом её последней ноты и началом строки 2"),
+    (lambda n: n["lines"][0].update(break_beat=13),
+     "Разрыв строки 1 должен стоять между концом её последней ноты и началом строки 2"),
+    (lambda n: _first(n).update(id=9), "Нота с id 9 не найдена в файле"),
+    (lambda n: _first(n).update(id=1), "Нота с id 1 встречается дважды"),
+    (lambda n: n.update(gap=-1), "Раньше начала трека сдвигать некуда: #GAP не может быть меньше 0"),
+])
+def test_notes_put_validation(env, client, song, change, detail):
+    sid = song["song_id"]
+    txt = env.out / "Artist" / "Artist - Song" / "Artist - Song.txt"
+    notes = client.get(f"/api/songs/{sid}/notes").json()
+    change(notes)
+    r = client.put(f"/api/songs/{sid}/notes", json=notes)
+    assert (r.status_code, r.json()["detail"]) == (400, detail)
+    assert txt.read_bytes() == env.SONG_TXT and client.get("/api/trash").json() == []
+
+
+def test_notes_put_allows_empty_syllable_and_touching_notes(env, client, song):
+    sid = song["song_id"]
+    txt = env.out / "Artist" / "Artist - Song" / "Artist - Song.txt"
+    notes = client.get(f"/api/songs/{sid}/notes").json()
+    _first(notes).update(text="")
+    notes["lines"][0]["break_beat"] = 12  # ровно на начале следующей строки — допустимо
+    assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
+    assert "\n: 0 4 5 \n: 4 4 5 вет\n- 12\n".encode() in txt.read_bytes()

@@ -124,7 +124,7 @@ def get_notes(song_id: str, request: Request):
     return notes_payload(ultrastar.parse(_read_txt(ctx, ctx.find_song(song_id))))
 
 
-@router.put("/songs/{song_id}/notes", summary="Сохранить правку текста нот (старая версия — в корзину)")
+@router.put("/songs/{song_id}/notes", summary="Сохранить правку нот (старая версия — в корзину)")
 def put_notes(song_id: str, body: NotesIn, request: Request):
     ctx = ctx_of(request)
     item = ctx.find_song(song_id)
