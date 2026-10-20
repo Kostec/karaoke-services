@@ -11,8 +11,8 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-20T21:33:23+03:00",
-  "updatedAt": "2026-10-20T22:47:52+03:00",
-  "finishedAt": "2026-10-20T22:47:52+03:00",
+  "updatedAt": "2026-10-20T23:31:58+03:00",
+  "finishedAt": "2026-10-20T23:31:58+03:00",
   "stages": [
     {
       "id": "preflight",
@@ -50,32 +50,32 @@ window.STATE =
     {
       "id": "build",
       "status": "done",
-      "startedAt": "2026-10-20T21:53:47+03:00",
-      "note": "4 из 4 тасков готовы",
-      "finishedAt": "2026-10-20T22:42:56+03:00"
+      "startedAt": "2026-10-20T23:15:14+03:00",
+      "note": "дополнение: таск 05",
+      "finishedAt": "2026-10-20T23:31:58+03:00"
     },
     {
       "id": "review",
       "status": "done",
-      "startedAt": "2026-10-20T22:01:17+03:00",
-      "finishedAt": "2026-10-20T22:42:56+03:00",
-      "note": "4 из 4 проверены, 5 доработок"
+      "note": "4 из 4 проверены, 5 доработок",
+      "startedAt": "2026-10-20T23:31:58+03:00",
+      "finishedAt": "2026-10-20T23:31:58+03:00"
     },
     {
       "id": "final",
       "status": "done",
-      "startedAt": "2026-10-20T22:42:56+03:00",
-      "finishedAt": "2026-10-20T22:47:52+03:00",
-      "note": "слепая приёмка: 13 из 13, расхождений нет"
+      "note": "слепая приёмка: 13 из 13, расхождений нет",
+      "startedAt": "2026-10-20T23:31:58+03:00",
+      "finishedAt": "2026-10-20T23:31:58+03:00"
     }
   ],
   "requirements": {
-    "total": 20,
-    "done": 20,
+    "total": 22,
+    "done": 21,
     "inTicket": 0,
     "inSpec": 0,
     "placeholder": 0,
-    "deferred": 0,
+    "deferred": 1,
     "dropped": 0
   },
   "tickets": [
@@ -256,6 +256,34 @@ window.STATE =
         "passed": 116,
         "failed": 0
       }
+    },
+    {
+      "id": "05",
+      "title": "Сдвиг текста по нотам: слово / строка / вся песня",
+      "requirements": [
+        "G03",
+        "R10"
+      ],
+      "blockedBy": [
+        "04"
+      ],
+      "wave": 4,
+      "zone": [
+        "web/static/js/editors/",
+        "web/static/css/editors.css",
+        "tests/frontend/"
+      ],
+      "status": "done",
+      "startedAt": "2026-10-20T23:15:14+03:00",
+      "retries": 0,
+      "repairs": 1,
+      "handoffs": 0,
+      "finishedAt": "2026-10-20T23:31:58+03:00",
+      "commit": "73a38fd",
+      "tests": {
+        "passed": 121,
+        "failed": 0
+      }
     }
   ],
   "singlePass": null,
@@ -307,7 +335,8 @@ window.STATE =
     "drift": 0,
     "notes": [
       "сохранение проверено по коду и тестам, не запуском (песни пользователя не трогали)",
-      "«текст →» на первой ноте строки был неактивен — справа нет свободной ноты, ожидаемо"
+      "«текст →» на первой ноте строки был неактивен — справа нет свободной ноты, ожидаемо",
+      "дополнение G03: песня/строка/слово — реализовано; Alt+стрелки срабатывают при фокусе на таймлайне"
     ]
   }
 }
