@@ -1,19 +1,17 @@
 // Раздел «Очередь»: опрос /api/jobs каждые 2 с (пока вкладка видна), живой лог через SSE.
 
-import { api } from './api.js';
-import { h, clear, runAction, fmtDate, fmtDuration, confirmDialog } from './ui.js';
+import { api, JOB_ACTIVE as ACTIVE, JOB_FINAL as FINAL, STAGE_PUBLISH, canRepublish } from './api.js';
+import { h, clear, runAction, fmtDate, fmtDuration, confirmDialog, toast, songName } from './ui.js';
 
 const POLL_MS = 2000;
 const LOG_MAX_LINES = 5000;
-const ACTIVE = ['queued', 'running', 'publishing'];
-const FINAL = ['done', 'failed', 'cancelled'];
 
 const TYPE_LABEL = { generate: 'Генерация', instrumental: 'Минусовка', publish: 'Выкладка' };
 const STATE_LABEL = {
   queued: 'В очереди', running: 'Идёт', publishing: 'Выкладка',
   done: 'Готово', failed: 'Ошибка', cancelled: 'Отменено',
 };
-const STAGE_LABEL = { publish: 'Выкладка' };
+const STAGE_LABEL = { [STAGE_PUBLISH]: 'Выкладка' };
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]/g;
 
@@ -39,6 +37,15 @@ export function mount(section, ctx) {
 
 export function show() {
   poll();
+}
+
+/** Уход из раздела: закрыть все живые логи (EventSource). */
+export function hide() {
+  for (const id of [...logs.keys()]) {
+    closeLog(id);
+    const card = cards.get(id);
+    if (card) card.sig = '';
+  }
 }
 
 export function startPolling() {
@@ -119,7 +126,7 @@ function updateCard(card, job) {
   const p = card.parts;
   card.job = job;
   const cancelling = job.cancel_requested && ACTIVE.includes(job.state);
-  p.title.textContent = `${TYPE_LABEL[job.type] || 'Задание'}: ${job.artist || '?'} - ${job.title || '?'}`;
+  p.title.textContent = `${TYPE_LABEL[job.type] || 'Задание'}: ${songName(job.artist, job.title)}`;
   p.state.textContent = cancelling ? 'Отменяется…' : (STATE_LABEL[job.state] || 'Неизвестно');
   p.state.className = `state ${job.state}`;
 
@@ -156,13 +163,13 @@ function updateCard(card, job) {
       type: 'button', class: 'danger',
       onclick: async (ev) => {
         if (job.state !== 'queued'
-          && !(await confirmDialog(`Отменить идущее задание «${job.artist} - ${job.title}»?`, 'Отменить задание', { danger: true }))) return;
+          && !(await confirmDialog(`Отменить идущее задание «${songName(job.artist, job.title)}»?`, 'Отменить задание', { danger: true }))) return;
         await runAction(ev.target, () => api.cancel(job.id), 'Задание отменяется');
         poll();
       },
     }, 'Отменить'));
   }
-  if (job.state === 'failed' && (job.type === 'publish' || job.stage === 'publish')) {
+  if (canRepublish(job)) {
     btns.push(h('button', {
       type: 'button', class: 'primary',
       onclick: async (ev) => { await runAction(ev.target, () => api.republish(job.id), 'Выкладка поставлена в очередь'); poll(); },
@@ -194,11 +201,20 @@ function openLog(card) {
   const id = card.job.id;
   const pre = h('pre', { class: 'log', tabindex: '0', 'aria-label': 'Лог задания' });
   const note = h('div', { class: 'small muted' }, 'Подключение к логу…');
-  clear(card.parts.logBox).append(pre, note);
+  const earlier = h('button', { type: 'button', hidden: true }, 'Показать начало лога');
+  clear(card.parts.logBox).append(earlier, pre, note);
   card.parts.logBox.hidden = false;
+  // Без from сервер шлёт последние 500 строк. Первое событие `start` — смещение (в байтах)
+  // начала первой отданной строки; при переподключении сервер шлёт его снова — берём первое.
   const source = new EventSource(api.logStreamUrl(id));
   let lines = 0;
+  let firstOffset = null;
   source.onopen = () => { note.textContent = 'Лог обновляется в реальном времени'; };
+  source.addEventListener('start', (ev) => {
+    if (firstOffset !== null) return;
+    firstOffset = Number(ev.data) || 0;
+    earlier.hidden = !(firstOffset > 0);
+  });
   source.onmessage = (ev) => {
     const stick = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 24;
     pre.append(document.createTextNode(ev.data.replace(ANSI_RE, '') + '\n'));
@@ -206,6 +222,20 @@ function openLog(card) {
     if (lines > LOG_MAX_LINES) { pre.firstChild?.remove(); lines -= 1; }
     if (stick) pre.scrollTop = pre.scrollHeight;
   };
+  earlier.addEventListener('click', async () => {
+    earlier.disabled = true;
+    try {
+      const bytes = await api.logFrom(id, 0);
+      const head = new TextDecoder().decode(bytes.slice(0, firstOffset))
+        .replace(/\r\n?/g, '\n').replace(ANSI_RE, '');
+      pre.prepend(document.createTextNode(head.endsWith('\n') ? head : `${head}\n`));
+      pre.scrollTop = 0;
+      earlier.hidden = true;
+    } catch (e) {
+      toast(e.detail, 'err');
+      earlier.disabled = false;
+    }
+  });
   source.addEventListener('end', (ev) => {
     source.close();
     note.textContent = `Задание завершено: ${(STATE_LABEL[ev.data] || 'состояние неизвестно').toLowerCase()}`;

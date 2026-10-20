@@ -18,7 +18,7 @@ const STATUS_TEXT = {
   504: 'Сервер не ответил вовремя',
 };
 
-export async function request(method, url, body) {
+export async function request(method, url, body, { binary = false } = {}) {
   const opts = { method, headers: {} };
   if (body instanceof FormData) {
     opts.body = body;
@@ -32,6 +32,7 @@ export async function request(method, url, body) {
   } catch {
     throw new ApiError(0, 'Нет связи с сервером — проверьте сеть');
   }
+  if (resp.ok && binary) return new Uint8Array(await resp.arrayBuffer());
   const type = resp.headers.get('content-type') || '';
   let data = null;
   if (type.includes('application/json')) {
@@ -47,9 +48,30 @@ export async function request(method, url, body) {
   return data;
 }
 
+// Состояния заданий — как karaoke_core.db.ACTIVE_STATES / FINAL_STATES.
+export const JOB_ACTIVE = ['queued', 'running', 'publishing'];
+export const JOB_FINAL = ['done', 'failed', 'cancelled'];
+// karaoke_core.db.STAGE_PUBLISH: стадия упавшей выкладки.
+export const STAGE_PUBLISH = 'publish';
+
+/** «Выложить повторно» — то же правило, что в web/app/api_jobs.py::republish. */
+export function canRepublish(job) {
+  return job.state === 'failed' && (job.type === 'publish' || job.stage === STAGE_PUBLISH);
+}
+
+let defaultsPromise = null;
+
+/** /api/defaults один раз на страницу: модели, языки, умолчания, лимиты, срок корзины. */
+export function getDefaults() {
+  if (!defaultsPromise) {
+    defaultsPromise = request('GET', '/api/defaults').catch((e) => { defaultsPromise = null; throw e; });
+  }
+  return defaultsPromise;
+}
+
 export const api = {
   status: () => request('GET', '/api/status'),
-  defaults: () => request('GET', '/api/defaults'),
+  defaults: getDefaults,
 
   jobs: (limit = 50) => request('GET', `/api/jobs?limit=${limit}`),
   generate: (form) => request('POST', '/api/jobs/generate', form),
@@ -58,6 +80,7 @@ export const api = {
   restart: (id) => request('POST', `/api/jobs/${id}/restart`),
   republish: (id) => request('POST', `/api/jobs/${id}/republish`),
   logStreamUrl: (id) => `/api/jobs/${id}/log/stream`,
+  logFrom: (id, from) => request('GET', `/api/jobs/${id}/log?from=${from}`, undefined, { binary: true }),
 
   songs: (q = '') => request('GET', '/api/songs' + (q ? `?q=${encodeURIComponent(q)}` : '')),
   rescan: () => request('POST', '/api/songs/rescan'),

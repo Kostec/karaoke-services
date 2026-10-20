@@ -11,7 +11,7 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-19T23:17:21+03:00",
-  "updatedAt": "2026-10-20T08:28:45+03:00",
+  "updatedAt": "2026-10-20T08:53:45+03:00",
   "finishedAt": null,
   "stages": [
     {
@@ -49,13 +49,13 @@ window.STATE =
       "id": "build",
       "status": "active",
       "startedAt": "2026-10-20T07:15:36+03:00",
-      "note": "2 из 8 тасков готовы"
+      "note": "4 из 8 тасков готовы"
     },
     {
       "id": "review",
       "status": "active",
       "startedAt": "2026-10-20T07:27:48+03:00",
-      "note": "проверено 2 из 8"
+      "note": "проверено 4 из 8"
     },
     {
       "id": "final",
@@ -63,9 +63,9 @@ window.STATE =
     }
   ],
   "requirements": {
-    "total": 44,
+    "total": 45,
     "done": 1,
-    "inTicket": 40,
+    "inTicket": 41,
     "inSpec": 0,
     "placeholder": 0,
     "deferred": 3,
@@ -178,11 +178,23 @@ window.STATE =
         "worker",
         "docker-compose.yml"
       ],
-      "status": "review",
+      "status": "done",
       "retries": 0,
-      "repairs": 0,
+      "repairs": 1,
       "handoffs": 0,
-      "startedAt": "2026-10-20T07:30:26+03:00"
+      "startedAt": "2026-10-20T07:30:26+03:00",
+      "commit": "4a59012",
+      "tests": {
+        "passed": 264,
+        "failed": 0
+      },
+      "repairFindings": [
+        "проверка флагов по реальному списку getopt",
+        "одно правило Pascal (runnable_arch)",
+        "тесты check() на фейках",
+        "__main__ не глотает ImportError внутри runner"
+      ],
+      "finishedAt": "2026-10-20T08:39:04+03:00"
     },
     {
       "id": "04",
@@ -217,10 +229,11 @@ window.STATE =
         "selfcheck.py",
         "tests/worker/"
       ],
-      "status": "pending",
+      "status": "in-progress",
       "retries": 0,
       "repairs": 0,
-      "handoffs": 0
+      "handoffs": 0,
+      "startedAt": "2026-10-20T08:30:44+03:00"
     },
     {
       "id": "05",
@@ -260,7 +273,7 @@ window.STATE =
         "web",
         "docker-compose.yml"
       ],
-      "status": "review",
+      "status": "done",
       "retries": 0,
       "repairs": 1,
       "handoffs": 0,
@@ -270,7 +283,13 @@ window.STATE =
         "раскладка тома по §3 (uploads/<hex> → songs/<A>/<A - T>/jobs/<id>/in)",
         "пароль не уходит на новый хост",
         "503/413, константы, умолчания из env, WEB_PORT 8090"
-      ]
+      ],
+      "finishedAt": "2026-10-20T08:30:44+03:00",
+      "commit": "31bc6ae",
+      "tests": {
+        "passed": 257,
+        "failed": 0
+      }
     },
     {
       "id": "06",
@@ -301,10 +320,21 @@ window.STATE =
       "zone": [
         "web/static/"
       ],
-      "status": "pending",
+      "status": "repair",
       "retries": 0,
-      "repairs": 0,
-      "handoffs": 0
+      "repairs": 2,
+      "handoffs": 0,
+      "startedAt": "2026-10-20T08:30:44+03:00",
+      "commit": "81e318e",
+      "repairFindings": [
+        "закрытие EventSource при смене раздела",
+        "догрузка начала лога (история 19)",
+        "двойная фраза «недоступна»",
+        "TRASH_DAYS из API",
+        "ё=е в exists",
+        "машиночитаемое поле ошибки",
+        "match_key слишком широкий (пунктуация), markField вне details, logFrom/CRLF"
+      ]
     },
     {
       "id": "07",
@@ -313,14 +343,16 @@ window.STATE =
         "G05",
         "R06",
         "R12",
-        "R29"
+        "R29",
+        "G07"
       ],
       "blockedBy": [
         "06"
       ],
       "wave": 5,
       "zone": [
-        "web/static/"
+        "web/static/",
+        "web/static/js/new-song.js"
       ],
       "status": "pending",
       "retries": 0,
@@ -358,11 +390,13 @@ window.STATE =
   ],
   "singlePass": null,
   "tests": {
-    "passed": 208,
+    "passed": 264,
     "failed": 0
   },
   "debt": {
-    "placeholders": [],
+    "placeholders": [
+      "Цель выкладки сейчас — локальная /output; вернуть SMB в «Настройках» (пользователь сам); тестовые задания №1–2 и песни в ./output остались"
+    ],
     "assumptions": [],
     "emptyEnv": []
   },
@@ -395,7 +429,13 @@ window.STATE =
     "test_repo_config сканирует env только в core/ — расширить на web/ и worker/",
     "storage/trash: публичные sizes/listdir/delete_file/close/Trash.get сверх «Границ» (записаны в interfaces.md)",
     "tests/core/test_trash.py:683 — тест save_version завязан на то, что sizes() не вызывается (деталь реализации)",
-    "storage.delete_dir — ошибки удаления пустой папки исполнителя глотаются молча"
+    "storage.delete_dir — ошибки удаления пустой папки исполнителя глотаются молча",
+    "web/app/params.py — без DEFAULT_* в окружении форма получает пустые умолчания вместо явной ошибки конфигурации",
+    "db.enqueue_with — make_params выполняется под блокировкой записи (докстринг должен запрещать тяжёлую работу)",
+    "история 56: флаги ищутся разбором исходника, а не по справке (допустимое отклонение)",
+    "selfcheck: getopt принимает уникальный префикс — флаг надо сверять точно со списком long options",
+    "__main__ run: нет юнит-теста на проброс ImportError",
+    "web/static: дубли field()/songName, литералы-плейсхолдеры 192.168.0.129, ui.h() пропускает нефункциональные on*"
   ],
   "reviewers": {
     "manifestSpec": "a489e47ea70f9876b",

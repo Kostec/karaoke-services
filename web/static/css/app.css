@@ -190,7 +190,7 @@ textarea { min-height: 160px; resize: vertical; }
 
 input[type="file"] { font: inherit; max-width: 100%; min-height: 44px; }
 
-input.invalid, textarea.invalid { border-color: var(--err); outline: 2px solid var(--err); outline-offset: -1px; }
+input.invalid, textarea.invalid, select.invalid { border-color: var(--err); outline: 2px solid var(--err); outline-offset: -1px; }
 
 .field-error { color: var(--err); font-size: .9rem; margin-top: 4px; }
 

@@ -31,6 +31,28 @@ def test_exists(client, song):
     assert client.get("/api/songs/exists", params={"artist": "X", "title": "Y"}).json() == {"exists": False}
 
 
+def test_exists_ignores_case_and_yo(env, client):
+    txt = "#TITLE:Ёжик в тумане\n#ARTIST:Ёлка\n#MP3:Ёлка - Ёжик в тумане.mp3\n#BPM:300\n#GAP:0\n: 0 4 5 Да\nE\n"
+    env.put_song("Ёлка/Ёлка - Ёжик в тумане", txt.encode("utf-8"), "Ёлка - Ёжик в тумане")
+    client.post("/api/songs/rescan")
+    r = client.get("/api/songs/exists", params={"artist": "ЕЛКА", "title": "ежик в тумане"}).json()
+    assert r["exists"] is True
+    assert client.get("/api/songs/exists", params={"artist": "Елка", "title": "Ежик"}).json() == {"exists": False}
+
+
+def test_exists_keeps_spaces_and_punctuation(env, client):
+    txt = "#TITLE:Ма-ма\n#ARTIST:А Б\n#MP3:А Б - Ма-ма.mp3\n#BPM:300\n#GAP:0\n: 0 4 5 Да\nE\n"
+    env.put_song("А Б/А Б - Ма-ма", txt.encode("utf-8"), "А Б - Ма-ма")
+    client.post("/api/songs/rescan")
+
+    def exists(a, t):
+        return client.get("/api/songs/exists", params={"artist": a, "title": t}).json()["exists"]
+
+    assert exists("а б", "МА-МА") is True
+    assert exists("А Б", "Мама") is False
+    assert exists("АБ", "Ма-ма") is False
+
+
 def test_song_card_and_lyrics(env, client, song):
     r = client.get(f"/api/songs/{song['song_id']}").json()
     assert r["own"] is False and r["rel_dir"] == "Artist/Artist - Song" and r["audio"] == "Artist - Song.mp3"

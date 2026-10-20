@@ -112,3 +112,13 @@ GET    /api/defaults                    → модели, языки, значе
 - Умолчания формы — только из окружения (`DEFAULT_*` задаёт compose). Лимиты: `MAX_UPLOAD_MB` (env), `MAX_COVER_MB=10`, `MAX_LYRICS_MB=1`, `MAX_FOLDER_AUDIO_MB=200` (web/app/params.py). Порт по умолчанию `WEB_PORT=8090`.
 - `GET /api/jobs/{id}` → Job (одно задание).
 - Незавершённые `songs/<A>/<A - T>/jobs/.new-*` (сбой между mkdir и постановкой) подчищает воркер при старте (таск 04).
+- (доработка 03) selfcheck проверяет флаги реальным getopt UltraSinger в подпроцессе; `gpucheck.runnable_arch(arch, major, minor)` — единственное правило Pascal; `check()` всегда возвращает ключи ok, error, name, vram_mb, capability, torch, cuda, arch_list, kernel_arch, matmul_ok, matmul, ct2_version, ct2_devices, ct2_int8, ct2_compute_types; `__main__ run` глотает только отсутствие модуля `karaoke_worker.runner`.
+
+### Из таска 06 — фронтенд
+
+- Одна страница, разделы по хэшу: `#queue`, `#new`, `#new?song=<song_id>`, `#songs`, `#trash`, `#settings`. Модуль раздела: `mount(section, ctx)`, `show(params)`, необязательно `hide()`; `ctx = {setQueueCount, refreshStatus}`.
+- `web/static/js/api.js` — объект `api` (в т.ч. `notes/saveNotes/lyrics/audioUrl`) и `ApiError{status, detail, data}`. Общие элементы — `ui.js`.
+- **Редакторы**: `extensions.js` → `registerSongEditor('lyrics'|'notes', {label, open(song, {reload}), enabled?(song) → true | причина})`; подключаются одной строкой импорта в `app.js` (место помечено комментарием «Редакторы»); кнопки рисуются в `.song-editors` карточки песни.
+- **Контракт этапа**: `Job.stage` — русское название этапа по таблице §5 спеки; на этапе выкладки — `db.STAGE_PUBLISH` (UI переводит в «Выкладка»). UI показывает stage как есть.
+- (доработка 06) Ошибки проверки: `{"detail", "field"}` (поля: artist, title, audio, cover, lyrics, whisper_model, compute_type, batch_size, language, vad_onset, vad_offset, demucs_model, params; настройки: kind, host, share, path, password); 422 тоже с `field`. `/api/defaults` содержит `trash_days`. Ключ дубля — `context.match_key(artist, title)`. js: `api.js` — `JOB_ACTIVE`, `JOB_FINAL`, `STAGE_PUBLISH`, `canRepublish(job)`, `getDefaults()` (кэш), `api.logFrom(id, from)`; `ui.js` — `field()`, `songName()`.
+- (доработка 06-2) Ключ дубля `match_key(artist, title)` = safe_name(strip → casefold → ё→е) для обеих частей; пробелы и пунктуация значимы. SSE лога первым шлёт `event: start` с байтовым смещением начала первой отданной строки; догрузка начала — `?from=0` до этого смещения. `api.js request(method, url, body, {binary})` — общий разбор ошибок.

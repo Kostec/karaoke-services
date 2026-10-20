@@ -6,7 +6,9 @@ export function h(tag, attrs = {}, ...children) {
     if (v === undefined || v === null || v === false) continue;
     if (k === 'class') el.className = v;
     else if (k === 'dataset') Object.assign(el.dataset, v);
-    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+    else if (k.startsWith('on')) {
+      if (typeof v === 'function') el.addEventListener(k.slice(2), v); // строковые обработчики не ставим
+    }
     else if (v === true) el.setAttribute(k, '');
     else el.setAttribute(k, v);
   }
@@ -15,6 +17,12 @@ export function h(tag, attrs = {}, ...children) {
     el.append(c instanceof Node ? c : document.createTextNode(String(c)));
   }
   return el;
+}
+
+/** Поле формы с подписью и необязательной подсказкой в скобках. */
+export function field(label, input, hint) {
+  return h('label', { class: 'field' },
+    h('span', {}, label, hint ? h('span', { class: 'hint' }, ` (${hint})`) : null), input);
 }
 
 export function clear(el) {

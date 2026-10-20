@@ -56,6 +56,7 @@ def defaults_payload(ctx: AppContext) -> dict:
         "max_upload_mb": ctx.max_upload_mb,
         "max_cover_mb": MAX_COVER_MB,
         "max_lyrics_mb": MAX_LYRICS_MB,
+        "trash_days": ctx.trash.days,
     }
 
 
@@ -65,9 +66,9 @@ def _vad(value, name: str):
     try:
         v = float(value)
     except (TypeError, ValueError):
-        raise ApiError(400, f"{name}: нужно число от 0 до 1") from None
+        raise ApiError(400, f"{name}: нужно число от 0 до 1", field=name) from None
     if not 0 <= v <= 1:
-        raise ApiError(400, f"{name}: нужно число от 0 до 1")
+        raise ApiError(400, f"{name}: нужно число от 0 до 1", field=name)
     return v
 
 
@@ -79,22 +80,22 @@ def parse_params(ctx: AppContext, raw: str | dict | None) -> dict:
         except ValueError:
             raw = None
     if not isinstance(raw, dict):
-        raise ApiError(400, "Параметры должны быть JSON-объектом")
+        raise ApiError(400, "Параметры должны быть JSON-объектом", field="params")
     base = defaults(ctx)
     p = {**base, **{k: v for k, v in raw.items() if k in base}}
     if p["whisper_model"] not in WHISPER_MODELS:
-        raise ApiError(400, "Неизвестная модель Whisper: " + str(p["whisper_model"]))
+        raise ApiError(400, "Неизвестная модель Whisper: " + str(p["whisper_model"]), field="whisper_model")
     if p["compute_type"] not in COMPUTE_TYPES:
-        raise ApiError(400, "Тип вычислений: только int8 или float32 (float16 GTX 1080 не поддерживает)")
+        raise ApiError(400, "Тип вычислений: только int8 или float32 (float16 GTX 1080 не поддерживает)", field="compute_type")
     try:
         p["batch_size"] = int(p["batch_size"])
     except (TypeError, ValueError):
         p["batch_size"] = 0
     if not 1 <= p["batch_size"] <= 64:
-        raise ApiError(400, "Batch size: целое число от 1 до 64")
+        raise ApiError(400, "Batch size: целое число от 1 до 64", field="batch_size")
     lang = str(p["language"] or "").strip().lower()
     if not lang or len(lang) > 10 or not lang.replace("-", "").isalpha():
-        raise ApiError(400, "Укажите язык песни")
+        raise ApiError(400, "Укажите язык песни", field="language")
     p["language"] = lang
     if "align_model" not in raw:
         p["align_model"] = align_models(ctx).get(lang, "")
@@ -102,6 +103,6 @@ def parse_params(ctx: AppContext, raw: str | dict | None) -> dict:
     p["vad_onset"] = _vad(p["vad_onset"], "vad_onset")
     p["vad_offset"] = _vad(p["vad_offset"], "vad_offset")
     if p["demucs_model"] not in DEMUCS_MODELS:
-        raise ApiError(400, "Неизвестная модель Demucs: " + str(p["demucs_model"]))
+        raise ApiError(400, "Неизвестная модель Demucs: " + str(p["demucs_model"]), field="demucs_model")
     p["keep_debug"] = bool(p["keep_debug"])
     return p

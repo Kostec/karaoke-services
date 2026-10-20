@@ -66,6 +66,9 @@ def test_defaults(client):
     assert d["align_models"]["ru"] == "jonatasgrosman/wav2vec2-large-xlsr-53-russian"
     assert any(lang["code"] == "ru" for lang in d["languages"])
     assert d["max_upload_mb"] == 1
+    # срок корзины и лимиты — только отсюда (клиент не угадывает): TRASH_DAYS из .env.example = 30
+    assert d["trash_days"] == 30
+    assert d["max_cover_mb"] == 10 and d["max_lyrics_mb"] == 1
 
 
 def test_unknown_api_path_is_russian_404(client):

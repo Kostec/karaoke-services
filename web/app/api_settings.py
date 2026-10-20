@@ -27,14 +27,15 @@ router = APIRouter(prefix="/api/settings", tags=["Настройки"])
 def _target(ctx: AppContext, body: OutputIn) -> OutputTarget:
     kind = body.kind.strip().lower()
     if kind not in ("smb", "local"):
-        raise ApiError(400, "Тип папки результата: smb или local")
+        raise ApiError(400, "Тип папки результата: smb или local", field="kind")
     path = body.path.strip().replace("\\", "/").strip("/")
     if any(part in ("..", ".") for part in path.split("/")) or ":" in path:
-        raise ApiError(400, "Недопустимый путь")
+        raise ApiError(400, "Недопустимый путь", field="path")
     fields = {"kind": kind, "path": path, "host": body.host.strip(), "share": body.share.strip().strip("/"),
               "user": body.user.strip()}
     if kind == "smb" and (not fields["host"] or not fields["share"]):
-        raise ApiError(400, "Укажите адрес сервера и имя шары")
+        raise ApiError(400, "Укажите адрес сервера и имя шары",
+                       field="host" if not fields["host"] else "share")
     # Пустой пароль = «не менять» — только для той же учётки на том же сервере;
     # иначе прежний пароль ушёл бы на чужой хост.
     current = ctx.target()
@@ -44,7 +45,7 @@ def _target(ctx: AppContext, body: OutputIn) -> OutputTarget:
     elif kind == "smb" and same:
         fields["password"] = current.password
     elif kind == "smb" and fields["user"]:
-        raise ApiError(400, "Введите пароль: сервер, шара или логин изменились")
+        raise ApiError(400, "Введите пароль: сервер, шара или логин изменились", field="password")
     else:
         fields["password"] = ""  # гостевой доступ или локальная папка
     return OutputTarget(**fields)

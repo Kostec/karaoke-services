@@ -67,7 +67,7 @@ def rescan(request: Request, background: BackgroundTasks):
 @router.get("/songs/exists", summary="Есть ли такая песня в папке результата")
 def exists(request: Request, artist: str = "", title: str = ""):
     if not artist.strip() or not title.strip():
-        raise ApiError(400, "Укажите исполнителя и название")
+        raise ApiError(400, "Укажите исполнителя и название", field="artist" if not artist.strip() else "title")
     item = ctx_of(request).find_by_name(artist, title)
     return {"exists": True, "song_id": item.song_id} if item else {"exists": False}
 

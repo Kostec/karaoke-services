@@ -100,8 +100,9 @@ def create_app(*, data_dir: str | Path | None = None, env: dict | None = None,
 
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError):
-        fields = ", ".join(str(e.get("loc", ["?"])[-1]) for e in exc.errors())
-        return JSONResponse({"detail": f"Неверный запрос: проверьте поля {fields}"}, status_code=400)
+        names = [str(e.get("loc", ["?"])[-1]) for e in exc.errors()]
+        return JSONResponse({"detail": f"Неверный запрос: проверьте поля {', '.join(names)}",
+                             "field": names[0] if names else None}, status_code=400)
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, exc: StarletteHTTPException):

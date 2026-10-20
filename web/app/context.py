@@ -190,14 +190,22 @@ class AppContext:
         raise not_found("Песня не найдена")
 
     def find_by_name(self, artist: str, title: str) -> LibraryItem | None:
-        key = song_key(artist, title)
+        key, match = song_key(artist, title), match_key(artist, title)
         for item in self.library.list(self.storage().target_id):
-            if item.rel_dir.casefold() == key or song_key(item.artist, item.title) == key:
+            if item.rel_dir.casefold() == key or match_key(item.artist, item.title) == match:
                 return item
         return None
 
     def song_dict(self, item: LibraryItem) -> dict:
         return {**item.to_dict(), "own": bool(item.own_song_id)}
+
+
+def match_key(artist: str, title: str) -> tuple[str, str]:
+    """Ключ «такая песня уже есть»: без учёта регистра и ё/е, запрещённые символы — как в
+    naming.safe_name; пробелы и прочая пунктуация значимы («Ма-ма» ≠ «Мама»)."""
+    def fold(s: str) -> str:
+        return naming.safe_name((s or "").strip().casefold().replace("ё", "е"))
+    return fold(artist), fold(title)
 
 
 def song_key(artist: str, title: str) -> str:

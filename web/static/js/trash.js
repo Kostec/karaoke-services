@@ -1,7 +1,7 @@
 // Раздел «Корзина»: что, откуда, когда удалено, сколько дней осталось; восстановление.
 
 import { api } from './api.js';
-import { h, clear, runAction, fmtDate, days, plural } from './ui.js';
+import { h, clear, runAction, fmtDate, days, plural, songName } from './ui.js';
 
 let root, listEl, emptyEl, errEl;
 
@@ -35,7 +35,7 @@ function fmtSize(bytes) {
 function render(items) {
   emptyEl.hidden = items.length > 0;
   clear(listEl).append(...items.map((it) => {
-    const title = it.artist || it.title ? `${it.artist || '?'} - ${it.title || '?'}` : it.name;
+    const title = it.artist || it.title ? songName(it.artist, it.title) : it.name;
     const what = it.kind === 'version'
       ? `Старая версия файла ${it.rel_file || ''}`
       : `Песня, ${Object.keys(it.files || {}).length} ${plural(Object.keys(it.files || {}).length, 'файл', 'файла', 'файлов')}`;

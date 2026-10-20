@@ -1,7 +1,7 @@
 // Раздел «Новая песня» (и перегенерация песни из списка: #new?song=<song_id>).
 
 import { api } from './api.js';
-import { h, clear, toast, debounce, songName } from './ui.js';
+import { h, clear, toast, debounce, songName, field } from './ui.js';
 
 const PARAM_KEYS = ['whisper_model', 'language', 'compute_type', 'batch_size', 'align_model',
   'vad_onset', 'vad_offset', 'demucs_model', 'keep_debug'];
@@ -29,10 +29,6 @@ export async function show(params) {
 }
 
 // ---------------------------------------------------------------- построение формы
-
-function field(label, input, hint) {
-  return h('label', { class: 'field' }, h('span', {}, label, hint ? h('span', { class: 'hint' }, ` (${hint})`) : null), input);
-}
 
 function select(name, options) {
   return h('select', { name }, options.map(([v, t]) => h('option', { value: v }, t)));
@@ -92,14 +88,14 @@ async function build() {
       h('div', {}, field('Исполнитель', f.artist), f.artistErr),
       h('div', {}, field('Название', f.title), f.titleErr)),
     f.dup,
-    field('Аудио mp3', f.audio, `до ${d.max_upload_mb || '?'} МБ`), f.audioHint, f.audioErr,
+    field('Аудио mp3', f.audio, d.max_upload_mb ? `до ${d.max_upload_mb} МБ` : null), f.audioHint, f.audioErr,
     h('div', { class: 'field' },
       h('span', {}, 'Текст песни', h('span', { class: 'hint' }, ' (можно оставить пустым)')),
       f.lyrics,
       h('div', { class: 'inline-file' }, h('span', { class: 'small muted' }, 'или файл:'), f.lyricsFile),
       f.lyricsErr),
     f.lyricsWarn,
-    field('Обложка', f.cover, `jpg, png или webp до ${d.max_cover_mb || 10} МБ, необязательно`), f.coverErr,
+    field('Обложка', f.cover, d.max_cover_mb ? `jpg, png или webp до ${d.max_cover_mb} МБ, необязательно` : 'jpg, png или webp, необязательно'), f.coverErr,
     h('div', { class: 'row2' }, field('Модель Whisper', f.whisper_model), field('Язык песни', f.language)),
     h('details', { class: 'more' }, h('summary', {}, 'Дополнительно'),
       h('div', { class: 'row2' },
@@ -279,14 +275,14 @@ async function checkCover() {
   const file = f.cover.files[0];
   f.coverErr.hidden = true;
   if (!file) return true;
-  const max = defaults?.max_cover_mb || 10;
+  const max = defaults?.max_cover_mb;
   const b = await readHead(file, 12);
   const jpg = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
   const png = b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
   const webp = String.fromCharCode(...b.slice(0, 4)) === 'RIFF' && String.fromCharCode(...b.slice(8, 12)) === 'WEBP';
   let msg = '';
   if (!(jpg || png || webp)) msg = 'Обложка должна быть в формате jpg, png или webp';
-  else if (file.size > max * 1024 * 1024) msg = `Файл больше ${max} МБ`;
+  else if (max && file.size > max * 1024 * 1024) msg = `Файл больше ${max} МБ`;
   f.coverErr.textContent = msg;
   f.coverErr.hidden = !msg;
   return !msg;
@@ -296,8 +292,8 @@ async function onLyricsFile() {
   const file = f.lyricsFile.files[0];
   f.lyricsErr.hidden = true;
   if (!file) return;
-  const max = defaults?.max_lyrics_mb || 1;
-  if (file.size > max * 1024 * 1024) {
+  const max = defaults?.max_lyrics_mb;
+  if (max && file.size > max * 1024 * 1024) {
     f.lyricsErr.textContent = `Файл больше ${max} МБ`;
     f.lyricsErr.hidden = false;
     return;
@@ -330,6 +326,24 @@ function collectParams() {
 }
 
 // ---------------------------------------------------------------- отправка
+
+/** Подсветить поле по машиночитаемому `field` из ответа сервера. */
+function markField(name, detail) {
+  const errs = { artist: f.artistErr, title: f.titleErr, audio: f.audioErr, cover: f.coverErr, lyrics: f.lyricsErr };
+  const inputs = { lyrics: f.lyrics };
+  const el = inputs[name] || f[name];
+  if (!name || !el || !(el instanceof HTMLElement)) return;
+  if (errs[name]) {
+    errs[name].textContent = detail;
+    errs[name].hidden = false;
+  }
+  const details = el.closest('details'); // whisper_model и language — вне «Дополнительно»
+  if (details) details.open = true;
+  el.classList.add('invalid');
+  el.addEventListener('input', () => el.classList.remove('invalid'), { once: true });
+  el.addEventListener('change', () => el.classList.remove('invalid'), { once: true });
+  el.focus();
+}
 
 async function onSubmit(ev) {
   ev.preventDefault();
@@ -382,7 +396,7 @@ async function onSubmit(ev) {
     } else {
       f.error.textContent = e.detail;
       f.error.hidden = false;
-      if (e.detail === 'Это не mp3-файл') { f.audioErr.textContent = e.detail; f.audioErr.hidden = false; }
+      markField(e.data.field, e.detail);
     }
   } finally {
     submitting = false;

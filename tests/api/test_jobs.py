@@ -69,6 +69,29 @@ def test_generate_validation_errors(env, client):
     assert leftovers == []
 
 
+def test_validation_errors_name_the_field(client):
+    """Ошибка проверки поля несёт машиночитаемое имя поля формы — клиент подсвечивает его."""
+    cases = [
+        (dict(artist=" "), "artist"),
+        (dict(title=""), "title"),
+        (dict(audio=b"<html>not mp3</html>"), "audio"),
+        (dict(audio=None), "audio"),
+        (dict(audio=MP3 + b"\x00" * (1024 * 1024 + 1)), "audio"),
+        (dict(files={"cover": ("c.gif", b"GIF89a....", "image/gif")}), "cover"),
+        (dict(files={"lyrics_file": ("t.txt", b"a" * (1024 * 1024 + 1), "text/plain")}), "lyrics"),
+        (dict(params=json.dumps({"compute_type": "float16"})), "compute_type"),
+        (dict(params=json.dumps({"batch_size": 0})), "batch_size"),
+        (dict(params=json.dumps({"vad_onset": 5})), "vad_onset"),
+        (dict(params=json.dumps({"whisper_model": "huge"})), "whisper_model"),
+        (dict(params=json.dumps({"demucs_model": "x"})), "demucs_model"),
+        (dict(params=json.dumps({"language": ""})), "language"),
+    ]
+    for form, field in cases:
+        r = _gen(client, **form)
+        assert r.status_code in (400, 413), form
+        assert r.json().get("field") == field, (form, r.json())
+
+
 def test_duplicate_in_queue_is_rejected(client):
     assert _gen(client, artist="Кино", title="Группа крови").status_code == 201
     r = _gen(client, artist="КИНО", title="группа крови ")
@@ -172,3 +195,22 @@ def test_log_chunks_and_sse(env, client):
     assert "data: строка 1\n" in body and "data: строка 2\n" in body
     assert "event: end\ndata: done\n" in body
     assert client.get("/api/jobs/999/log").status_code == 404
+
+
+def test_sse_start_event_gives_byte_offset_of_first_line_crlf(env, client):
+    """Первое событие SSE — `event: start` со смещением начала первой показанной строки:
+    клиент догружает всё до него через ?from=0, на CRLF-логе ничего не обрезается."""
+    job = _gen(client).json()
+    logs = env.data / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    lines = [f"строка {i}" for i in range(1, 503)]  # 502 строки, в хвосте SSE — последние 500
+    (logs / f"{job['id']}.log").write_bytes("".join(f"{x}\r\n" for x in lines).encode("utf-8"))
+    _jobs(env).update(job["id"], state="done")
+    with client.stream("GET", f"/api/jobs/{job['id']}/log/stream") as s:
+        body = "".join(s.iter_text())
+    first = body.split("\n\n")[0]
+    assert first.startswith("event: start\ndata: ")
+    start = int(first.split("data: ")[1])
+    head = "строка 1\r\nстрока 2\r\n".encode("utf-8")  # две строки до хвоста, посчитано вручную
+    assert start == len(head)
+    assert "data: строка 3\n" in body and "data: строка 2\n" not in body

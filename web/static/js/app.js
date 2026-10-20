@@ -55,7 +55,7 @@ export function renderStatus(st) {
     outEl.textContent = `Папка: ${out.label || ''} ✓`;
     outEl.className = 'ok';
   } else {
-    outEl.textContent = `Папка ${out.label || ''} недоступна${out.error ? `: ${out.error}` : ''}`;
+    outEl.textContent = out.error || `Папка результата недоступна: ${out.label || ''}`; // сервер уже пишет причину целиком
     outEl.className = 'bad';
   }
 }

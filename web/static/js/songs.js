@@ -1,12 +1,10 @@
 // Раздел «Песни»: список из индекса, поиск, удаление в корзину, перегенерация, минусовка.
 
-import { api } from './api.js';
+import { api, getDefaults } from './api.js';
 import { h, clear, confirmDialog, runAction, fmtDate, debounce, days, songName } from './ui.js';
 import { songEditors, onEditorsChanged } from './extensions.js';
 
-// Срок хранения в корзине: API не отдаёт TRASH_DAYS до удаления, поэтому берём его
-// из записей корзины (days_left + прошедшие дни), иначе — значение по умолчанию.
-let trashDays = 30;
+let trashDays = null; // из /api/defaults (TRASH_DAYS)
 
 let root, search, listEl, infoEl, bannerEl, emptyEl, errEl, rescanBtn;
 let data = null;
@@ -33,22 +31,11 @@ export function mount(section) {
 
 export function show() {
   load();
-  learnTrashDays();
+  getDefaults().then((d) => { trashDays = d.trash_days; }).catch(() => {});
 }
 
 export function hide() {
   clearTimeout(scanTimer);
-}
-
-async function learnTrashDays() {
-  try {
-    const items = await api.trash();
-    const it = items.find((i) => typeof i.days_left === 'number');
-    if (it) {
-      const passed = Math.floor((Date.now() - new Date(it.deleted_at).getTime()) / 86400000);
-      if (passed >= 0) trashDays = it.days_left + passed;
-    }
-  } catch { /* останется значение по умолчанию */ }
 }
 
 export async function load() {
@@ -71,7 +58,8 @@ export async function load() {
 
 async function rescan() {
   await runAction(rescanBtn, () => api.rescan());
-  setTimeout(load, 500);
+  clearTimeout(scanTimer);
+  scanTimer = setTimeout(load, 500);
 }
 
 function outputOk() {
@@ -82,7 +70,8 @@ function render() {
   const out = data.output || {};
   const label = out.label || data.target?.label || '';
   bannerEl.hidden = outputOk();
-  bannerEl.textContent = `Папка результата недоступна: ${out.error || 'причина неизвестна'}. Показан последний индекс, действия с файлами отключены.`;
+  // out.error уже начинается с «Папка результата недоступна: …» (сервер)
+  bannerEl.textContent = `${out.error || 'Папка результата недоступна'}. Показан последний индекс, действия с файлами отключены.`;
   const parts = [`Папка: ${label}`];
   parts.push(data.scanned_at ? `просканировано ${fmtDate(data.scanned_at)}` : 'ещё не сканировалась');
   if (data.scanning) parts.push('идёт сканирование…');
@@ -158,7 +147,8 @@ function noCover() {
 
 async function remove(btn, song) {
   const name = songName(song.artist, song.title);
-  if (!(await confirmDialog(`Удалить "${name}"? Песня уйдёт в корзину на ${days(trashDays)}`, 'Удалить', { danger: true }))) return;
+  const term = trashDays == null ? 'Песня уйдёт в корзину' : `Песня уйдёт в корзину на ${days(trashDays)}`;
+  if (!(await confirmDialog(`Удалить "${name}"? ${term}`, 'Удалить', { danger: true }))) return;
   const res = await runAction(btn, () => api.deleteSong(song.song_id), `«${name}» перемещена в корзину`);
   if (res) load();
 }

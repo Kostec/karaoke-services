@@ -55,11 +55,11 @@ def _cover_ext(head: bytes) -> str | None:
     return None
 
 
-def _too_big(limit_mb: int) -> ApiError:
-    return ApiError(413, f"Файл больше {limit_mb} МБ")
+def _too_big(limit_mb: int, field: str) -> ApiError:
+    return ApiError(413, f"Файл больше {limit_mb} МБ", field=field)
 
 
-def _copy_limited(src: BinaryIO, dest: Path, limit_mb: int) -> None:
+def _copy_limited(src: BinaryIO, dest: Path, limit_mb: int, field: str) -> None:
     limit, size = limit_mb * MB, 0
     with open(dest, "wb") as out:
         while chunk := src.read(CHUNK):
@@ -67,14 +67,14 @@ def _copy_limited(src: BinaryIO, dest: Path, limit_mb: int) -> None:
             if size > limit:
                 out.close()
                 dest.unlink(missing_ok=True)
-                raise _too_big(limit_mb)
+                raise _too_big(limit_mb, field)
             out.write(chunk)
 
 
 def _read_text_file(upload: UploadFile) -> str:
     data = upload.file.read(MAX_LYRICS_MB * MB + 1)
     if len(data) > MAX_LYRICS_MB * MB:
-        raise _too_big(MAX_LYRICS_MB)
+        raise _too_big(MAX_LYRICS_MB, "lyrics")
     return ultrastar.decode(data)[0]
 
 
@@ -150,7 +150,7 @@ def generate(request: Request,
     ctx = ctx_of(request)
     artist, title = artist.strip(), title.strip()
     if not artist or not title:
-        raise ApiError(400, "Укажите исполнителя и название")
+        raise ApiError(400, "Укажите исполнителя и название", field="artist" if not artist else "title")
     p = parse_params(ctx, params)
     _queue_duplicate(ctx, "generate", key=song_key(artist, title))
 
@@ -164,16 +164,16 @@ def generate(request: Request,
     has_audio = audio is not None and bool(audio.filename)
     own_src = ctx.paths.source(source.rel_dir) if source and source.own_song_id else None
     if source and not source.own_song_id and not text.strip():
-        raise ApiError(400, "Для чужой песни нужен текст")
+        raise ApiError(400, "Для чужой песни нужен текст", field="lyrics")
     if not has_audio and source is None:
-        raise ApiError(400, "Загрузите mp3-файл")
+        raise ApiError(400, "Загрузите mp3-файл", field="audio")
     if has_audio and not _is_mp3(audio.file.read(4)):
-        raise ApiError(400, "Это не mp3-файл")
+        raise ApiError(400, "Это не mp3-файл", field="audio")
     cover_ext = None
     if cover is not None and cover.filename:
         cover_ext = _cover_ext(cover.file.read(16))
         if cover_ext is None:
-            raise ApiError(400, "Обложка должна быть в формате jpg, png или webp")
+            raise ApiError(400, "Обложка должна быть в формате jpg, png или webp", field="cover")
 
     rel_dir = naming.song_dir(artist, title)
     storage = ctx.storage()
@@ -185,13 +185,13 @@ def generate(request: Request,
                 raise ApiError(409, "Исходный mp3 не найден — загрузите файл")
         elif has_audio:
             audio.file.seek(0)
-            _copy_limited(audio.file, staging.path("audio", INPUT_AUDIO), ctx.max_upload_mb)
+            _copy_limited(audio.file, staging.path("audio", INPUT_AUDIO), ctx.max_upload_mb, "audio")
         else:
             if not source.audio:
                 raise ApiError(409, "Исходный mp3 не найден — загрузите файл")
             try:
                 with storage.open_read(f"{source.rel_dir}/{source.audio}") as f:
-                    _copy_limited(f, staging.path("audio", INPUT_AUDIO), MAX_FOLDER_AUDIO_MB)
+                    _copy_limited(f, staging.path("audio", INPUT_AUDIO), MAX_FOLDER_AUDIO_MB, "audio")
             except StorageError as e:
                 ctx.mark_output_error(e)
                 raise ApiError(503, f"Папка результата недоступна: {e}") from None
@@ -201,7 +201,7 @@ def generate(request: Request,
         if cover_ext:
             staging.drop("cover")
             cover.file.seek(0)
-            _copy_limited(cover.file, staging.path("cover", f"{INPUT_COVER_STEM}.{cover_ext}"), MAX_COVER_MB)
+            _copy_limited(cover.file, staging.path("cover", f"{INPUT_COVER_STEM}.{cover_ext}"), MAX_COVER_MB, "cover")
     except BaseException:
         staging.discard()
         raise
@@ -335,7 +335,8 @@ def get_log(job_id: int, request: Request, from_: int = Query(0, alias="from", g
 
 
 @router.get("/{job_id}/log/stream", summary="Живой лог (SSE)",
-            description="События `data:` — строки лога, `id:` — смещение; в конце `event: end` "
+            description="Сначала `event: start` (data — смещение начала первой строки); "
+                        "события `data:` — строки лога, `id:` — смещение; в конце `event: end` "
                         "с итоговым состоянием. Без `from` начинается с последних 500 строк.")
 async def stream_log(job_id: int, request: Request, from_: int | None = Query(None, alias="from", ge=0)):
     ctx = ctx_of(request)
@@ -347,10 +348,12 @@ async def stream_log(job_id: int, request: Request, from_: int | None = Query(No
 
     async def events():
         offset = from_
+        if offset is None:
+            offset = _tail_offset(path, SSE_TAIL_LINES) if path.is_file() else 0
+        # смещение начала первой отданной строки: всё до него клиент догружает через ?from=0
+        yield f"event: start\ndata: {offset}\n\n"
         idle = 0
         while True:
-            if offset is None:
-                offset = _tail_offset(path, SSE_TAIL_LINES) if path.is_file() else 0
             data = b""
             if path.is_file():
                 with open(path, "rb") as f:
