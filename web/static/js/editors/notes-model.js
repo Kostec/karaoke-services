@@ -287,27 +287,96 @@ export function overlaps(state) {
   return out;
 }
 
+export const SHIFT_SCOPES = ['word', 'line', 'song'];
+const LEFT_NONE = { word: 'Левее в этом слове нот нет', line: 'Левее в этой строке нот нет', song: 'Левее нот нет' };
+const RIGHT_NONE = { word: 'Правее в этом слове нот нет', line: 'Правее в этой строке нот нет', song: 'Правее нот нет' };
+
 /**
- * «⇠ текст / текст ⇢»: сдвинуть слоги строки на одну ноту, начиная с ноты id (dir 1 — вправо,
- * −1 — влево). Освободившаяся нота получает «~»; занятая крайняя нота — ошибка.
+ * Нота j начинает слово: начало строки; иначе свободная нота («~» с любыми пробелами) — продолжение
+ * предыдущего слова; нота с текстом — если её слог начинается с пробела или пробелом кончается
+ * предыдущий слог (через «~»-ноты — до последнего слога с текстом).
  */
-export function shiftText(state, id, dir) {
-  const line = lines(state)[lineIndexOf(state, id)];
-  const i = line.findIndex((x) => x.id === id);
-  const t = line.map((x) => x.text);
-  const next = t.slice();
-  if (dir > 0) {
-    if (!isFree(t[t.length - 1])) throw new Error('Справа нет свободной ноты — добавь ноту в конец строки');
-    for (let k = line.length - 1; k > i; k -= 1) next[k] = t[k - 1];
-    next[i] = '~';
-  } else {
-    if (i === 0) throw new Error('Слева нет ноты в этой строке — текст некуда сдвинуть');
-    if (!isFree(t[i - 1])) throw new Error('Слева занятая нота — текст некуда сдвинуть');
-    for (let k = i - 1; k < line.length - 1; k += 1) next[k] = t[k + 1];
-    next[line.length - 1] = '~';
+function wordStart(notes, j) {
+  if (j === 0 || notes[j].ls) return true;
+  if (isFree(notes[j].text)) return false;
+  if (/^\s/.test(String(notes[j].text))) return true;
+  for (let k = j - 1; k >= 0; k -= 1) {
+    const t = String(notes[k].text);
+    if (/\s$/.test(t)) return true;
+    if (!isFree(t) || notes[k].ls) return false;
   }
-  const byId = new Map(line.map((x, k) => [x.id, next[k]]));
-  return { ...state, notes: state.notes.map((x) => (byId.has(x.id) ? { ...x, text: byId.get(x.id) } : x)), created: [] };
+  return false;
+}
+
+/** Склеить слоги в один (перелив при сдвиге): «~» отбрасываются, пробелы-границы слов остаются. */
+function glue(texts) {
+  if (texts.every(isFree)) return texts[0];
+  return texts.map((t) => (isFree(t) ? String(t).replace('~', '') : String(t))).join('');
+}
+
+/** Область сдвига текста для ноты id: номера первой и последней ноты (в state.notes) её слова/строки/песни. */
+export function shiftRange(state, id, scope = 'line') {
+  if (!SHIFT_SCOPES.includes(scope)) throw new Error('Неизвестная область сдвига текста');
+  const ns = state.notes;
+  const i = indexOf(state, id);
+  if (scope === 'song') return { first: 0, last: ns.length - 1 };
+  const isStart = scope === 'word' ? (j) => wordStart(ns, j) : (j) => j === 0 || ns[j].ls;
+  let s = i;
+  let e = i;
+  while (!isStart(s)) s -= 1;
+  while (e + 1 < ns.length && !isStart(e + 1)) e += 1;
+  return { first: s, last: e };
+}
+
+/**
+ * На сколько нот на деле сдвинется текст при запросе k (знак — направление): не дальше границ
+ * области; у первой ноты области влево и у последней вправо — ошибка «Левее/Правее … нот нет».
+ */
+export function shiftAmount(state, id, k, scope = 'line') {
+  const { first, last } = shiftRange(state, id, scope);
+  const i = indexOf(state, id);
+  if (k > 0) {
+    if (i === last) throw new Error(RIGHT_NONE[scope]);
+    return Math.min(k, last - i);
+  }
+  if (k < 0) {
+    if (i === first) throw new Error(LEFT_NONE[scope]);
+    return -Math.min(-k, i - first);
+  }
+  return 0;
+}
+
+/**
+ * Сдвиг текста по нотам (G03): слог ноты id и все следующие в пределах области `scope`
+ * ('word' — слово, 'line' — строка, 'song' — до конца песни) уезжают на |k| нот (k > 0 — вправо).
+ * Вправо: освободившиеся ноты получают «~», слоги, которым не хватило нот, приклеиваются к последней
+ * ноте области. Влево: слог приклеивается к ноте на k левее (вместе со слогами между ними; «~»
+ * заменяется), хвост области получает «~»; дальше начала области не уходит. Ноты и строки не двигаются.
+ */
+export function shiftTextBy(state, id, k, scope = 'line') {
+  const { last: e } = shiftRange(state, id, scope);
+  const ns = state.notes;
+  const i = indexOf(state, id);
+  const t = ns.map((x) => x.text);
+  const next = t.slice();
+  const amount = shiftAmount(state, id, k, scope);
+  if (amount > 0) {
+    const d = amount;
+    for (let j = i; j < i + d; j += 1) next[j] = '~';
+    for (let j = i + d; j < e; j += 1) next[j] = t[j - d];
+    next[e] = glue(t.slice(e - d, e + 1));
+  } else if (amount < 0) {
+    const d = -amount;
+    next[i - d] = glue(t.slice(i - d, i + 1));
+    for (let j = i - d + 1; j <= e; j += 1) next[j] = j + d <= e ? t[j + d] : '~';
+  }
+  if (next.every((v, j) => v === t[j])) return state; // текст не изменился — шага отмены нет
+  return { ...state, notes: ns.map((x, j) => (next[j] === x.text ? x : { ...x, text: next[j] })), created: [] };
+}
+
+/** «⇠ текст / текст ⇢» в пределах строки: shiftTextBy(state, id, dir, 'line'). */
+export function shiftText(state, id, dir) {
+  return shiftTextBy(state, id, dir, 'line');
 }
 
 /** Разрезать ноту пополам (`S`): вторая половина — новая нота с «~». */

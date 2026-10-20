@@ -1,9 +1,31 @@
 // Инструменты редактора нот (таск 04; спека: истории 16, 24–26, 32; решение §10):
-// «⇠ текст / текст ⇢», «Разрезать», «Слить», «↵ Строка», склейка строк кликом по ↵,
+// «⇠ текст / текст ⇢» с областью сдвига и перетаскиванием слога (G03), «Разрезать», «Слить», «↵ Строка»,
+// склейка строк кликом по ↵,
 // режим «Отстукивание» (T, держать J или «Держать») и справка по всем сочетаниям (? и кнопка).
 
 import { h } from '../ui.js';
-import { tapTiming, tapQueue } from './notes-panel-logic.js';
+import { tapTiming, tapQueue, plural } from './notes-panel-logic.js';
+
+const SCOPE_KEY = 'notesEditor.shiftScope';
+// [область, подпись в списке, «текст …» в подсказках]
+const SCOPES = [['word', 'в слове', 'слова'], ['line', 'в строке', 'строки'], ['song', 'до конца песни', 'до конца песни']];
+const DRAG_PX = 6; // столько пикселей слог нужно протащить, чтобы клик стал перетаскиванием
+
+function loadScope() {
+  try {
+    const v = localStorage.getItem(SCOPE_KEY);
+    if (SCOPES.some(([k]) => k === v)) return v;
+  } catch { /* хранилище недоступно */ }
+  return 'line';
+}
+
+function saveScope(v) {
+  try { localStorage.setItem(SCOPE_KEY, v); } catch { /* хранилище недоступно */ }
+}
+
+/** «1 ноту», «2 ноты», «5 нот». */
+const notesWord = (n) => `${n} ${plural(n, ['ноту', 'ноты', 'нот'])}`;
+const NOTHING_TO_SHIFT = 'Сдвигать нечего — текст не изменится';
 
 const btn = (label, title, attrs = {}) => h('button', { type: 'button', title, 'aria-label': title, ...attrs }, label);
 
@@ -13,7 +35,8 @@ const HELP = [
   [['←', '→'], 'сдвинуть выбранное на 1 бит (Shift — на 4)'],
   [['↑', '↓'], 'выше / ниже на полутон'],
   [['Ctrl+←', 'Ctrl+→'], 'короче / длиннее'],
-  [['Alt+←', 'Alt+→'], 'сдвинуть текст строки по нотам'],
+  [['Alt+←', 'Alt+→'], 'сдвинуть текст по нотам с выбранной ноты; докуда — по списку рядом с «⇠ текст»: в слове, в строке или до конца песни'],
+  [['Перетащить слог'], 'по дорожке слогов на другую ноту — текст той же области сдвигается на столько же нот'],
   [['Tab', 'Shift+Tab'], 'к следующей / предыдущей ноте'],
   [['F2', 'Enter'], 'править слог выбранной ноты'],
   [['N'], 'новая нота после выбранной'],
@@ -36,12 +59,24 @@ export function toolsPlugin(ctx) {
 
   // ---------------------------------------------------------------- перенос текста, разрезать, слить, строка
 
-  const shiftL = btn('⇠ текст', 'Сдвинуть текст строки влево, начиная с выбранной ноты (Alt+←)');
-  const shiftR = btn('текст ⇢', 'Сдвинуть текст строки вправо, начиная с выбранной ноты (Alt+→)');
+  let scope = loadScope();
+  const scopeName = () => SCOPES.find(([k]) => k === scope)[2];
+  const scopeSel = h('select', {
+    class: 'ne-scope', 'aria-label': 'Область сдвига текста',
+    title: 'Докуда сдвигать текст: кнопки «⇠ текст / текст ⇢», Alt+←/→ и перетаскивание слога',
+  }, ...SCOPES.map(([k, label]) => h('option', { value: k }, label)));
+  scopeSel.value = scope;
+  const shiftL = btn('⇠ текст', '');
+  const shiftR = btn('текст ⇢', '');
+  const shiftTitles = () => {
+    shiftL.setAttribute('aria-label', `Сдвинуть текст ${scopeName()} влево, начиная с выбранной ноты (Alt+←)`);
+    shiftR.setAttribute('aria-label', `Сдвинуть текст ${scopeName()} вправо, начиная с выбранной ноты (Alt+→)`);
+  };
+  shiftTitles();
   const split = btn('Разрезать', 'Разрезать ноту пополам (S)');
   const join = btn('Слить', 'Слить со следующей нотой (Shift+J)');
   const nline = btn('↵ Строка', 'Начать новую строку с выбранной ноты');
-  const tools = [shiftL, shiftR, split, join, nline];
+  const tools = [shiftL, scopeSel, shiftR, split, join, nline];
   els.slotTools.append(...tools);
 
   const one = () => {
@@ -54,8 +89,29 @@ export function toolsPlugin(ctx) {
     ctx.apply((s) => fn(s, id), okText);
     return true;
   };
-  const doShiftL = () => run((s, id) => M.shiftText(s, id, -1), 'Текст сдвинут влево');
-  const doShiftR = () => run((s, id) => M.shiftText(s, id, 1), 'Текст сдвинут вправо');
+  // сдвиг, который не меняет текст, выполненным не считается: отказ с причиной
+  const shiftOp = (k) => (s, id) => {
+    const out = M.shiftTextBy(s, id, k, scope);
+    if (out === s) throw new Error(NOTHING_TO_SHIFT);
+    return out;
+  };
+  // кнопка с фокусом после сдвига могла выключиться — фокус на таймлайн, чтобы работали Ctrl+Z и стрелки
+  const refocus = () => {
+    const a = document.activeElement;
+    if (!a || a === document.body || a.disabled || !ctx.dlg.contains(a)) els.scroll.focus({ preventScroll: true });
+  };
+  const doShift = (k) => {
+    const id = one();
+    if (id == null) {
+      ctx.toast(ctx.editable() ? 'Выбери одну ноту — с неё сдвинется текст' : 'Только просмотр', 'err');
+      return true;
+    }
+    ctx.apply((s) => shiftOp(k)(s, id), `Текст ${scopeName()} сдвинут ${k > 0 ? 'вправо' : 'влево'}`);
+    refocus();
+    return true;
+  };
+  const doShiftL = () => doShift(-1);
+  const doShiftR = () => doShift(1);
   const doSplit = () => run((s, id) => M.splitNote(s, id), 'Нота разрезана — вторая половина тянет гласную (~)');
   const doJoin = () => run((s, id) => M.joinNext(s, id), 'Ноты слиты');
   const doLine = () => run((s, id) => M.startLine(s, id), 'Новая строка');
@@ -65,11 +121,26 @@ export function toolsPlugin(ctx) {
   split.addEventListener('click', doSplit);
   join.addEventListener('click', doJoin);
   nline.addEventListener('click', doLine);
+  scopeSel.addEventListener('change', () => {
+    scope = scopeSel.value;
+    saveScope(scope);
+    shiftTitles();
+    updateTools();
+    els.scroll.focus({ preventScroll: true });
+  });
+  // в списке стрелки выбирают область, а не двигают ноты и текст
+  scopeSel.addEventListener('keydown', (e) => e.stopPropagation());
+  // Alt+←/→ в окне редактора никогда не уводит браузер «Назад/Вперёд»; в полях ввода и в списке — просто гасится
+  ctx.dlg.addEventListener('keydown', (e) => {
+    if (!e.altKey || e.ctrlKey || e.metaKey || (e.code !== 'ArrowLeft' && e.code !== 'ArrowRight')) return;
+    e.preventDefault();
+    if (e.target.closest?.('input, select, textarea, [contenteditable]')) e.stopPropagation();
+  }, { capture: true });
 
   // доступность — по правилам самой модели: пробный вызов операции; отказ модели — причина в подсказке
   const TRIALS = [
-    [shiftL, (s, id) => M.shiftText(s, id, -1)],
-    [shiftR, (s, id) => M.shiftText(s, id, 1)],
+    [shiftL, (s, id) => shiftOp(-1)(s, id)],
+    [shiftR, (s, id) => shiftOp(1)(s, id)],
     [split, (s, id) => M.splitNote(s, id)],
     [join, (s, id) => M.joinNext(s, id)],
     [nline, (s, id) => M.startLine(s, id)],
@@ -77,6 +148,7 @@ export function toolsPlugin(ctx) {
   function updateTools() {
     const id = one();
     const why = !ctx.editable() ? 'Только просмотр' : 'Выбери одну ноту';
+    scopeSel.disabled = !ctx.editable();
     for (const [b, op] of TRIALS) {
       let reason = id == null ? why : '';
       if (!reason) {
@@ -88,6 +160,109 @@ export function toolsPlugin(ctx) {
   }
   ctx.onRender(updateTools);
   ctx.onSelect(updateTools);
+
+  // ---------------------------------------------------------------- перетаскивание слога (G03, история 40)
+  // Слог тащат по дорожке слогов на другую ноту: текст области сдвигается на K нот (K — разница
+  // номеров нот). Пока указатель не ушёл дальше DRAG_PX — это обычный клик или двойной клик.
+
+  const tip = h('div', { class: 'ne-dragtip', hidden: true, role: 'status' });
+  ctx.dlg.append(tip);
+  let drag = null; // {id, x0, pointerId, started, k, ok, target}
+  let suppressClick = false;
+  const chipOf = (id) => (id == null ? null : els.lane.querySelector(`.ne-chip[data-id="${id}"]`));
+
+  /** Нота под точкой дорожки: та, в которую попали, иначе ближайшая серединой. */
+  function noteAtX(clientX) {
+    const beat = ctx.xBeat(clientX - els.lane.getBoundingClientRect().left);
+    let best = null;
+    let bestD = Infinity;
+    for (const x of ctx.state.notes) {
+      const d = beat >= x.start && beat < x.start + x.length ? -1 : Math.abs(x.start + x.length / 2 - beat);
+      if (d < bestD) { best = x; bestD = d; }
+      if (d < 0) break;
+    }
+    return best;
+  }
+
+  function dragMove(e) {
+    const notes = ctx.state.notes;
+    const target = noteAtX(e.clientX);
+    const from = notes.findIndex((x) => x.id === drag.id);
+    const want = target ? notes.indexOf(target) - from : 0;
+    // за пределы области текст не уезжает — подсказка называет фактический сдвиг из модели
+    let k = want;
+    let refusal = '';
+    try {
+      k = M.shiftAmount(ctx.state, drag.id, want, scope);
+      if (k) shiftOp(k)(ctx.state, drag.id);
+    } catch (err) { refusal = err.message; }
+    if (drag.target !== (target?.id ?? null)) {
+      chipOf(drag.target)?.classList.remove('ne-drop');
+      drag.target = target?.id ?? null;
+    }
+    chipOf(drag.target)?.classList.toggle('ne-drop', !!k);
+    drag.k = k;
+    drag.dest = notes[from + k]?.id ?? null;
+    drag.ok = !!k && !refusal;
+    let text = 'Отпусти над другой нотой — текст сдвинется';
+    if (refusal) text = refusal;
+    else if (k) text = `${k > 0 ? 'текст ⇢' : '⇠ текст'} на ${notesWord(Math.abs(k))} (${scopeName()})`;
+    tip.textContent = text;
+    tip.classList.toggle('err', !!k && !drag.ok);
+    tip.style.left = `${e.clientX + 12}px`;
+    tip.style.top = `${e.clientY - 36}px`;
+    tip.hidden = false;
+  }
+
+  function dragEnd(cancel) {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    tip.hidden = true;
+    chipOf(d.target)?.classList.remove('ne-drop');
+    chipOf(d.id)?.classList.remove('ne-dragging');
+    els.lane.classList.remove('dragging');
+    if (!d.started) return;
+    // браузер следом пришлёт click — он не должен менять выделение
+    suppressClick = true;
+    setTimeout(() => { suppressClick = false; }, 0);
+    if (cancel || !d.k) return;
+    if (!d.ok) { ctx.toast(tip.textContent, 'err'); return; }
+    const ok = ctx.apply((s) => shiftOp(d.k)(s, d.id),
+      `Текст ${scopeName()} сдвинут ${d.k > 0 ? 'вправо' : 'влево'} на ${notesWord(Math.abs(d.k))}`);
+    if (ok && d.dest != null) ctx.select([d.dest]);
+    refocus();
+  }
+
+  els.lane.addEventListener('pointerdown', (e) => {
+    const c = e.target.closest('.ne-chip');
+    if (!c || c.classList.contains('editing') || e.button !== 0 || e.shiftKey || !ctx.editable()) return;
+    drag = { id: Number(c.dataset.id), x0: e.clientX, pointerId: e.pointerId, started: false, k: 0, ok: false, target: null, dest: null };
+  });
+  els.lane.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    // кнопку отпустили где-то вне дорожки — перетаскивание не зависает
+    if (e.buttons === 0) { dragEnd(true); return; }
+    if (!drag.started) {
+      if (Math.abs(e.clientX - drag.x0) < DRAG_PX) return;
+      drag.started = true;
+      try { els.lane.setPointerCapture(e.pointerId); } catch { /* указатель уже отпущен */ }
+      chipOf(drag.id)?.classList.add('ne-dragging');
+      els.lane.classList.add('dragging');
+    }
+    e.preventDefault();
+    dragMove(e);
+  });
+  els.lane.addEventListener('pointerup', () => dragEnd(false));
+  els.lane.addEventListener('pointercancel', () => dragEnd(true));
+  els.lane.addEventListener('lostpointercapture', () => { if (drag?.started) dragEnd(true); });
+  els.lane.addEventListener('click', (e) => {
+    if (!suppressClick) return;
+    suppressClick = false;
+    e.stopPropagation();
+  }, { capture: true });
+  ctx.addKey({ code: 'Escape', fn: () => { if (!drag?.started) return false; dragEnd(true); return true; } });
+  ctx.dlg.addEventListener('editor-close', () => { drag = null; tip.hidden = true; });
 
   // склейка строк кликом по ↵ на границе
   els.brkLayer.addEventListener('click', (e) => {

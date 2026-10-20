@@ -152,10 +152,74 @@ test('сдвиг текста по нотам строки: вправо и вл
   assert.deepEqual(texts(back)[0], ['Hel', 'lo', '~']);
   const hel = byText(st, 'Hel').id;
   assert.deepEqual(texts(M.shiftText(st, hel, 1))[0], ['~', 'Hel', 'lo']);
-  // справа занято / слева занято / первая нота строки — ничего не меняется, ошибка
-  assert.throws(() => M.shiftText(M.fromPayload(payload()), lo, 1), /Справа нет свободной ноты/);
-  assert.throws(() => M.shiftText(st, lo, -1), /Слева занятая нота/);
-  assert.throws(() => M.shiftText(st, hel, -1), /Слева/);
+  // справа занято: последний слог строки приклеивается к последней ноте (текст не теряется)
+  const full = M.fromPayload(payload());
+  assert.deepEqual(texts(M.shiftText(full, lo, 1)), [['Hel', '~', 'lo world'], ['Sec', 'ond'], ['Last']]);
+  // слева занято: слог приклеивается к предыдущей ноте, последняя нота строки получает «~»
+  assert.deepEqual(texts(M.shiftText(full, lo, -1))[0], ['Hello', ' world', '~']);
+  // первая нота строки — левее в строке нот нет
+  assert.throws(() => M.shiftText(st, hel, -1), /Левее в этой строке нот нет/);
+});
+
+test('shiftTextBy: область «песня» — через границы строк, ноты и строки не двигаются', () => {
+  const st = M.fromPayload(payload()); // [Hel lo ␣world] [Sec ond] [Last]
+  const world = byText(st, ' world').id;
+  const right = M.shiftTextBy(st, world, 2, 'song');
+  assert.deepEqual(texts(right), [['Hel', 'lo', '~'], ['~', ' world'], ['SecondLast']]);
+  assert.deepEqual(right.notes.map((x) => [x.start, x.length, x.ls]), st.notes.map((x) => [x.start, x.length, x.ls]));
+  const left = M.shiftTextBy(st, byText(st, 'Sec').id, -1, 'song');
+  assert.deepEqual(texts(left), [['Hel', 'lo', ' worldSec'], ['ond', 'Last'], ['~']]);
+  assert.throws(() => M.shiftTextBy(st, byText(st, 'Hel').id, -1, 'song'), /Левее нот нет/);
+  assert.deepEqual(texts(st), [['Hel', 'lo', ' world'], ['Sec', 'ond'], ['Last']], 'вход не меняется');
+});
+
+test('shiftTextBy: область «слово» — до пробела-границы слова, соседние слова не трогаются', () => {
+  const st = M.fromPayload(payload());
+  const hel = byText(st, 'Hel').id;
+  const lo = byText(st, 'lo').id;
+  const world = byText(st, ' world').id;
+  assert.deepEqual(texts(M.shiftTextBy(st, hel, 1, 'word'))[0], ['~', 'Hello', ' world']);
+  assert.deepEqual(texts(M.shiftTextBy(st, lo, -1, 'word'))[0], ['Hello', '~', ' world']);
+  assert.throws(() => M.shiftTextBy(st, world, -1, 'word'), /Левее в этом слове нот нет/);
+  // UltraSinger: граница слова — пробел в конце слога; «~ » свободна и не теряет пробел
+  const us = M.fromPayload(usPayload()); // In|to␣|my|~␣|eyes␣
+  const my = byText(us, 'my').id;
+  assert.deepEqual(texts(M.shiftTextBy(us, my, 1, 'word'))[0], ['In', 'to ', '~', 'my ', 'eyes ']);
+  assert.deepEqual(texts(M.shiftTextBy(us, us.notes[3].id, -1, 'word'))[0], ['In', 'to ', 'my ', '~', 'eyes ']);
+});
+
+test('shiftTextBy: сдвиг на несколько нот; влево дальше начала области — до её начала', () => {
+  const st = M.fromPayload(payload());
+  const hel = byText(st, 'Hel').id;
+  assert.deepEqual(texts(M.shiftTextBy(st, hel, 2, 'line'))[0], ['~', '~', 'Hello world']);
+  const world = byText(st, ' world').id;
+  assert.deepEqual(texts(M.shiftTextBy(st, world, -2, 'line'))[0], ['Hello world', '~', '~']);
+  assert.deepEqual(texts(M.shiftTextBy(st, world, -5, 'line'))[0], ['Hello world', '~', '~']);
+  assert.throws(() => M.shiftTextBy(st, 99, 1, 'line'), { message: 'Нет такой ноты' });
+  // фактический сдвиг (для подсказки перетаскивания) — из той же модели
+  assert.equal(M.shiftAmount(st, world, -5, 'line'), -2);
+  assert.equal(M.shiftAmount(st, hel, 9, 'word'), 1);
+});
+
+test('shiftTextBy: отказ вправо у последней ноты области; неизвестная область', () => {
+  const st = M.fromPayload(payload());
+  assert.throws(() => M.shiftTextBy(st, byText(st, ' world').id, 1, 'line'), /Правее в этой строке нот нет/);
+  assert.throws(() => M.shiftTextBy(st, byText(st, 'lo').id, 1, 'word'), /Правее в этом слове нот нет/);
+  assert.throws(() => M.shiftTextBy(st, byText(st, 'Last').id, 1, 'song'), /Правее нот нет/);
+  assert.throws(() => M.shiftRange(st, 0, 'verse'), /Неизвестная область/);
+  assert.throws(() => M.shiftTextBy(st, 0, 1, 'verse'), /Неизвестная область/);
+});
+
+test('область «слово»: нота «~» (с пробелами) — продолжение предыдущего слова', () => {
+  const us = M.fromPayload(usPayload()); // In|to␣|my|~␣|eyes␣
+  const tilde = M.setText(us, 2, '~ '); // In|to␣|~␣|~␣|eyes␣ — «to» протянуто на две ноты
+  assert.deepEqual(M.shiftRange(tilde, 2, 'word'), { first: 0, last: 3 });
+  assert.deepEqual(M.shiftRange(tilde, 4, 'word'), { first: 4, last: 4 });
+  assert.deepEqual(M.shiftRange(us, 3, 'word'), { first: 2, last: 3 });
+  // без пробела после «~»: следующее слово начинается по пробелу последнего слога с текстом
+  const glued = M.setText(M.setText(us, 3, '~'), 2, 'my '); // In|to␣|my␣|~|eyes␣
+  assert.deepEqual(M.shiftRange(glued, 4, 'word'), { first: 4, last: 4 });
+  assert.deepEqual(M.shiftRange(glued, 3, 'word'), { first: 2, last: 3 });
 });
 
 test('разрезать ноту пополам: вторая половина с «~»; ноту в 1 бит не разрезать', () => {
