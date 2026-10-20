@@ -108,7 +108,9 @@ function card(song) {
     : noCover();
   const tags = [];
   if (song.instrumental) tags.push(tag('есть минусовка', true));
-  if (song.own) tags.push(tag('создана сервисом', true));
+  if (song.source) tags.push(tag('импорт', true));
+  else if (song.own) tags.push(tag('создана сервисом', true));
+  if (song.source === 'usdb') tags.push(tag('из usdb', true));
   if (song.is_duet) tags.push(tag('дуэт', true));
 
   const actions = h('div', { class: 'actions' });

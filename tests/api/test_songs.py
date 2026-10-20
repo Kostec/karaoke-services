@@ -177,3 +177,26 @@ def test_delete_trash_restore(env, client, song):
     r = client.post(f"/api/trash/{tid}/restore")
     assert r.status_code == 409 and "Сначала удалите или переименуйте" in r.json()["detail"]
     assert client.post("/api/trash/nope/restore").status_code == 404
+
+
+def test_song_source_from_import_params(env, client):
+    """Метки «импорт»/«из usdb»: API песни отдаёт source из params.json (null — у прочих)."""
+    env.put_song("Artist/Artist - Song", env.SONG_TXT, "Artist - Song")
+    env.put_song("Pair/Pair - Duet", env.DUET_TXT, "Pair - Duet", cover=None)
+    env.put_song("Gen/Gen - Own", env.SONG_TXT, "Gen - Own")
+    songs = Songs(connect(env.data / "karaoke.sqlite"))
+    songs.upsert(artist="Artist", title="Song", rel_dir="Artist/Artist - Song",
+                 params={"source": "usdb", "usdb_id": 7})
+    songs.upsert(artist="Pair", title="Duet", rel_dir="Pair/Pair - Duet", params={"source": "files"})
+    songs.upsert(artist="Gen", title="Own", rel_dir="Gen/Gen - Own", params={"language": "ru"})
+    client.post("/api/songs/rescan")
+    items = {i["rel_dir"]: i for i in client.get("/api/songs").json()["items"]}
+    assert {d: i["source"] for d, i in items.items()} == {
+        "Artist/Artist - Song": "usdb", "Pair/Pair - Duet": "files", "Gen/Gen - Own": None}
+    sid = items["Artist/Artist - Song"]["song_id"]
+    assert client.get(f"/api/songs/{sid}").json()["source"] == "usdb"
+
+
+def test_foreign_song_has_no_source(env, client, song):
+    assert client.get(f"/api/songs/{song['song_id']}").json()["source"] is None
+    assert client.get("/api/songs").json()["items"][0]["source"] is None

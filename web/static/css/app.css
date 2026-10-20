@@ -280,3 +280,26 @@ dialog .actions { justify-content: flex-end; }
   border-radius: 8px; padding: 10px 14px; box-shadow: 0 4px 12px rgba(0, 0, 0, .25);
 }
 .toast.err { background: var(--err); color: #fff; }
+
+/* ---------- импорт ---------- */
+
+.subtabs { display: flex; gap: 4px; margin: 10px 0 0; }
+.subtabs button { flex: 1 1 0; }
+.subtabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+
+.import-tips ul { margin: 0 0 12px; padding-left: 20px; }
+.import-tips li { margin: 4px 0; }
+
+.usdb-list { display: flex; flex-direction: column; }
+.usdb-hit {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px 12px;
+  padding: 8px 0; border-top: 1px solid var(--border);
+}
+.usdb-hit-info { min-width: 0; }
+
+.import-song-head { font-size: 1.05rem; }
+.import-song.off > :not(.import-song-head) { opacity: .55; }
+.import-song .banner.warn { white-space: pre-line; }
+.import-submit .actions { margin-top: 0; }
+.ok-text { color: var(--ok); }
+.err-text { color: var(--err); }

@@ -35,6 +35,7 @@ services:
       <<: *app-env
       WEB_PASSWORD: ${WEB_PASSWORD:-}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
+      MAX_IMPORT_MB: ${MAX_IMPORT_MB:-500}
     volumes:
       - data:/data
       - ${LOCAL_OUTPUT_ROOT:-./output}:/output

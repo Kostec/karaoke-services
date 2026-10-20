@@ -43,6 +43,16 @@ def _read_txt(ctx: AppContext, item) -> bytes:
     return _storage_call(ctx, ctx.storage().read, f"{item.rel_dir}/{item.txt_name}")
 
 
+def _song_out(ctx: AppContext, item, own=None) -> dict:
+    """Песня для API + ``source`` импорта из params.json своей песни (usdb|files|url или None)."""
+    out = ctx.song_dict(item)
+    if own is None and item.own_song_id:
+        own = ctx.songs.get(item.own_song_id)
+    params = own.params if own and isinstance(own.params, dict) else {}
+    out["source"] = params.get("source") or None
+    return out
+
+
 @router.get("/songs", summary="Список песен из индекса")
 def list_songs(request: Request, background: BackgroundTasks, q: str | None = None):
     ctx = ctx_of(request)
@@ -55,7 +65,7 @@ def list_songs(request: Request, background: BackgroundTasks, q: str | None = No
     return {"scanned_at": ctx.scanned_at(storage.target_id, items),
             "scanning": bool(state.get("running")),
             "output": ctx.output_status(), "target": target.public(),
-            "items": [ctx.song_dict(i) for i in items]}
+            "items": [_song_out(ctx, i) for i in items]}
 
 
 @router.post("/songs/rescan", status_code=202, summary="Пересканировать папку в фоне")
@@ -81,9 +91,9 @@ def _own_lyrics(ctx: AppContext, item) -> str | None:
 def get_song(song_id: str, request: Request):
     ctx = ctx_of(request)
     item = ctx.find_song(song_id)
-    out = ctx.song_dict(item)
+    own = ctx.songs.get(item.own_song_id) if item.own_song_id else None
+    out = _song_out(ctx, item, own)
     if item.own_song_id:
-        own = ctx.songs.get(item.own_song_id)
         out["params"] = own.params if own else None
         out["lyrics"] = _own_lyrics(ctx, item)
     return out

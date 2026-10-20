@@ -3,13 +3,14 @@
 import { api } from './api.js';
 import * as queue from './queue.js';
 import * as newSong from './new-song.js';
+import * as importView from './import.js';
 import * as songs from './songs.js';
 import * as trash from './trash.js';
 import * as settings from './settings.js';
 // Редакторы (таск 07): модуль вызывает registerSongEditor().
 import './editors/index.js';
 
-const VIEWS = { queue, new: newSong, songs, trash, settings };
+const VIEWS = { queue, new: newSong, import: importView, songs, trash, settings };
 const STATUS_EVERY_MS = 15000;
 
 let current = null;

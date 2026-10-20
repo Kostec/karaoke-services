@@ -108,6 +108,9 @@ export const api = {
   testUsdbAccount: (body) => request('POST', '/api/settings/usdb/test', body),
   usdbSearch: ({ artist = '', title = '', language = 'Russian', start = 0 } = {}) =>
     request('GET', `/api/usdb/search?${new URLSearchParams({ artist, title, language, start: String(start) })}`),
+
+  importInspect: (form) => request('POST', '/api/import/inspect', form),
+  importJob: (form) => request('POST', '/api/jobs/import', form),
 };
 
 // ---------------------------------------------------------------- общие помощники
@@ -141,6 +144,30 @@ export function generateForm({ artist, title, lyrics = '', params = {}, audio, c
   if (cover) fd.append('cover', cover);
   fd.append('params', JSON.stringify(pickParams(params)));
   if (songId) fd.append('song_id', songId);
+  fd.append('replace', replace ? 'true' : 'false');
+  return fd;
+}
+
+/** multipart для POST /api/import/inspect: {source: 'usdb'|'files'|'url', usdb_id?, url?, files?}. */
+export function inspectForm({ source, usdb_id: usdbId, url, files = [] }) {
+  const fd = new FormData();
+  fd.append('source', source);
+  if (source === 'usdb') fd.append('usdb_id', String(usdbId));
+  if (source === 'url') fd.append('url', (url || '').trim());
+  if (source === 'files') for (const file of files) fd.append('files', file);
+  return fd;
+}
+
+/** multipart для POST /api/jobs/import — поля из import-logic.js::importFields. */
+export function importForm({ token, index, artist, title, audio, youtube_url: youtubeUrl, instrumental, replace }) {
+  const fd = new FormData();
+  fd.append('token', token);
+  fd.append('index', String(index));
+  fd.append('artist', artist);
+  fd.append('title', title);
+  if (audio) fd.append('audio', audio);
+  if (youtubeUrl) fd.append('youtube_url', youtubeUrl);
+  fd.append('instrumental', instrumental ? 'true' : 'false');
   fd.append('replace', replace ? 'true' : 'false');
   return fd;
 }
