@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from karaoke_core import naming, postprocess, ultrastar
-from karaoke_core.db import Job, now, song_id_for
+from karaoke_core.db import Job, instrumental_params, now, song_id_for
 from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_PARAMS
 from karaoke_core.storage import Storage, StorageError
 from karaoke_core.trash import TrashError
@@ -311,13 +311,15 @@ class GenerateHandler:
         if lyrics is not None and p.get("lrc_timing") and lrc is not None and lrc.is_file():
             try:
                 lrc_text = lrc.read_text("utf-8-sig")
-            except (OSError, UnicodeError):
-                lrc_text = ""
-            if lrc_matches(text, lrc_text):
-                timing = lrc
-                ctx.log(job.id, "Тайминги строк — из LRC")
+            except (OSError, UnicodeError) as e:
+                ctx.log(job.id, f"Тайминги LRC не использованы: {lrc.name} не прочитан "
+                                f"({type(e).__name__}: {e})")
             else:
-                ctx.log(job.id, LRC_NOT_USED)
+                if lrc_matches(text, lrc_text):
+                    timing = lrc
+                    ctx.log(job.id, "Тайминги строк — из LRC")
+                else:
+                    ctx.log(job.id, LRC_NOT_USED)
 
         cmd = ctx.ultrasinger_cmd() + ultrasinger_args(p, us_in, out, lyrics, dict(ctx.env),
                                                        lyrics_timing=timing)
@@ -515,9 +517,8 @@ def _enqueue_instrumental(ctx: JobContext, job: Job, src: Job, storage: Storage,
         entry = storage.read_song(rel_dir)
         if entry is None or not entry.audio:
             raise ValueError("песня или её аудио не найдены в папке результата")
-        params = {"rel_dir": rel_dir, "txt_name": entry.txt_name, "audio": entry.audio,
-                  "instrumental": entry.instrumental, "replace": bool(entry.instrumental),
-                  "target_id": storage.target_id}
+        params = instrumental_params(rel_dir=rel_dir, txt_name=entry.txt_name, audio=entry.audio,
+                                     instrumental=entry.instrumental, target_id=storage.target_id)
         inst = ctx.jobs.enqueue("instrumental", {"artist": entry.artist or src.artist,
                                                  "title": entry.title or src.title,
                                                  "song_id": song_id_for(storage.target_id, rel_dir)},

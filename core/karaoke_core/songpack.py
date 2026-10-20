@@ -22,7 +22,7 @@ IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 ALLOWED_EXTS = frozenset({".txt"}) | AUDIO_EXTS | IMAGE_EXTS
 
 _CHUNK = 1 << 20
-_WATCH ="https://www.youtube.com/watch?v="
+_WATCH = "https://www.youtube.com/watch?v="
 _FANART = "https://images.fanart.tv/fanart/"
 _URL_RE = re.compile(r"https?://\S+\Z", re.I)
 _YT_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
@@ -107,12 +107,18 @@ def safe_extract(zip_path: str | Path, dest: str | Path, max_total_bytes: int) -
         raise PackError("Архив повреждён") from e
 
 
-def _resolve(root: Path, base: Path, value: str | None, exts: frozenset[str]) -> str | None:
-    """Файл из заголовка песни (путь от папки .txt) без учёта регистра имён; путь от ``root``."""
+def youtube_watch_url(video_id: str) -> str:
+    """Единственная форма ссылки на ролик: ``https://www.youtube.com/watch?v=<id>``."""
+    return _WATCH + video_id
+
+
+def resolve_file(base: Path, value: str | None, exts: frozenset[str]) -> Path | None:
+    """Файл из заголовка песни (путь от папки ``base`` с .txt) без учёта регистра имён:
+    точное имя важнее; ``..``, чужое расширение, симлинк, отсутствие — ``None``."""
     parts = [p for p in (value or "").strip().replace("\\", "/").split("/") if p not in ("", ".")]
     if not parts or ".." in parts or PurePosixPath(parts[-1]).suffix.lower() not in exts:
         return None
-    cur = base
+    cur = Path(base)
     for part in parts:
         try:
             names = {c.name: c for c in cur.iterdir()}
@@ -123,7 +129,13 @@ def _resolve(root: Path, base: Path, value: str | None, exts: frozenset[str]) ->
         if nxt is None:
             return None
         cur = nxt
-    return cur.relative_to(root).as_posix() if cur.is_file() and not cur.is_symlink() else None
+    return cur if cur.is_file() and not cur.is_symlink() else None
+
+
+def _resolve(root: Path, base: Path, value: str | None, exts: frozenset[str]) -> str | None:
+    """:func:`resolve_file`, путь — от ``root``."""
+    found = resolve_file(base, value, exts)
+    return found.relative_to(root).as_posix() if found is not None else None
 
 
 def _co_cover(root: Path, txt: Path) -> str | None:
@@ -182,7 +194,7 @@ def _media_url(value: str) -> str | None:
     if _URL_RE.match(value):
         return value
     if _YT_ID_RE.fullmatch(value):
-        return _WATCH + value
+        return youtube_watch_url(value)
     return None
 
 

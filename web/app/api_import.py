@@ -24,12 +24,11 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 from karaoke_core import naming, songpack, ultrastar
 from karaoke_core.http import HttpError
 from karaoke_core.paths import DataPaths, INPUT_AUDIO, INPUT_COVER_STEM
-from karaoke_core.storage import StorageError
 
-from .api_jobs import CHUNK, MB, _copy_limited, _cover_ext, _is_mp3, _queue_duplicate, _Staging, ctx_of
+from .api_jobs import CHUNK, MB, Staging, copy_limited, cover_ext_of, ctx_of, is_mp3, queue_duplicate
 from .api_usdb import usdb_api_error
 from .context import ApiError, AppContext, song_key
-from .params import MAX_COVER_MB
+from .params import MAX_COVER_MB, max_import_mb
 from .usdb import UsdbError
 
 log = logging.getLogger("karaoke.web")
@@ -50,10 +49,6 @@ ZIP_SIG = b"PK\x03\x04"
 
 _GITHUB_RE = re.compile(r"https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?"
                         r"(?:/tree/([^/?#]+)((?:/[^?#]*)?))?/?(?:[?#].*)?\Z", re.I)
-
-
-def max_import_mb(ctx: AppContext) -> int:
-    return ctx.int_env("MAX_IMPORT_MB", 500)
 
 
 # --------------------------------------------------------------------------- уборка
@@ -81,12 +76,13 @@ def purge_imports(paths: DataPaths, max_age_s: float = IMPORT_TTL_S) -> int:
 
 # --------------------------------------------------------------------------- приём источника
 
-def _save_upload(upload: UploadFile, dest: Path, limit_bytes: int, limit_mb: int, total: list[int]) -> None:
+def _save_upload(upload: UploadFile, dest: Path, limit_mb: int, total: list[int], too_big: str) -> None:
+    """Сохранить загрузку; ``total`` — байты всех файлов этой загрузки, больше лимита — 413."""
     with open(dest, "wb") as out:
         while chunk := upload.file.read(CHUNK):
             total[0] += len(chunk)
-            if total[0] > limit_bytes:
-                raise ApiError(413, f"Архив больше {limit_mb} МБ", field="files")
+            if total[0] > limit_mb * MB:
+                raise ApiError(413, too_big, field="files")
             out.write(chunk)
 
 
@@ -110,9 +106,10 @@ def _from_files(ctx: AppContext, work: Path, files: list[UploadFile]) -> None:
     if len(files) == 1 and (files[0].file.read(4) == ZIP_SIG or files[0].filename.lower().endswith(".zip")):
         files[0].file.seek(0)
         zip_path = work / "upload.zip"
-        _save_upload(files[0], zip_path, limit_mb * MB, limit_mb, total)
+        _save_upload(files[0], zip_path, limit_mb, total, f"Архив больше {limit_mb} МБ")
         _extract(ctx, zip_path, dest)
         return
+    seen: set[str] = set()
     for f in files:
         f.file.seek(0)
         name = PurePosixPath(f.filename.replace("\\", "/")).name
@@ -120,7 +117,11 @@ def _from_files(ctx: AppContext, work: Path, files: list[UploadFile]) -> None:
             if name.lower().endswith(".zip"):
                 raise ApiError(400, "Загрузите один zip или файлы песни без архива", field="files")
             continue  # не файл песни — молча пропускаем, как при распаковке
-        _save_upload(f, dest / name, limit_mb * MB, limit_mb, total)
+        if name.casefold() in seen:
+            raise ApiError(400, f"Два файла с именем «{name}» — оставьте один или загрузите zip",
+                           field="files")
+        seen.add(name.casefold())
+        _save_upload(f, dest / name, limit_mb, total, f"Файлы вместе больше {limit_mb} МБ")
 
 
 BAD_PATH_URL = "Недопустимая папка в ссылке на GitHub"
@@ -183,7 +184,7 @@ def _from_url(ctx: AppContext, work: Path, url: str) -> str:
         ctx.http.download(url, zip_path, max_bytes=limit_mb * MB, timeout=300)
     except HttpError as e:
         zip_path.unlink(missing_ok=True)
-        if "слишком большой" in str(e):
+        if e.too_large:
             raise ApiError(413, f"Архив больше {limit_mb} МБ", field="url") from None
         raise ApiError(400, f"Не удалось скачать архив: {e}", field="url") from None
     with open(zip_path, "rb") as f:
@@ -205,19 +206,10 @@ def _from_url(ctx: AppContext, work: Path, url: str) -> str:
 def _has_instrumental(txt_path: Path) -> bool:
     """В заголовке ``#INSTRUMENTAL`` и такой файл лежит рядом с .txt (без учёта регистра)."""
     try:
-        value = (ultrastar.parse(txt_path.read_bytes()).header("INSTRUMENTAL") or "").strip()
+        value = ultrastar.parse(txt_path.read_bytes()).header("INSTRUMENTAL")
     except (OSError, ValueError):
         return False
-    parts = [p for p in value.replace("\\", "/").split("/") if p not in ("", ".")]
-    if not parts or ".." in parts or PurePosixPath(parts[-1]).suffix.lower() not in songpack.AUDIO_EXTS:
-        return False
-    cur = txt_path.parent
-    for part in parts:
-        try:
-            cur = next(c for c in sorted(cur.iterdir()) if c.name.casefold() == part.casefold())
-        except (OSError, StopIteration):
-            return False
-    return cur.is_file() and not cur.is_symlink()
+    return songpack.resolve_file(txt_path.parent, value, songpack.AUDIO_EXTS) is not None
 
 
 def _download_cover(ctx: AppContext, url: str, dest_dir: Path) -> str | None:
@@ -226,7 +218,7 @@ def _download_cover(ctx: AppContext, url: str, dest_dir: Path) -> str | None:
     try:
         ctx.http.download(url, tmp, max_bytes=MAX_COVER_MB * MB, timeout=30)
         with open(tmp, "rb") as f:
-            ext = _cover_ext(f.read(16))
+            ext = cover_ext_of(f.read(16))
     except (HttpError, OSError):
         tmp.unlink(missing_ok=True)
         return None
@@ -263,14 +255,6 @@ def _from_usdb(ctx: AppContext, work: Path, usdb_id: int | None) -> list[songpac
 
 # --------------------------------------------------------------------------- ответ
 
-def _existing(ctx: AppContext, artist: str, title: str) -> str | None:
-    try:
-        item = ctx.find_by_name(artist, title)
-    except StorageError:
-        return None
-    return item.song_id if item else None
-
-
 def _warnings(s: dict) -> list[str]:
     if s["audio_rel"]:
         return []
@@ -283,7 +267,7 @@ def _public(ctx: AppContext, s: dict) -> dict:
             "audio": PurePosixPath(s["audio_rel"]).name if s["audio_rel"] else None,
             "cover": bool(s["cover_rel"] or s["cover_url"]), "youtube": s["youtube"],
             "has_instrumental": s["has_instrumental"],
-            "existing_song_id": _existing(ctx, s["artist"], s["title"]),
+            "existing_song_id": ctx.existing_song_id(s["artist"], s["title"]),
             "warnings": _warnings(s)}
 
 
@@ -361,8 +345,8 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
     if not artist or not title:
         raise ApiError(400, "Укажите исполнителя и название", field="artist" if not artist else "title")
     key = song_key(artist, title)
-    _queue_duplicate(ctx, "generate", key=key)
-    _queue_duplicate(ctx, "import", key=key)
+    queue_duplicate(ctx, "generate", key=key)
+    queue_duplicate(ctx, "import", key=key)
 
     source = ctx.find_song(song_id) if song_id else None
     existing = ctx.find_by_name(artist, title)
@@ -370,7 +354,7 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
         raise ApiError(409, "Такая песня уже есть в папке результата", song_id=existing.song_id)
 
     has_audio = audio is not None and bool(audio.filename)
-    if has_audio and not _is_mp3(audio.file.read(4)):
+    if has_audio and not is_mp3(audio.file.read(4)):
         raise ApiError(400, "Это не mp3-файл", field="audio")
     link = (youtube_url or "").strip() or None
     if link and not re.match(r"https?://", link, re.I):
@@ -384,12 +368,12 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
 
     rel_dir = naming.song_dir(artist, title)
     storage = ctx.storage()
-    staging = _Staging(ctx, rel_dir)
+    staging = Staging(ctx, rel_dir)
     try:
         shutil.copyfile(_inside(work, s["txt_rel"]), staging.path("txt", INPUT_TXT))
         if has_audio:
             audio.file.seek(0)
-            _copy_limited(audio.file, staging.path("audio", INPUT_AUDIO), ctx.max_upload_mb, "audio")
+            copy_limited(audio.file, staging.path("audio", INPUT_AUDIO), ctx.max_upload_mb, "audio")
         elif s["audio_rel"]:
             ext = PurePosixPath(s["audio_rel"]).suffix.lower()
             shutil.copyfile(_inside(work, s["audio_rel"]), staging.path("audio", f"{INPUT_IMPORT_AUDIO_STEM}{ext}"))

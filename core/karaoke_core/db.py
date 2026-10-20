@@ -176,6 +176,14 @@ def _song_ref(song_ref: Any) -> tuple[str, str, str | None]:
     return get("artist", "") or "", get("title", "") or "", get("song_id")
 
 
+def instrumental_params(*, rel_dir: str, txt_name: str, audio: str, instrumental: str | None,
+                        target_id: str) -> dict:
+    """params задания ``instrumental`` для песни в папке результата — одни и для веба
+    (``POST /api/jobs/instrumental``), и для воркера (минусовка после импорта)."""
+    return {"rel_dir": rel_dir, "txt_name": txt_name, "audio": audio, "instrumental": instrumental,
+            "replace": bool(instrumental), "target_id": target_id}
+
+
 class Jobs:
     """Очередь заданий. Состояния: queued → running → publishing → done;
     queued → cancelled; running|publishing → failed|cancelled."""
@@ -410,11 +418,7 @@ class Settings:
         return UsdbAccount(str(value.get("user") or ""), value.get("password") or None)
 
     def set_usdb(self, account: UsdbAccount) -> UsdbAccount:
-        """Сохранить учётку. ``password=None`` при том же логине — оставить прежний пароль."""
-        if account.password is None and account.user:
-            old = self.get_usdb()
-            if old.user == account.user:
-                account = UsdbAccount(account.user, old.password)
+        """Сохранить учётку как есть (правило «пустой пароль — прежний» — в api_settings)."""
         self._set(USDB_KEY, json.dumps({"user": account.user, "password": account.password or ""},
                                        ensure_ascii=False))
         return account
@@ -561,6 +565,15 @@ class Songs:
     def by_rel_dir(self, rel_dir: str) -> OwnSong | None:
         row = self.conn.execute("SELECT * FROM songs WHERE rel_dir=?", (rel_dir,)).fetchone()
         return OwnSong.from_row(row) if row else None
+
+    def get_many(self, ids) -> dict[str, OwnSong]:
+        """Свои песни по id одним запросом: ``{id: OwnSong}`` (неизвестных id нет в ответе)."""
+        ids = sorted({i for i in ids if i})
+        if not ids:
+            return {}
+        rows = self.conn.execute(
+            f"SELECT * FROM songs WHERE id IN ({','.join('?' * len(ids))})", ids).fetchall()
+        return {s.id: s for s in map(OwnSong.from_row, rows)}
 
     def upsert(self, *, artist: str, title: str, rel_dir: str, params: dict | None = None) -> OwnSong:
         """Создать или обновить запись по ``rel_dir`` (id сохраняется)."""

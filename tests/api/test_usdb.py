@@ -167,6 +167,17 @@ def test_settings_usdb_empty_password_keeps_previous_for_same_user(uc, http):
     assert uc.get("/api/settings/usdb").json()["user"] == "karaoke"
 
 
+def test_put_usdb_without_password_stores_previous_password(uc, http):
+    save_account(uc)
+    assert uc.put("/api/settings/usdb", json={"user": "karaoke"}).status_code == 200
+    assert uc.get("/api/settings/usdb").json() == {"user": "karaoke", "has_password": True}
+    http.route("POST", LIST, page("list.html"))
+    n = len(logins(http))
+    assert uc.get("/api/usdb/search", params={"title": "x"}).status_code == 200
+    # клиент поиска входит с сохранённым паролем — значит, PUT сохранил прежний
+    assert len(logins(http)) == n + 1 and logins(http)[-1].data["pass"] == PW
+
+
 def test_settings_usdb_test_endpoint(uc, http):
     r = uc.post("/api/settings/usdb/test", json={"user": "karaoke", "password": PW})
     assert r.status_code == 200 and r.json() == {"ok": True}
@@ -237,3 +248,40 @@ def test_account_change_resets_client_session(uc, http):
     uc.get("/api/usdb/search")
     last = logins(http)[-1]
     assert last.data["user"] == "second" and http.calls(LIST)[-1].session not in (0, session)
+
+
+# ------------------------------------------------------------------ надёжность разбора
+
+
+def test_login_without_confirmation_warns_and_next_not_logged_in_is_auth_error(caplog):
+    other = FakeHttp().route("POST", BASE, response(200, "<html><body>Wartungsarbeiten</body></html>"))
+    client = UsdbClient(other, "karaoke", PW)
+    with caplog.at_level("WARNING"):
+        client.login()
+    assert "вход не подтверждён признаком" in caplog.text and PW not in caplog.text
+    assert "Wartungsarbeiten" not in caplog.text
+    other.route("POST", LIST, page("not_logged_in.html"))
+    with pytest.raises(UsdbAuthError):
+        client.search("", "", "Russian", 0)
+    assert len(logins(other)) == 2 and len(other.calls(LIST)) == 2
+
+
+def _row(song_id: int, title: str, *, cells: int = 12, attrs: str | None = None) -> str:
+    tds = ["", "", "Кино", title, "Rock", "1989", "", "Yes", "Russian", "vasya", "4,5", "10"][:cells]
+    attrs = attrs or f'class="list_tr1" data-songid="{song_id}"'
+    return f"<tr {attrs}>" + "".join(f"<td onclick=\"x\">{t}</td>" for t in tds) + "</tr>\n"
+
+
+def test_has_more_counts_table_rows_not_parsed(http):
+    body = "<table>" + "".join(_row(i, f"T{i}") for i in range(1, 50)) + _row(99, "broken", cells=3) + "</table>"
+    http.route("POST", LIST, response(200, body))
+    result = UsdbClient(http, "karaoke", PW).search("", "", "Russian", 0)
+    assert len(result.items) == 49 and result.has_more is True
+
+
+def test_entities_are_unescaped_per_cell_and_attribute_order_does_not_matter(http):
+    body = ("<table>" + _row(1, "Song &lt;Live&gt; &amp; more")
+            + _row(2, "Второй", attrs='data-songid="2" onmouseover="x" class="list_tr2"') + "</table>")
+    http.route("POST", LIST, response(200, body))
+    items = UsdbClient(http, "karaoke", PW).search("", "", "", 0).items
+    assert [(h.id, h.title) for h in items] == [(1, "Song <Live> & more"), (2, "Второй")]

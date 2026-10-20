@@ -43,11 +43,15 @@ def _read_txt(ctx: AppContext, item) -> bytes:
     return _storage_call(ctx, ctx.storage().read, f"{item.rel_dir}/{item.txt_name}")
 
 
-def _song_out(ctx: AppContext, item, own=None) -> dict:
-    """Песня для API + ``source`` импорта из params.json своей песни (usdb|files|url или None)."""
+_UNREAD = object()
+
+
+def _song_out(ctx: AppContext, item, own=_UNREAD) -> dict:
+    """Песня для API + ``source`` импорта из params.json своей песни (usdb|files|url или None);
+    ``own`` — уже прочитанная запись (список читает их одним запросом)."""
     out = ctx.song_dict(item)
-    if own is None and item.own_song_id:
-        own = ctx.songs.get(item.own_song_id)
+    if own is _UNREAD:
+        own = ctx.songs.get(item.own_song_id) if item.own_song_id else None
     params = own.params if own and isinstance(own.params, dict) else {}
     out["source"] = params.get("source") or None
     return out
@@ -59,13 +63,14 @@ def list_songs(request: Request, background: BackgroundTasks, q: str | None = No
     target = ctx.target()
     storage = ctx.storage()
     items = ctx.library.list(storage.target_id, q)
+    own = ctx.songs.get_many(i.own_song_id for i in items)
     state = ctx.scan_state.get(storage.target_id, {})
     if not state and not ctx.library.list(storage.target_id):
         background.add_task(ctx.rescan)  # первый показ этой цели — просканировать
     return {"scanned_at": ctx.scanned_at(storage.target_id, items),
             "scanning": bool(state.get("running")),
             "output": ctx.output_status(), "target": target.public(),
-            "items": [_song_out(ctx, i) for i in items]}
+            "items": [_song_out(ctx, i, own.get(i.own_song_id)) for i in items]}
 
 
 @router.post("/songs/rescan", status_code=202, summary="Пересканировать папку в фоне")

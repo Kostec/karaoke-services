@@ -20,6 +20,11 @@ LANGUAGES = [
 # Лимиты размеров (единственный источник; MAX_UPLOAD_MB для mp3 — из окружения).
 MAX_COVER_MB = 10  # обложка из формы
 MAX_LYRICS_MB = 1  # файл текста из формы
+DEFAULT_MAX_IMPORT_MB = 500  # лимит архива/файлов импорта, если MAX_IMPORT_MB не задан
+
+
+def max_import_mb(ctx) -> int:
+    return ctx.int_env("MAX_IMPORT_MB", DEFAULT_MAX_IMPORT_MB)
 MAX_FOLDER_AUDIO_MB = 200  # mp3 чужой песни, копируемый из папки результата во вход задания
 
 
@@ -57,7 +62,7 @@ def defaults_payload(ctx: AppContext) -> dict:
         "max_upload_mb": ctx.max_upload_mb,
         "max_cover_mb": MAX_COVER_MB,
         "max_lyrics_mb": MAX_LYRICS_MB,
-        "max_import_mb": ctx.int_env("MAX_IMPORT_MB", 500),
+        "max_import_mb": max_import_mb(ctx),
         "trash_days": ctx.trash.days,
     }
 

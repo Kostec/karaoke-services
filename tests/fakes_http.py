@@ -81,13 +81,13 @@ class FakeHttp:
         resp = self._dispatch(FakeRequest(method.upper(), self._full(url, params), params, data,
                                           dict(headers or {}), timeout, max_bytes, self._session))
         if len(resp.body) > max_bytes:
-            raise HttpError(f"Ответ сервера слишком большой (больше {max_bytes} байт)")
+            raise HttpError(f"Ответ сервера слишком большой (больше {max_bytes} байт)", too_large=True)
         return resp
 
     def download(self, url: str, dest: Path, *, max_bytes: int, timeout: float = 60) -> HttpResponse:
         resp = self._dispatch(FakeRequest("GET", url, None, None, {}, timeout, max_bytes, self._session))
         if len(resp.body) > max_bytes:
-            raise HttpError(f"Ответ сервера слишком большой (больше {max_bytes} байт)")
+            raise HttpError(f"Ответ сервера слишком большой (больше {max_bytes} байт)", too_large=True)
         Path(dest).write_bytes(resp.body)
         return HttpResponse(resp.status, resp.url, resp.headers, b"")
 

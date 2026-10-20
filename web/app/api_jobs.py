@@ -13,8 +13,8 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from karaoke_core import naming, ultrastar
-from karaoke_core.db import ACTIVE_STATES, FINAL_STATES, STAGE_PUBLISH
-from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_LYRICS
+from karaoke_core.db import ACTIVE_STATES, FINAL_STATES, STAGE_PUBLISH, instrumental_params
+from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_LRC, INPUT_LYRICS
 from karaoke_core.storage import StorageError
 
 from .context import ApiError, AppContext, not_found, song_key
@@ -24,7 +24,6 @@ router = APIRouter(prefix="/api/jobs", tags=["Задания"])
 CHUNK = 1 << 16
 SSE_TAIL_LINES = 500
 MB = 1024 * 1024
-INPUT_LRC = "lyrics.lrc"  # LRC с метками строк рядом с lyrics.txt (UTF-8, его читает --lyrics_timing)
 
 
 def ctx_of(request: Request) -> AppContext:
@@ -40,14 +39,16 @@ def _job_or_404(ctx: AppContext, job_id: int):
 
 # --------------------------------------------------------------------------- загрузки
 
-def _is_mp3(head: bytes) -> bool:
+# Помощники загрузки — общие для generate и импорта (api_import).
+
+def is_mp3(head: bytes) -> bool:
     return head.startswith(b"ID3") or (len(head) >= 2 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0)
 
 
 _COVER_SIGS = ((b"\xff\xd8\xff", "jpg"), (b"\x89PNG\r\n\x1a\n", "png"))
 
 
-def _cover_ext(head: bytes) -> str | None:
+def cover_ext_of(head: bytes) -> str | None:
     for sig, ext in _COVER_SIGS:
         if head.startswith(sig):
             return ext
@@ -60,7 +61,7 @@ def _too_big(limit_mb: int, field: str) -> ApiError:
     return ApiError(413, f"Файл больше {limit_mb} МБ", field=field)
 
 
-def _copy_limited(src: BinaryIO, dest: Path, limit_mb: int, field: str) -> None:
+def copy_limited(src: BinaryIO, dest: Path, limit_mb: int, field: str) -> None:
     limit, size = limit_mb * MB, 0
     with open(dest, "wb") as out:
         while chunk := src.read(CHUNK):
@@ -79,7 +80,7 @@ def _read_text_file(upload: UploadFile, field: str = "lyrics") -> str:
     return ultrastar.decode(data)[0]
 
 
-class _Staging:
+class Staging:
     """Вход задания собирается во временной папке песни, а в транзакции постановки
     переезжает в ``songs/<A>/<A - T>/jobs/<id>/in`` (paths.py). Не вышло — всё удаляется."""
 
@@ -129,7 +130,7 @@ class _Staging:
             raise
 
 
-def _queue_duplicate(ctx: AppContext, type_: str, *, key: str | None = None, song_id: str | None = None):
+def queue_duplicate(ctx: AppContext, type_: str, *, key: str | None = None, song_id: str | None = None):
     for job in ctx.jobs.list(1000):
         if job.state not in ACTIVE_STATES or job.type != type_:
             continue
@@ -154,7 +155,7 @@ def generate(request: Request,
     if not artist or not title:
         raise ApiError(400, "Укажите исполнителя и название", field="artist" if not artist else "title")
     p = parse_params(ctx, params)
-    _queue_duplicate(ctx, "generate", key=song_key(artist, title))
+    queue_duplicate(ctx, "generate", key=song_key(artist, title))
 
     source = ctx.find_song(song_id) if song_id else None
     existing = ctx.find_by_name(artist, title)
@@ -172,17 +173,17 @@ def generate(request: Request,
         raise ApiError(400, "Для чужой песни нужен текст", field="lyrics")
     if not has_audio and source is None:
         raise ApiError(400, "Загрузите mp3-файл", field="audio")
-    if has_audio and not _is_mp3(audio.file.read(4)):
+    if has_audio and not is_mp3(audio.file.read(4)):
         raise ApiError(400, "Это не mp3-файл", field="audio")
     cover_ext = None
     if cover is not None and cover.filename:
-        cover_ext = _cover_ext(cover.file.read(16))
+        cover_ext = cover_ext_of(cover.file.read(16))
         if cover_ext is None:
             raise ApiError(400, "Обложка должна быть в формате jpg, png или webp", field="cover")
 
     rel_dir = naming.song_dir(artist, title)
     storage = ctx.storage()
-    staging = _Staging(ctx, rel_dir)
+    staging = Staging(ctx, rel_dir)
     try:
         if own_src is not None and not has_audio:
             staging.copy_from(own_src)  # своя песня: mp3 и обложка из source/
@@ -190,13 +191,13 @@ def generate(request: Request,
                 raise ApiError(409, "Исходный mp3 не найден — загрузите файл")
         elif has_audio:
             audio.file.seek(0)
-            _copy_limited(audio.file, staging.path("audio", INPUT_AUDIO), ctx.max_upload_mb, "audio")
+            copy_limited(audio.file, staging.path("audio", INPUT_AUDIO), ctx.max_upload_mb, "audio")
         else:
             if not source.audio:
                 raise ApiError(409, "Исходный mp3 не найден — загрузите файл")
             try:
                 with storage.open_read(f"{source.rel_dir}/{source.audio}") as f:
-                    _copy_limited(f, staging.path("audio", INPUT_AUDIO), MAX_FOLDER_AUDIO_MB, "audio")
+                    copy_limited(f, staging.path("audio", INPUT_AUDIO), MAX_FOLDER_AUDIO_MB, "audio")
             except StorageError as e:
                 ctx.mark_output_error(e)
                 raise ApiError(503, f"Папка результата недоступна: {e}") from None
@@ -210,7 +211,7 @@ def generate(request: Request,
         if cover_ext:
             staging.drop("cover")
             cover.file.seek(0)
-            _copy_limited(cover.file, staging.path("cover", f"{INPUT_COVER_STEM}.{cover_ext}"), MAX_COVER_MB, "cover")
+            copy_limited(cover.file, staging.path("cover", f"{INPUT_COVER_STEM}.{cover_ext}"), MAX_COVER_MB, "cover")
     except BaseException:
         staging.discard()
         raise
@@ -231,14 +232,13 @@ class InstrumentalIn(BaseModel):
 def instrumental(body: InstrumentalIn, request: Request):
     ctx = ctx_of(request)
     item = ctx.find_song(body.song_id)
-    _queue_duplicate(ctx, "instrumental", song_id=item.song_id)
+    queue_duplicate(ctx, "instrumental", song_id=item.song_id)
     if not item.audio:
         raise ApiError(409, "У песни нет аудиофайла (#AUDIO или #MP3)")
     if item.instrumental and not body.replace:
         raise ApiError(409, "Минусовка уже есть — подтвердите пересоздание")
-    params = {"rel_dir": item.rel_dir, "txt_name": item.txt_name, "audio": item.audio,
-              "instrumental": item.instrumental, "replace": bool(item.instrumental),
-              "target_id": item.target_id}
+    params = instrumental_params(rel_dir=item.rel_dir, txt_name=item.txt_name, audio=item.audio,
+                                 instrumental=item.instrumental, target_id=item.target_id)
     job = ctx.jobs.enqueue("instrumental",
                            {"artist": item.artist, "title": item.title, "song_id": item.song_id}, params)
     return job.to_dict()
@@ -271,7 +271,7 @@ def restart(job_id: int, request: Request):
         raise ApiError(409, "Перезапустить можно только завершённое задание")
     if job.type != "generate":
         return ctx.jobs.enqueue(job.type, job, job.params, parent_id=job.id).to_dict()
-    _queue_duplicate(ctx, "generate", key=song_key(job.artist, job.title))
+    queue_duplicate(ctx, "generate", key=song_key(job.artist, job.title))
     rel_dir = job.params.get("rel_dir") or naming.song_dir(job.artist, job.title)
     prev_in = (job.params.get("inputs") or {}).get("dir")
     prev_in = ctx.paths.abs(prev_in) if prev_in else None
@@ -282,7 +282,7 @@ def restart(job_id: int, request: Request):
         origin = source  # после успеха воркер перенёс вход в source/
     else:
         raise ApiError(409, "Исходники задания не сохранились — создайте задание заново")
-    staging = _Staging(ctx, rel_dir)
+    staging = Staging(ctx, rel_dir)
     try:
         staging.copy_from(origin)
     except BaseException:

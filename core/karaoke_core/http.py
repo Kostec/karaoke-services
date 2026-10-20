@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import http.client
 import http.cookiejar
+import logging
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +21,9 @@ from pathlib import Path
 
 USER_AGENT = "karaoke-services"
 CHUNK = 64 * 1024
+RETRY_DELAY_S = 1.0  # пауза перед единственным повтором GET/скачивания после сбоя связи
+
+log = logging.getLogger("karaoke.http")
 
 
 @dataclass(frozen=True)
@@ -29,11 +35,36 @@ class HttpResponse:
 
 
 class HttpError(Exception):
-    """Ошибка запроса; ``status`` — код HTTP или ``None`` (сеть, таймаут, размер)."""
+    """Ошибка запроса; ``status`` — код HTTP или ``None`` (сеть, таймаут, размер);
+    ``too_large`` — ответ больше ``max_bytes``."""
 
-    def __init__(self, message: str, status: int | None = None):
+    def __init__(self, message: str, status: int | None = None, *, too_large: bool = False):
         super().__init__(message)
         self.status = status
+        self.too_large = too_large
+
+    @property
+    def retryable(self) -> bool:
+        """Сбой связи или таймаут (не код HTTP и не размер) — идемпотентный запрос стоит повторить."""
+        return self.status is None and not self.too_large
+
+
+def _safe_url(url: str) -> str:
+    """Адрес для лога: схема, хост, порт и путь — без query и учётки."""
+    parts = urllib.parse.urlsplit(url)
+    try:
+        port = f":{parts.port}" if parts.port else ""
+    except ValueError:
+        port = ""
+    return f"{parts.scheme}://{parts.hostname or ''}{port}{parts.path}"
+
+
+def _network_error(message: str, url: str, exc: BaseException) -> HttpError:
+    """Ошибка связи для пользователя; настоящая причина (тип, адрес) — в лог, без тел и паролей."""
+    reason = getattr(exc, "reason", None)
+    cause = reason if isinstance(reason, BaseException) else exc
+    log.warning("HTTP %s: %s: %s", _safe_url(url), type(cause).__name__, cause)
+    return HttpError(message)
 
 
 def _host(url: str) -> str:
@@ -53,22 +84,39 @@ class Http:
     def request(self, method: str, url: str, *, params: dict | None = None,
                 data: dict | bytes | None = None, headers: dict | None = None,
                 timeout: float = 10, max_bytes: int = 5 * 2**20) -> HttpResponse:
-        with self._open(method, url, params, data, headers, timeout) as resp:
-            body = self._read(resp, url, max_bytes, sink=None)
-            return self._response(resp, body)
+        def once() -> HttpResponse:
+            with self._open(method, url, params, data, headers, timeout) as resp:
+                return self._response(resp, self._read(resp, url, max_bytes, sink=None))
+        return self._retry(once, url) if method.upper() in ("GET", "HEAD") else once()
 
     def download(self, url: str, dest: Path, *, max_bytes: int, timeout: float = 60) -> HttpResponse:
         """Скачать потоком в ``dest``; при ошибке недокачанный файл удаляется."""
         dest = Path(dest)
-        try:
-            with self._open("GET", url, None, None, None, timeout) as resp, open(dest, "wb") as f:
-                self._read(resp, url, max_bytes, sink=f)
-                return self._response(resp, b"")
-        except BaseException:
-            dest.unlink(missing_ok=True)
-            raise
+
+        def once() -> HttpResponse:
+            try:
+                with self._open("GET", url, None, None, None, timeout) as resp, open(dest, "wb") as f:
+                    self._read(resp, url, max_bytes, sink=f)
+                    return self._response(resp, b"")
+            except BaseException:
+                dest.unlink(missing_ok=True)
+                raise
+        return self._retry(once, url)
 
     # ------------------------------------------------------------------ внутреннее
+
+    @staticmethod
+    def _retry(fn, url: str) -> HttpResponse:
+        """Один повтор после сбоя связи или таймаута: DNS Docker Desktop изредка отвечает
+        «No address associated with hostname», CDN — обрывает chunked-ответ."""
+        try:
+            return fn()
+        except HttpError as e:
+            if not e.retryable:
+                raise
+            log.info("HTTP %s: повтор после ошибки связи", _safe_url(url))
+        time.sleep(RETRY_DELAY_S)
+        return fn()
 
     def _open(self, method, url, params, data, headers, timeout):
         if params:
@@ -83,18 +131,19 @@ class Http:
         except urllib.error.HTTPError as e:
             e.close()
             raise HttpError(f"Сервер {_host(url)} ответил ошибкой {e.code}", status=e.code) from None
-        except (TimeoutError, socket.timeout):
-            raise HttpError(f"Сервер {_host(url)} не ответил вовремя") from None
+        except (TimeoutError, socket.timeout) as e:
+            raise _network_error(f"Сервер {_host(url)} не ответил вовремя", url, e) from None
         except urllib.error.URLError as e:
             if isinstance(e.reason, (TimeoutError, socket.timeout)):
-                raise HttpError(f"Сервер {_host(url)} не ответил вовремя") from None
-            raise HttpError(f"Нет связи с сервером {_host(url)}") from None
-        except (OSError, ValueError):
-            raise HttpError(f"Нет связи с сервером {_host(url)}") from None
+                raise _network_error(f"Сервер {_host(url)} не ответил вовремя", url, e) from None
+            raise _network_error(f"Нет связи с сервером {_host(url)}", url, e) from None
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            raise _network_error(f"Нет связи с сервером {_host(url)}", url, e) from None
 
     @staticmethod
     def _read(resp, url: str, max_bytes: int, sink) -> bytes:
-        too_big = HttpError(f"Ответ сервера {_host(url)} слишком большой (больше {max_bytes} байт)")
+        too_big = HttpError(f"Ответ сервера {_host(url)} слишком большой (больше {max_bytes} байт)",
+                            too_large=True)
         length = resp.headers.get("Content-Length")
         if length and length.isdigit() and int(length) > max_bytes:
             raise too_big
@@ -108,10 +157,10 @@ class Http:
                     parts.append(chunk)
                 else:
                     sink.write(chunk)
-        except (TimeoutError, socket.timeout):
-            raise HttpError(f"Сервер {_host(url)} не ответил вовремя") from None
-        except OSError:
-            raise HttpError(f"Связь с сервером {_host(url)} прервалась") from None
+        except (TimeoutError, socket.timeout) as e:
+            raise _network_error(f"Сервер {_host(url)} не ответил вовремя", url, e) from None
+        except (OSError, http.client.HTTPException) as e:  # IncompleteRead — оборванный chunked-ответ
+            raise _network_error(f"Связь с сервером {_host(url)} прервалась", url, e) from None
         return b"".join(parts)
 
     @staticmethod

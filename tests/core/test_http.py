@@ -24,9 +24,17 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    flaky: dict[str, int] = {}
+
     def do_GET(self):
         u = urlparse(self.path)
-        if u.path == "/hello":
+        if u.path.startswith("/flaky"):
+            n = Handler.flaky[u.path] = Handler.flaky.get(u.path, 0) + 1
+            if n == 1:  # первый раз — оборвать соединение без ответа
+                self.close_connection = True
+                return
+            self._send(200, b"second")
+        elif u.path == "/hello":
             q = parse_qs(u.query)
             self._send(200, ("привет " + q.get("name", [""])[0]).encode(), {"X-Test": "Да".encode().decode("latin-1")})
         elif u.path == "/ua":
@@ -125,3 +133,26 @@ def test_download(base, tmp_path):
     with pytest.raises(HttpError):
         Http().download(f"{base}/big", tmp_path / "g.bin", max_bytes=100)
     assert not (tmp_path / "g.bin").exists(), "недокачанный файл удаляется"
+
+
+def test_get_and_download_retry_once_after_dropped_connection(base, tmp_path):
+    assert Http().request("GET", f"{base}/flaky-get").body == b"second"
+    Http().download(f"{base}/flaky-dl", tmp_path / "f", max_bytes=100)
+    assert (tmp_path / "f").read_bytes() == b"second"
+    assert Handler.flaky == {"/flaky-get": 2, "/flaky-dl": 2}
+
+
+def test_too_large_flag(base):
+    with pytest.raises(HttpError) as e:
+        Http().request("GET", f"{base}/big", max_bytes=10)
+    assert e.value.too_large is True
+    with pytest.raises(HttpError) as e:
+        Http().request("GET", f"{base}/missing")
+    assert e.value.too_large is False
+
+
+def test_network_error_cause_is_logged(caplog):
+    with caplog.at_level("WARNING"), pytest.raises(HttpError):
+        Http().request("GET", "http://127.0.0.1:1/never")
+    text = caplog.text
+    assert "ConnectionRefusedError" in text and "127.0.0.1" in text

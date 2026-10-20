@@ -102,6 +102,25 @@ def test_restart_and_regen_take_lrc_from_previous_input(env, client):
     assert (env.data / regen["params"]["inputs"]["lrc"]).read_text("utf-8") == other
 
 
+def test_regen_empty_lrc_part_drops_saved_lrc_absent_part_keeps_it(env, client):
+    from karaoke_core.db import Songs
+    env.put_song("Кино/Кино - Группа крови", env.SONG_TXT, "Кино - Группа крови")
+    Songs(connect(env.data / "karaoke.sqlite")).upsert(
+        artist="Кино", title="Группа крови", rel_dir="Кино/Кино - Группа крови", params={})
+    src = env.data / "songs" / "Кино" / "Кино - Группа крови" / "source"
+    src.mkdir(parents=True)
+    (src / "input.mp3").write_bytes(MP3)
+    (src / "lyrics.lrc").write_text(LRC, "utf-8")
+    client.post("/api/songs/rescan")
+    sid = client.get("/api/songs").json()["items"][0]["song_id"]
+    text = "Тёплое место\nНо улицы ждут"
+    dropped = _gen(client, audio=None, lyrics=text, files=_lrc(""), song_id=sid).json()
+    assert "lrc" not in dropped["params"]["inputs"]
+    client.post(f"/api/jobs/{dropped['id']}/cancel")
+    kept = _gen(client, audio=None, lyrics=text, song_id=sid).json()
+    assert (env.data / kept["params"]["inputs"]["lrc"]).read_text("utf-8") == LRC
+
+
 def test_generate_validation_errors(env, client):
     r = _gen(client, artist=" ")
     assert r.status_code == 400 and r.json()["detail"] == "Укажите исполнителя и название"

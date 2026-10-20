@@ -58,3 +58,14 @@ def test_lrc_timing_off_ignores_lrc(world, tmp_path, monkeypatch):
     argv, log = run(world, tmp_path, monkeypatch, lyrics=lyrics, lrc=LRC_LINES, lrc_timing=False)
     assert "--lyrics_timing" not in argv
     assert NOT_USED not in log
+
+
+def test_unreadable_lrc_logs_real_cause(world, tmp_path, monkeypatch):
+    lyrics = "В лесу родилась ёлочка\nВ лесу она росла\nЗимой и летом стройная"
+    monkeypatch.setenv("FAKE_US_ARGS", str(tmp_path / "args.json"))
+    job = world.enqueue_generate(lyrics=lyrics, lrc=LRC_LINES, lrc_timing=True)
+    world.paths.abs(world.jobs.get(job.id).params["inputs"]["lrc"]).write_bytes(b"[00:01.00]\xff\xfe\x80")
+    world.run()
+    log = world.log(job.id)
+    assert world.jobs.get(job.id).state == "done"
+    assert NOT_USED not in log and "lyrics.lrc" in log and "UnicodeDecodeError" in log

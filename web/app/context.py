@@ -219,6 +219,14 @@ class AppContext:
                 return item
         return None
 
+    def existing_song_id(self, artist: str, title: str) -> str | None:
+        """id песни с таким исполнителем и названием в папке результата; недоступна — ``None``."""
+        try:
+            item = self.find_by_name(artist, title)
+        except StorageError:
+            return None
+        return item.song_id if item else None
+
     def song_dict(self, item: LibraryItem) -> dict:
         return {**item.to_dict(), "own": bool(item.own_song_id)}
 

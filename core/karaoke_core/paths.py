@@ -21,11 +21,12 @@ from typing import Mapping
 
 from . import naming
 
-__all__ = ["DataPaths", "INPUT_AUDIO", "INPUT_LYRICS", "INPUT_COVER_STEM", "INPUT_PARAMS"]
+__all__ = ["DataPaths", "INPUT_AUDIO", "INPUT_LYRICS", "INPUT_LRC", "INPUT_COVER_STEM", "INPUT_PARAMS"]
 
 # Имена файлов входа задания и исходников (одинаковые в in/ и source/).
 INPUT_AUDIO = "input.mp3"
 INPUT_LYRICS = "lyrics.txt"
+INPUT_LRC = "lyrics.lrc"  # LRC с метками строк рядом с lyrics.txt (UTF-8, его читает --lyrics_timing)
 INPUT_COVER_STEM = "cover"  # cover.<jpg|png|webp>
 INPUT_PARAMS = "params.json"
 

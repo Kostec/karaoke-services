@@ -258,7 +258,7 @@ def test_inspect_zip_by_url(ic, http):
 def test_inspect_url_too_big_is_413(ic, http):
     from karaoke_core.http import HttpError
     http.route("GET", "https://packs.example/big.zip",
-               HttpError("Ответ сервера packs.example слишком большой (больше 1 байт)"))
+               HttpError("Ответ сервера packs.example слишком большой (больше 1 байт)", too_large=True))
     r = ic.post("/api/import/inspect", data={"source": "url", "url": "https://packs.example/big.zip"})
     assert r.status_code == 413 and r.json()["field"] == "url"
 
@@ -361,3 +361,28 @@ def test_import_job_rejects_paths_outside_files(env, ic, key, value):
     assert r.status_code == 400 and r.json()["detail"] == "Недопустимый путь в загрузке"
     assert not ic.get("/api/jobs").json()
     assert not any(p.is_file() for p in (env.data / "songs").rglob("*"))
+
+
+# ------------------------------------------------------------------ россыпь и размер
+
+
+def test_loose_files_with_same_name_are_400(ic):
+    song = txt("Ария", "Ангел", audio="a.mp3")
+    r = inspect_files(ic, [("one/Ария - Ангел.txt", song), ("two/Ария - Ангел.txt", song), ("a.mp3", MP3)])
+    assert r.status_code == 400 and r.json()["field"] == "files"
+    assert "Ария - Ангел.txt" in r.json()["detail"]
+
+
+def test_loose_files_size_error_speaks_of_files(ic):
+    ic.app.state.ctx.env["MAX_IMPORT_MB"] = "1"
+    song = txt("Ария", "Ангел", audio="a.mp3")
+    r = inspect_files(ic, [("Ария - Ангел.txt", song), ("a.mp3", MP3 + bytes(1024 * 1024))])
+    assert r.status_code == 413 and r.json()["field"] == "files"
+    assert "Архив" not in r.json()["detail"] and "Файлы" in r.json()["detail"]
+
+
+def test_url_download_over_limit_is_413_via_fake_download(ic, http):
+    ic.app.state.ctx.env["MAX_IMPORT_MB"] = "1"
+    http.route("GET", "https://packs.example/huge.zip", body=b"PK\x03\x04" + bytes(1024 * 1024))
+    r = ic.post("/api/import/inspect", data={"source": "url", "url": "https://packs.example/huge.zip"})
+    assert r.status_code == 413 and r.json()["field"] == "url"
