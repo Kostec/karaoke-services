@@ -1,10 +1,18 @@
 // Импорт готовых песен: чистая логика без DOM (выбор звука, предупреждения, поля формы).
-// Тексты совпадают с web/app/api_import.py.
+// Тексты сервера фронт показывает из ответа (warnings, detail); свои — только для того, чего
+// сервер не знает. NEED_AUDIO и WARN_SYNC совпадают с web/app/api_import.py: блокировка кнопки
+// до постановки и предупреждение о своём звуке; EXPIRED — запасной, если в 410 нет detail.
 
 export const NEED_AUDIO = 'Нужен звук: загрузите mp3 или вставьте ссылку на YouTube';
 export const WARN_SYNC = 'Ноты сделаны под конкретную запись — с другой версией слова могут разъехаться';
 export const EXPIRED = 'Загрузка устарела, загрузите заново';
 export const DUP_TEXT = 'Уже есть в папке результата';
+
+/** Первая непустая ссылка песни после trim (или ''). */
+function songLink(song) {
+  const found = (song.youtube || []).find((u) => u && u.trim());
+  return found ? found.trim() : '';
+}
 
 /**
  * Откуда возьмётся звук (R07i): свой mp3 → аудио из архива → своя ссылка YouTube → ссылка из песни.
@@ -16,19 +24,18 @@ export function pickAudioSource(song, form = {}) {
   if (song.audio) return { kind: 'archive', name: song.audio };
   const own = (form.youtube || '').trim();
   if (own) return { kind: 'youtube', url: own };
-  const found = (song.youtube || []).find((u) => u && u.trim());
-  return found ? { kind: 'youtube', url: found.trim() } : { kind: 'none' };
+  const found = songLink(song);
+  return found ? { kind: 'youtube', url: found } : { kind: 'none' };
 }
 
-/** Предупреждения карточки: про звук считаются заново по выбору, прочие от сервера — как есть. */
+/**
+ * Предупреждения карточки. Звук песни как в разборе (архив, её ссылка, звука нет) — warnings
+ * сервера как есть. Свой mp3 или своя ссылка — этого сервер не видел, и его warnings (они про звук
+ * песни, api_import._warnings) устарели: вместо них — своё WARN_SYNC.
+ */
 export function importWarnings(song, audio) {
-  const out = [];
-  if (audio.kind === 'none') out.push(NEED_AUDIO);
-  else if (audio.kind !== 'archive') out.push(WARN_SYNC);
-  for (const w of song.warnings || []) {
-    if (w !== NEED_AUDIO && w !== WARN_SYNC && !out.includes(w)) out.push(w);
-  }
-  return out;
+  const own = audio.kind === 'upload' || (audio.kind === 'youtube' && audio.url !== songLink(song));
+  return own ? [WARN_SYNC] : [...(song.warnings || [])];
 }
 
 /** Начальное состояние карточки: дубли не отмечены (G01.1, R06i.1); минусовка выключена,
@@ -38,7 +45,7 @@ export function initialCardState(song) {
     selected: !song.existing_song_id,
     artist: song.artist || '',
     title: song.title || '',
-    youtube: (song.youtube || [])[0] || '',
+    youtube: songLink(song), // то же правило, что у pickAudioSource
     instrumental: !song.has_instrumental,
     replace: false,
     existing: song.existing_song_id || null,
@@ -69,6 +76,13 @@ export function importBlocker(items) {
 export function importOutcome(e) {
   const data = (e && e.data) || {};
   if (e?.status === 409 && data.song_id) return { kind: 'duplicate', songId: data.song_id, text: DUP_TEXT };
-  if (e?.status === 410) return { kind: 'expired', text: EXPIRED };
+  if (e?.status === 410) return { kind: 'expired', text: (e && e.detail) || EXPIRED };
   return { kind: 'error', text: (e && (e.detail || e.message)) || 'Ошибка', field: data.field || null };
+}
+
+/** Текст закрытого пака после 410: сколько песен из него уже поставлено в очередь. */
+export function expiredMessage(text, queued) {
+  const base = String(text || EXPIRED).trim();
+  if (!queued) return base;
+  return `${base.replace(/[.!]+$/, '')}. Уже поставлено в очередь: ${queued} — их загружать заново не нужно`;
 }

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   stripLrc, usableHits, previewLines, fmtSeconds, searchBlocker, needsReplaceConfirm,
   lrcPlainText, lrcTimingDefault, lrcAfterEdit, DURATION_MISMATCH,
+  lrcFormPart, lrcForNewText, LRC_SAVED,
 } from '../../web/static/js/lyrics-search.js';
 
 test('lrcPlainText: строка с N метками — N раз, по порядку времени (как --lyrics_timing форка)', () => {
@@ -25,6 +26,37 @@ test('lrcAfterEdit: правка текста LRC держит, очистка �
   assert.equal(lrcAfterEdit(held, 'Раз, исправлено'), held);
   assert.equal(lrcAfterEdit(held, '  \n '), null);
   assert.equal(lrcAfterEdit(null, 'текст'), null);
+});
+
+test('lrcFormPart: LRC из поиска — передать, сохранённый или нетронутый — не слать, явный сброс — пустая часть', async () => {
+  const { generateForm } = await import('../../web/static/js/api.js');
+  const part = (held) => generateForm({ artist: 'A', title: 'T', lyrics: 'Раз', lyrics_lrc: lrcFormPart(held) });
+  // перегенерация, текст не трогали: сервер возьмёт source/lyrics.lrc сам — поля нет
+  assert.equal(part(null).has('lyrics_lrc'), false);
+  assert.equal(part(LRC_SAVED).has('lyrics_lrc'), false);
+  // правка без очистки не сбрасывает сохранённый
+  assert.equal(lrcFormPart(lrcAfterEdit(LRC_SAVED, 'Раз, исправлено', true)), undefined);
+  assert.equal(lrcFormPart(lrcAfterEdit(null, 'Раз, исправлено', true)), undefined);
+  // явная очистка на перегенерации — пустая часть, даже если потом вписали новый текст
+  const cleared = lrcAfterEdit(LRC_SAVED, ' ', true);
+  assert.equal(lrcFormPart(cleared), '');
+  assert.equal(lrcFormPart(lrcAfterEdit(cleared, 'Новый текст', true)), '');
+  assert.equal(lrcFormPart(lrcAfterEdit(null, '', true)), '');
+  // новая песня: сохранённого нет — очистка просто ничего не шлёт
+  assert.equal(lrcFormPart(lrcAfterEdit(null, '', false)), undefined);
+  // LRC из поиска — передаётся как есть
+  assert.equal(lrcFormPart({ lrc: '[00:01.00]Раз', duration: 200 }), '[00:01.00]Раз');
+  const sent = part({ lrc: '[00:01.00]Раз', duration: 200 }).get('lyrics_lrc');
+  assert.equal(await sent.text(), '[00:01.00]Раз');
+});
+
+test('lrcForNewText: вставка или файл заменяют текст — LRC новый, иначе на перегенерации сохранённый сбросить', () => {
+  assert.deepEqual(lrcForNewText({ synced: '[00:01.00]Раз', duration: 200 }, false), { lrc: '[00:01.00]Раз', duration: 200 });
+  assert.deepEqual(lrcForNewText({ synced: '[00:01.00]Раз', duration: 200 }, true), { lrc: '[00:01.00]Раз', duration: 200 });
+  assert.equal(lrcForNewText({ synced: null }, false), null);
+  assert.equal(lrcForNewText(null, false), null); // файл текста на новой песне
+  assert.equal(lrcFormPart(lrcForNewText({ synced: '  ' }, true)), '');
+  assert.equal(lrcFormPart(lrcForNewText(null, true)), ''); // файл текста на перегенерации
 });
 
 test('usableHits: synced передаётся дальше', () => {

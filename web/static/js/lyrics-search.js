@@ -1,10 +1,15 @@
 // Поиск текста песни (LRCLIB через /api/lyrics/search): чистая логика без DOM — ради node-тестов.
 // Диалог — в new-song.js.
+//
+// Два разборщика LRC, и это намеренно:
+//   stripLrc — для показа: превращает text варианта в читаемый текст (метки срезаны, строки как в файле);
+//   parseLrc/lrcPlainText — паритет с lrc_timing.parse_lrc форка UltraSinger (--lyrics_timing):
+//     строка с N метками разворачивается N раз, [offset] учитывается. Текст, который уходит
+//     в поле вместе с LRC, строится только им — иначе строки не совпадут с метками.
 
 export const MAX_HITS = 10;
 export const NEED_FIELDS = 'Укажите исполнителя и название';
 export const NOTHING_FOUND = 'Ничего не нашлось — проверьте исполнителя и название';
-export const UNAVAILABLE = 'Сервис текстов недоступен, попробуйте позже';
 export const REPLACE_QUESTION = 'Заменить текст в поле?';
 
 const TIME_TAG = /\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]/g;
@@ -104,9 +109,36 @@ export function lrcTimingDefault(lrcDuration, mp3Duration) {
   return Math.abs(a - b) <= MAX_DURATION_DIFF_S ? { checked: true, hint: '' } : { checked: false, hint: DURATION_MISMATCH };
 }
 
-/** LRC, который держит форма, после правки поля: очищено — сброс, иначе тот же. */
-export function lrcAfterEdit(held, text) {
-  return held && String(text ?? '').trim() ? held : null;
+// LRC, который держит форма (held):
+//   {lrc: string, duration} — вариант из поиска, уходит файловой частью lyrics_lrc;
+//   LRC_SAVED — перегенерация с сохранённым source/lyrics.lrc (показать галочку, поле не слать);
+//   LRC_DROP — текст явно очищен или заменён на перегенерации: сохранённый удалить (пустая часть);
+//   null — ничего: поле не слать. Сервер (api_jobs.generate): нет части — берёт сохранённый,
+//   пустая часть — удаляет, пустой текст — удаляет сам.
+export const LRC_SAVED = Object.freeze({ lrc: null, duration: null });
+export const LRC_DROP = Object.freeze({ lrc: '', duration: null });
+
+/** LRC после правки поля: очищено — сброс (на перегенерации — явный LRC_DROP), иначе тот же. */
+export function lrcAfterEdit(held, text, regen = false) {
+  if (String(text ?? '').trim()) return held;
+  return regen || held === LRC_DROP ? LRC_DROP : null;
+}
+
+/** LRC, когда текст поля заменён целиком (вставка варианта, файл): hit — {synced, duration} или null. */
+export function lrcForNewText(hit, regen = false) {
+  const synced = hit && typeof hit.synced === 'string' && hit.synced.trim() ? hit.synced : null;
+  if (synced) return { lrc: synced, duration: hit.duration ?? null };
+  return regen ? LRC_DROP : null;
+}
+
+/** Часть lyrics_lrc для generateForm: строка — передать ('' — сбросить сохранённый), undefined — не трогать. */
+export function lrcFormPart(held) {
+  return held && typeof held.lrc === 'string' ? held.lrc : undefined;
+}
+
+/** Показывать ли галочку «Использовать тайминги строк». */
+export function lrcShown(held) {
+  return !!held && held !== LRC_DROP;
 }
 
 /** Спрашивать ли «Заменить текст в поле?» перед вставкой. */

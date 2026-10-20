@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   pickAudioSource, importWarnings, NEED_AUDIO, WARN_SYNC,
-  initialCardState, importFields, importBlocker, importOutcome, EXPIRED, DUP_TEXT,
+  initialCardState, importFields, importBlocker, importOutcome, EXPIRED, DUP_TEXT, expiredMessage,
 } from '../../web/static/js/import-logic.js';
 
 const song = (o = {}) => ({
@@ -33,9 +33,9 @@ test('pickAudioSource: без файла, архива и ссылок — зв�
   assert.deepEqual(pickAudioSource(song(), { youtube: '   ' }), { kind: 'none' });
 });
 
-test('importWarnings: нет звука — «Нужен звук…»', () => {
+test('importWarnings: нет звука — «Нужен звук…» приходит от сервера и показывается как есть', () => {
   assert.equal(NEED_AUDIO, 'Нужен звук: загрузите mp3 или вставьте ссылку на YouTube');
-  assert.deepEqual(importWarnings(song(), { kind: 'none' }), [NEED_AUDIO]);
+  assert.deepEqual(importWarnings(song({ warnings: [NEED_AUDIO] }), { kind: 'none' }), [NEED_AUDIO]);
 });
 
 test('importWarnings: звук не из архива — предупреждение о рассинхроне', () => {
@@ -45,11 +45,22 @@ test('importWarnings: звук не из архива — предупрежде
   assert.deepEqual(importWarnings(song({ audio: 'a.mp3' }), { kind: 'archive', name: 'a.mp3' }), []);
 });
 
-test('importWarnings: прочие предупреждения сервера сохраняются, его звуковые — не дублируются', () => {
-  const s = song({ warnings: [NEED_AUDIO, 'Дуэт: вторая партия не поддерживается', WARN_SYNC] });
-  assert.deepEqual(importWarnings(s, { kind: 'archive', name: 'a.mp3' }), ['Дуэт: вторая партия не поддерживается']);
-  assert.deepEqual(importWarnings(s, { kind: 'youtube', url: 'u' }),
-    [WARN_SYNC, 'Дуэт: вторая партия не поддерживается']);
+test('importWarnings: звук песни как в разборе — предупреждения сервера как есть, без фильтра', () => {
+  const other = 'Любое предупреждение сервера';
+  const yt = song({ youtube: ['https://www.youtube.com/watch?v=a'], warnings: ['про ссылку — от сервера', other] });
+  assert.deepEqual(importWarnings(yt, pickAudioSource(yt, { youtube: '' })), ['про ссылку — от сервера', other]);
+  assert.deepEqual(importWarnings(yt, pickAudioSource(yt, { youtube: ' https://www.youtube.com/watch?v=a ' })),
+    ['про ссылку — от сервера', other]);
+  const mute = song({ warnings: ['нет звука — от сервера'] });
+  assert.deepEqual(importWarnings(mute, pickAudioSource(mute, {})), ['нет звука — от сервера']);
+  const arch = song({ audio: 'a.mp3', warnings: [other] });
+  assert.deepEqual(importWarnings(arch, pickAudioSource(arch, {})), [other]);
+});
+
+test('importWarnings: свой звук сервер не видел — только своё предупреждение о рассинхроне', () => {
+  const mute = song({ warnings: ['нет звука — от сервера'] });
+  assert.deepEqual(importWarnings(mute, pickAudioSource(mute, { youtube: 'https://youtu.be/x' })), [WARN_SYNC]);
+  assert.deepEqual(importWarnings(mute, pickAudioSource(mute, { file: { name: 'my.mp3' } })), [WARN_SYNC]);
 });
 
 test('initialCardState: дубли не отмечены, минусовка выключена при своём [Instrumental]', () => {
@@ -62,6 +73,10 @@ test('initialCardState: дубли не отмечены, минусовка в�
   assert.equal(dup.existing, 'sid');
   assert.equal(dup.instrumental, false);
   assert.equal(dup.youtube, '');
+  // ссылка в поле — по тому же правилу, что pickAudioSource: первая непустая после trim
+  const links = song({ youtube: ['  ', ' https://www.youtube.com/watch?v=b ', 'https://www.youtube.com/watch?v=c'] });
+  assert.equal(initialCardState(links).youtube, 'https://www.youtube.com/watch?v=b');
+  assert.deepEqual(pickAudioSource(links, {}), { kind: 'youtube', url: initialCardState(links).youtube });
 });
 
 test('importFields: что уходит в POST /api/jobs/import', () => {
@@ -90,11 +105,20 @@ test('importOutcome: 409 с song_id — дубль, 410 — загрузка у�
   assert.equal(DUP_TEXT, 'Уже есть в папке результата');
   assert.deepEqual(importOutcome({ status: 409, detail: 'Такая песня уже есть в папке результата', data: { song_id: 'x' } }),
     { kind: 'duplicate', songId: 'x', text: DUP_TEXT });
-  assert.deepEqual(importOutcome({ status: 410, detail: 'что угодно', data: {} }), { kind: 'expired', text: EXPIRED });
+  assert.deepEqual(importOutcome({ status: 410, detail: 'Текст сервера', data: {} }), { kind: 'expired', text: 'Текст сервера' });
+  assert.deepEqual(importOutcome({ status: 410, data: {} }), { kind: 'expired', text: EXPIRED });
   assert.deepEqual(importOutcome({ status: 409, detail: 'Эта песня уже в очереди', data: {} }),
     { kind: 'error', text: 'Эта песня уже в очереди', field: null });
   assert.deepEqual(importOutcome({ status: 400, detail: 'Это не mp3-файл', data: { field: 'audio' } }),
     { kind: 'error', text: 'Это не mp3-файл', field: 'audio' });
+});
+
+test('expiredMessage: прерванный импорт пака называет, сколько песен уже в очереди', () => {
+  assert.equal(expiredMessage('Загрузка устарела, загрузите заново', 0), 'Загрузка устарела, загрузите заново');
+  assert.equal(expiredMessage('Загрузка устарела, загрузите заново', 2),
+    'Загрузка устарела, загрузите заново. Уже поставлено в очередь: 2 — их загружать заново не нужно');
+  assert.equal(expiredMessage('Загрузка устарела.', 1),
+    'Загрузка устарела. Уже поставлено в очередь: 1 — их загружать заново не нужно');
 });
 
 test('importForm / inspectForm: multipart как ждёт сервер', async () => {
