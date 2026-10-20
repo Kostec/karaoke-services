@@ -5,6 +5,7 @@
     <DATA_DIR>/songs/<Исполнитель>/<Исполнитель - Название>/source/      исходники для перегенерации
     <DATA_DIR>/songs/<Исполнитель>/<Исполнитель - Название>/jobs/<id>/in/ вход задания
     <DATA_DIR>/trash/
+    <DATA_DIR>/imports/<token>/                                         распаковка импорта (час)
 
 Папка песни — :func:`karaoke_core.naming.song_dir`. Пути в ``params`` заданий —
 относительные от ``DATA_DIR`` (:meth:`DataPaths.rel`).
@@ -13,6 +14,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 from pathlib import Path, PurePosixPath
 from typing import Mapping
@@ -27,6 +29,8 @@ INPUT_LYRICS = "lyrics.txt"
 INPUT_COVER_STEM = "cover"  # cover.<jpg|png|webp>
 INPUT_PARAMS = "params.json"
 
+_IMPORT_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
 
 class DataPaths:
     def __init__(self, root: str | Path | None = None, env: Mapping[str, str] | None = None):
@@ -40,6 +44,16 @@ class DataPaths:
     @property
     def trash(self) -> Path:
         return self.root / "trash"
+
+    @property
+    def imports_root(self) -> Path:
+        """Временные распаковки импорта (сборники, файлы, usdb) — ``imports/<token>/``."""
+        return self.root / "imports"
+
+    def import_dir(self, token: str) -> Path:
+        if not _IMPORT_ID_RE.fullmatch(token or ""):
+            raise ValueError(f"Недопустимый токен импорта: {token!r}")
+        return self.imports_root / token
 
     def log(self, job_id: int) -> Path:
         return self.root / "logs" / f"{job_id}.log"
