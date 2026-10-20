@@ -159,7 +159,9 @@ class UsdbClient:
 # Сущности (``&lt;``, ``&amp;``) раскрываются в ячейке после снятия тегов — иначе название
 # вида «Song <Live>» приняли бы за тег. Атрибуты строки ищутся по отдельности, в любом порядке.
 
-_TR_RE = re.compile(r"<tr\b([^>]*)>(.*?)</tr>", re.S | re.I)
+# Строка таблицы — от своего <tr до следующего <tr или </table>: на настоящем usdb у строки
+# заголовка нет </tr>, и разбор по парам <tr>…</tr> склеивал её с первой песней.
+_TR_RE = re.compile(r"<tr\b([^>]*)>(.*?)(?=<tr\b|</table>|\Z)", re.S | re.I)
 _SONGID_RE = re.compile(r"""\bdata-songid\s*=\s*["']?(\d+)""", re.I)
 _LIST_CLASS_RE = re.compile(r"""\bclass\s*=\s*["']?list_tr\d""", re.I)
 _TD_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.S)

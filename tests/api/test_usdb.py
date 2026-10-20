@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from fakes_http import FakeHttp, response
 
-from app.usdb import UsdbAuthError, UsdbClient, UsdbNotFound, UsdbUnavailable
+from app.usdb import UsdbAuthError, UsdbClient, UsdbNotFound, UsdbUnavailable, parse_list_page
 from karaoke_core.http import HttpError
 
 FIX = Path(__file__).resolve().parent / "usdb_fixtures"
@@ -74,6 +74,18 @@ def test_search_request_and_parsed_rows(http):
 
     client.search("", "", "", 50)  # второй запрос — без повторного входа
     assert len(logins(http)) == 1 and http.calls(LIST)[-1].data["start"] == "50"
+
+
+def test_real_list_header_without_closing_tr_keeps_first_song():
+    # на настоящем usdb у строки заголовка нет </tr> — первая песня не должна теряться
+    hits, rows = parse_list_page((FIX / "list_real.html").read_text("utf-8"))
+    assert rows == 2
+    assert [(h.id, h.artist, h.language, h.rating, h.views) for h in hits] == [
+        (4118, "Metallica", "English", 5.0, 4385),
+        (3899, "Metallica with Michael Kamen conducting the San Francisco Symphony Orchestra",
+         "English", 5.0, 1305),
+    ]
+    assert {h.title for h in hits} == {"Nothing Else Matters"}
 
 
 def test_search_has_more_when_page_is_full(http):
