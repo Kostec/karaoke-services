@@ -263,11 +263,15 @@ class OutputTarget:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "OutputTarget":
         env = os.environ if env is None else env
+        kind = (env.get("OUTPUT_KIND") or "smb").strip().lower()
+        # Локальная цель из .env — корень /output (его задаёт LOCAL_OUTPUT_ROOT);
+        # подпапка внутри него выбирается в вебе.
+        path = (env.get("OUTPUT_SMB_PATH") or "").strip("/\\") if kind == "smb" else ""
         return cls(
-            kind=(env.get("OUTPUT_KIND") or "smb").strip().lower(),
+            kind=kind,
             host=env.get("OUTPUT_SMB_HOST", "192.168.0.129"),
             share=env.get("OUTPUT_SMB_SHARE", "karaoke"),
-            path=(env.get("OUTPUT_SMB_PATH") or env.get("OUTPUT_LOCAL_PATH") or "").strip("/\\"),
+            path=path,
             user=env.get("OUTPUT_SMB_USER", ""),
             password=env.get("OUTPUT_SMB_PASSWORD") or None,
         )

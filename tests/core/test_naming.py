@@ -43,3 +43,22 @@ def test_normalize_artist_ignores_case_yo_punctuation_spaces():
 def test_normalize_artist_distinguishes_different_artists():
     assert naming.normalize_artist("Кино") != naming.normalize_artist("Kino")
     assert naming.normalize_artist("Ария") != naming.normalize_artist("Алиса")
+
+
+def test_song_dir_uses_same_artist_string_on_both_levels():
+    for artist in ("Bros.", "Bros. ", "AC/DC", "Ария...", " Би-2 "):
+        artist_level, song_level = naming.song_dir(artist, "T").split("/")
+        assert song_level.startswith(artist_level + " - "), (artist, artist_level, song_level)
+    assert naming.song_dir("Bros.", "T") == "Bros/Bros - T"
+
+
+def test_safe_name_replaces_all_unicode_control_characters():
+    assert naming.safe_name("a\x80b\x85c\x9fd") == "a_b_c_d"
+
+
+def test_song_file_names_come_from_one_place():
+    assert naming.song_file("Bros.", "T", naming.SUFFIX_INSTRUMENTAL) == "Bros - T [Instrumental].mp3"
+    assert naming.song_file("Bros.", "T", naming.SUFFIX_VOCALS) == "Bros - T [Vocals].mp3"
+    assert naming.song_file("Bros.", "T", naming.SUFFIX_AUDIO) == "Bros - T.mp3"
+    assert naming.song_file("Bros.", "T", naming.cover_suffix(".JPEG")) == "Bros - T [CO].jpg"
+    assert naming.song_file("Bros.", "T", naming.cover_suffix(".png")) == "Bros - T [CO].png"

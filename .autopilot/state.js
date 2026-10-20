@@ -11,7 +11,7 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-19T23:17:21+03:00",
-  "updatedAt": "2026-10-20T07:27:48+03:00",
+  "updatedAt": "2026-10-20T07:30:26+03:00",
   "finishedAt": null,
   "stages": [
     {
@@ -48,12 +48,14 @@ window.STATE =
     {
       "id": "build",
       "status": "active",
-      "startedAt": "2026-10-20T07:15:36+03:00"
+      "startedAt": "2026-10-20T07:15:36+03:00",
+      "note": "1 из 8 тасков готов"
     },
     {
       "id": "review",
       "status": "active",
-      "startedAt": "2026-10-20T07:27:48+03:00"
+      "startedAt": "2026-10-20T07:27:48+03:00",
+      "note": "проверено 1 из 8"
     },
     {
       "id": "final",
@@ -97,11 +99,18 @@ window.STATE =
         "docker-compose.yml",
         "scripts/compose.ps1"
       ],
-      "status": "review",
+      "status": "done",
       "retries": 0,
       "repairs": 0,
       "handoffs": 0,
-      "startedAt": "2026-10-20T07:15:49+03:00"
+      "startedAt": "2026-10-20T07:15:49+03:00",
+      "finishedAt": "2026-10-20T07:30:26+03:00",
+      "commit": "2fdec3e",
+      "tests": {
+        "passed": 51,
+        "failed": 0
+      },
+      "concerns": []
     },
     {
       "id": "02",
@@ -125,10 +134,11 @@ window.STATE =
         "tests/core/test_storage*",
         "tests/core/test_trash*"
       ],
-      "status": "pending",
+      "status": "in-progress",
       "retries": 0,
       "repairs": 0,
-      "handoffs": 0
+      "handoffs": 0,
+      "startedAt": "2026-10-20T07:30:26+03:00"
     },
     {
       "id": "03",
@@ -156,10 +166,11 @@ window.STATE =
         "worker",
         "docker-compose.yml"
       ],
-      "status": "pending",
+      "status": "in-progress",
       "retries": 0,
       "repairs": 0,
-      "handoffs": 0
+      "handoffs": 0,
+      "startedAt": "2026-10-20T07:30:26+03:00"
     },
     {
       "id": "04",
@@ -327,7 +338,10 @@ window.STATE =
     }
   ],
   "singlePass": null,
-  "tests": null,
+  "tests": {
+    "passed": 51,
+    "failed": 0
+  },
   "debt": {
     "placeholders": [],
     "assumptions": [],
@@ -347,7 +361,17 @@ window.STATE =
       ]
     }
   },
-  "concerns": [],
+  "concerns": [
+    "tests/core/test_repo_config.py — проверка паролей пропускает tests/ (фикстуры)",
+    "ultrastar fix_zero_length — нет теста на переход через разрыв строки; ветка #RELATIVE без теста и сдвигает последующие строки",
+    "ultrastar.beat_to_ms — ValueError без теста",
+    "ultrastar.set_header_line дублирует поиск блока заголовков из parse/Song.set_header",
+    "db.py — значения по умолчанию 192.168.0.129/karaoke продублированы с compose/.env.example",
+    "tests/core/test_db.py:75 — запутанная подготовка теста fail_interrupted",
+    "postprocess.py:111 — неназванное правило записи #AUDIO",
+    "postprocess — #COVERURL тоже удаляется при несовпадении исполнителя (сверх истории 26)",
+    "db.Jobs.update не проверяет переходы конечного автомата §2"
+  ],
   "reviewers": {
     "manifestSpec": "a489e47ea70f9876b",
     "craft": "acc007efbffd7f351"

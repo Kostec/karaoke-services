@@ -1,0 +1,16 @@
+# Все текстовые файлы — с LF и в репозитории, и при checkout на Windows:
+# Dockerfile'ы, shell- и Python-скрипты попадают в Linux-контейнеры.
+* text=auto eol=lf
+
+# Бинарные файлы.
+*.mp3 binary
+*.wav binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.mid binary
+*.npz binary
+*.sqlite binary
+
+# Фикстуры сравниваются байт в байт (CRLF, BOM, cp1251) — git их не трогает.
+tests/**/fixtures/** binary

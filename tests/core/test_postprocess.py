@@ -103,3 +103,29 @@ def test_missing_audio_is_an_error(out_dir):
     (out_dir / f"{MB_BASE}.mp3").unlink()
     with pytest.raises(postprocess.FinalizeError):
         postprocess.finalize(out_dir, "Тестовая Группа", "Песня Ёлки", None)
+
+
+def test_result_txt_declares_format_1_2_0(out_dir):
+    txt = out_dir / f"{MB_BASE}.txt"
+    txt.write_bytes(txt.read_bytes().replace(b"#VERSION:1.2.0\n", b""))
+    res = postprocess.finalize(out_dir, "Тестовая Группа", "Песня Ёлки", None)
+    song = _txt(res, MB_BASE)
+    assert song.header_items()[0] == ("VERSION", "1.2.0")
+    assert song.header("AUDIO") == f"{MB_BASE}.mp3"
+
+
+@pytest.mark.parametrize("marker,key", [("Instrumental", "INSTRUMENTAL"), ("Vocals", "VOCALS")])
+def test_non_mp3_stems_are_an_error_not_a_rename(out_dir, marker, key):
+    src = out_dir / f"{MB_BASE} [{marker}].mp3"
+    src.rename(src.with_suffix(".wav"))
+    txt = out_dir / f"{MB_BASE}.txt"
+    txt.write_bytes(txt.read_bytes().replace(f"[{marker}].mp3".encode(), f"[{marker}].wav".encode()))
+    with pytest.raises(postprocess.FinalizeError, match="mp3"):
+        postprocess.finalize(out_dir, "Тестовая Группа", "Песня Ёлки", None)
+
+
+def test_artist_with_trailing_dot_gets_consistent_names(out_dir):
+    res = postprocess.finalize(out_dir, "Bros.", "Song", None)
+    assert res.rel_dir == "Bros/Bros - Song"
+    assert "Bros - Song [Instrumental].mp3" in res.files
+    assert _txt(res, "Bros - Song").header("ARTIST") == "Bros."

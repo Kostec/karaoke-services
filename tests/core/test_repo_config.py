@@ -16,11 +16,32 @@ def _env_example() -> dict[str, str]:
     return out
 
 
+# Переменные, которые задаёт сам compose/образ (не пользователь), в .env.example не нужны.
+INTERNAL_VARS = {"DATA_DIR", "MODELS_DIR", "HF_HOME", "TORCH_HOME", "XDG_CACHE_HOME"}
+_CODE_ENV_RE = re.compile(
+    r"""(?:environ|getenv|env)\s*(?:\.get\s*\(|\[|\()\s*["']([A-Z][A-Z0-9_]*)["']""")
+
+
+def _code_env_vars() -> dict[str, str]:
+    found = {}
+    for path in (ROOT / "core").rglob("*.py"):
+        for name in _CODE_ENV_RE.findall(path.read_text(encoding="utf-8")):
+            found.setdefault(name, path.relative_to(ROOT).as_posix())
+    return found
+
+
 def test_env_example_lists_every_compose_variable():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     used = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)", compose))
     missing = used - set(_env_example())
     assert not missing, f"нет в .env.example: {sorted(missing)}"
+
+
+def test_env_example_lists_every_variable_read_by_core():
+    used = _code_env_vars()
+    assert "OUTPUT_SMB_HOST" in used  # сканер действительно видит чтения из окружения
+    missing = {k: v for k, v in used.items() if k not in _env_example() and k not in INTERNAL_VARS}
+    assert not missing, f"нет в .env.example: {missing}"
 
 
 def test_env_example_has_spec_defaults_and_empty_secrets():

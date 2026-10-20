@@ -8,7 +8,8 @@
 4. Все файлы называются ``<Исполнитель - Название>`` + суффикс, ссылки в
    заголовках указывают на них. В результат попадают только файлы песни
    (без ``cache/``, логов, отладки).
-5. .txt пишется в UTF-8 без BOM; порядок заголовков и тело сохраняются.
+5. .txt пишется в UTF-8 без BOM, с `#VERSION:1.2.0`; порядок заголовков и тело
+   сохраняются. Оригинал, вокал и минусовка — только mp3.
 
 Исходная папка не меняется: результат собирается в отдельной папке.
 """
@@ -25,6 +26,9 @@ __all__ = ["finalize", "FinalizedSong", "FinalizeError"]
 
 # Заголовки, которые приходят от MusicBrainz и удаляются при несовпадении исполнителя.
 MB_HEADERS = ("COVER", "COVERURL", "YEAR", "GENRE")
+
+# Версия формата UltraStar в итоговом .txt.
+FORMAT_VERSION = "1.2.0"
 
 
 class FinalizeError(Exception):
@@ -92,6 +96,22 @@ def finalize(out_dir, artist: str, title: str, cover_path=None, *,
     song = ultrastar.parse(txt_path.read_bytes())
     base = naming.base_name(artist, title)
 
+    def file_name(suffix: str) -> str:
+        return naming.song_file(artist, title, suffix)
+
+    def require_mp3(src: Path, what: str) -> None:
+        if src.suffix.lower() != ".mp3":
+            raise FinalizeError(
+                f"UltraSinger отдал {what} в формате {src.suffix or 'без расширения'}, "
+                "а песне нужен mp3")
+
+    # Формат 1.2.0: #VERSION первой строкой.
+    if song.header("VERSION") is None:
+        song.headers.insert(0, ultrastar.Header(key="VERSION", value=FORMAT_VERSION,
+                                                eol=song.newline))
+    else:
+        song.set_header("VERSION", FORMAT_VERSION)
+
     # 1–2. Исполнитель/название из формы, фильтр MusicBrainz.
     mb_artist = song.header("ARTIST")
     mb_dropped = (mb_artist is not None
@@ -105,19 +125,22 @@ def finalize(out_dir, artist: str, title: str, cover_path=None, *,
     audio = _referenced(folder, song, "AUDIO") or _referenced(folder, song, "MP3")
     if audio is None:
         raise FinalizeError("UltraSinger не создал аудиофайл песни")
-    audio_name = f"{base}{audio.suffix.lower()}"
+    require_mp3(audio, "оригинал")
+    audio_name = file_name(naming.SUFFIX_AUDIO)
     copies.append((audio, audio_name))
     song.set_header("MP3", audio_name)
-    if song.header("AUDIO") is not None or song.header("VERSION") is not None:
-        song.set_header("AUDIO", audio_name)
+    song.set_header("AUDIO", audio_name)
 
-    # Вокал и минусовка.
-    for key, marker in (("VOCALS", "Vocals"), ("INSTRUMENTAL", "Instrumental")):
+    # Вокал и минусовка — всегда mp3.
+    for key, marker, suffix, what in (
+            ("VOCALS", "Vocals", naming.SUFFIX_VOCALS, "вокал"),
+            ("INSTRUMENTAL", "Instrumental", naming.SUFFIX_INSTRUMENTAL, "минусовку")):
         src = _referenced(folder, song, key) or _by_suffix(folder, marker)
         if src is None:
             song.remove_header(key)
             continue
-        name = f"{base} [{marker}]{src.suffix.lower()}"
+        require_mp3(src, what)
+        name = file_name(suffix)
         copies.append((src, name))
         song.set_header(key, name)
 
@@ -133,10 +156,7 @@ def finalize(out_dir, artist: str, title: str, cover_path=None, *,
     elif not mb_dropped:
         cover_src = _referenced(folder, song, "COVER") or _by_suffix(folder, "CO")
     if cover_src is not None:
-        ext = cover_src.suffix.lower() or ".jpg"
-        if ext == ".jpeg":
-            ext = ".jpg"
-        name = f"{base}{naming.SUFFIX_COVER}{ext}"
+        name = file_name(naming.cover_suffix(cover_src.suffix))
         copies.append((cover_src, name))
         song.set_header("COVER", name)
     else:
@@ -145,7 +165,7 @@ def finalize(out_dir, artist: str, title: str, cover_path=None, *,
     # MIDI — если есть.
     mids = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".mid")
     if mids:
-        copies.append((mids[0], f"{base}{naming.SUFFIX_MIDI}"))
+        copies.append((mids[0], file_name(naming.SUFFIX_MIDI)))
 
     # 3. Нулевые ноты.
     zero_fixed = ultrastar.fix_zero_length(song)
@@ -160,7 +180,7 @@ def finalize(out_dir, artist: str, title: str, cover_path=None, *,
         files.append(name)
     song.encoding = "utf-8"
     song.bom = False
-    txt_name = f"{base}{naming.SUFFIX_TXT}"
+    txt_name = file_name(naming.SUFFIX_TXT)
     (dest / txt_name).write_bytes(ultrastar.render(song))
     files.append(txt_name)
 
