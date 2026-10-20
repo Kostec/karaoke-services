@@ -2,7 +2,7 @@
 
 **Требования:** R02, R03, R04, G01, G01.1, G02, G03, G04, G05, R06i, R06i.1, R06i.2, R07i, R07i.1, R07i.2
 **Blocked by:** 04, 05
-**Зона:** `web/static/js/import.js` · `web/static/js/import-logic.js` · `web/static/index.html` · `web/static/js/app.js` · `web/static/js/api.js` (`api.import*`, `importForm`) · `web/static/js/queue.js` (`TYPE_LABEL`) · `web/static/js/songs.js` (метки) · `web/static/css/` · `web/app/api_songs.py` (поле `source` у песни) · `tests/frontend/import*.test.mjs` · `tests/api/test_songs*.py`
+**Зона:** `docker-compose.yml` (только `MAX_IMPORT_MB: ${MAX_IMPORT_MB:-500}` в окружение web) · `web/static/js/import.js` · `web/static/js/import-logic.js` · `web/static/index.html` · `web/static/js/app.js` · `web/static/js/api.js` (`api.import*`, `importForm`) · `web/static/js/queue.js` (`TYPE_LABEL`) · `web/static/js/songs.js` (метки) · `web/static/css/` · `web/app/api_songs.py` (поле `source` у песни) · `tests/frontend/import*.test.mjs` · `tests/api/test_songs*.py`
 **Волна:** 4
 **Status:** ready
 
@@ -28,4 +28,6 @@
 - [ ] 409 дубль → на карточке «Уже есть в папке результата» + «Заменить»; 410 → «Загрузка устарела, загрузите заново»
 - [ ] Очередь: метка «Импорт»; «Песни»: метки «импорт» / «из usdb» (API песни отдаёт `source` из `params.json`)
 - [ ] Подсказка источников: usdb с фильтром «русский», ultrastar-es.org/ru (скачать и загрузить файлом), github.com/Vasil-Pahomov/UltraStarSongs (ссылкой)
+- [ ] «Сделать минусовку» по умолчанию выключена, если в архиве у песни уже есть свой `[Instrumental]` (`#INSTRUMENTAL`) — иначе минусовка перезапишет его; в остальных случаях включена
+- [ ] `MAX_IMPORT_MB` из `.env` доходит до web (сейчас в `docker-compose.yml` его нет — действует только умолчание)
 - [ ] Полный pytest и `node --test tests/frontend/` зелёные

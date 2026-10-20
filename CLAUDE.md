@@ -24,7 +24,7 @@ core/karaoke_core/        общий пакет web+worker: db, paths, naming, u
 core/karaoke_core/storage/  Storage: base (интерфейс, SongEntry), local, smb (smbprotocol)
 core/Dockerfile.test      образ сервиса tests (editable core+web, pytest по tests/)
 web/app/                  FastAPI: main (create_app, Basic-auth, очистка корзины), api_jobs/songs/settings/import/lyrics/usdb, context, params, notes, lyrics (LRCLIB), usdb (клиент)
-web/static/js/            SPA по хэшу (#queue #new #import #songs #trash #settings), api.js, ui.js, id3.js, import.js, import-logic.js, lyrics-search.js
+web/static/js/            SPA по хэшу (#queue #new #import #songs #trash #settings), api.js, ui.js, id3.js, import.js, import-logic.js, folder-logic.js, lyrics-search.js, lyrics-dialog.js
 web/static/js/editors/    редакторы песни: lyrics (перегенерация с новым текстом), lines (слоги/строки)
 worker/karaoke_worker/    runner (цикл очереди), handlers, base (JobContext, процессы), progress, gpucheck, selfcheck
 worker/build/             entrypoint.sh, lock_constraints.py (uv.lock → constraints), check_torch_arch.py, link_hyphen_dir.py
@@ -47,7 +47,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 - `core/karaoke_core/http.py` — `Http` (единственный исходящий HTTP: `request`, `download` потоком с `max_bytes`, `session()` со своей cookie-банкой), `HttpResponse`, `HttpError(message, status)` (статус ≥400; `None` — сеть/таймаут).
 - `core/karaoke_core/songpack.py` — `safe_extract` (zip без `..`/абсолютных путей, симлинки пропускает, лимит распаковки; при сбое папку чистит вызывающий), `find_songs` → `FoundSong`, `youtube_links(#VIDEO)`, `PackError`, `AUDIO_EXTS/IMAGE_EXTS`.
 - `core/karaoke_core/trash.py` — `Trash`: перенос в корзину, версии `.txt`, restore (только в ту же цель), purge по `TRASH_DAYS`.
-- `web/app/api_jobs.py` — generate (multipart, staging → `jobs/<id>/in/`), instrumental, cancel/restart/republish, лог `?from=|tail=` и SSE.
+- `web/app/api_jobs.py` — общие помощники приёма файлов (`Staging`, `queue_duplicate`, `is_mp3`, `cover_ext_of`, `copy_limited`; их же зовёт `api_import`); generate (multipart, staging → `jobs/<id>/in/`), instrumental, cancel/restart/republish, лог `?from=|tail=` и SSE.
 - `web/app/api_import.py` — `POST /api/import/inspect` (usdb | `files[]` | url: zip или GitHub → codeload-архив), `POST /api/jobs/import`, staging `imports/<token>/`, `purge_imports`, `max_import_mb`.
 - `web/app/lyrics.py` — `LrclibProvider`, `LyricsHit(..., synced)`, `strip_lrc`, `synced_lrc`; `web/app/usdb.py` — `UsdbClient` (вход, поиск, `fetch_song`), `UsdbAuthError/UsdbUnavailable/UsdbNotFound`, HTML-разборщики; `web/app/api_usdb.py` — `usdb_api_error`.
 - `web/app/params.py` — модели, языки, лимиты (`MAX_COVER_MB`, `MAX_LYRICS_MB`, `MAX_FOLDER_AUDIO_MB`), `/api/defaults`.
@@ -57,6 +57,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 - `worker/karaoke_worker/progress.py` — `STAGES`: маркер строки лога UltraSinger → русский этап и процент; `STAGE_DOWNLOAD`, `IMPORT_PREPARE`, `DownloadTracker` (`[download] NN%` yt-dlp).
 - `worker/karaoke_worker/selfcheck.py` — 7 проверок образа; `REQUIRED_FLAGS` форка (`lyrics`, `vad_onset`, `vad_offset`, `lyrics_timing`), `check_yt_dlp`, `check_deno`.
 - `web/static/js/api.js` — `api`, `ApiError`, `generateForm()` (единственная сборка multipart generate, с `lyrics_lrc`), `inspectForm()`/`importForm()`, `PARAM_KEYS`, `canRepublish`.
+- `web/static/js/folder-logic.js` (`splitFolder`, `trackMeta`, `nextLyricsRow`, `trackFields`) — вкладка «Импорт → Папка»: готовые .txt-песни → inspect `source=files` с относительными путями (`webkitRelativePath`), прочие mp3 → `generate` по одному с авто-поиском текста; `web/static/js/lyrics-dialog.js` — общий диалог поиска текста (форма новой песни и папка).
 - `web/static/js/import-logic.js` (`pickAudioSource`, `importWarnings`, `importOutcome`) и `web/static/js/lyrics-search.js` (`stripLrc`, `usableHits`, `lrcPlainText`, `lrcTimingDefault`) — чистая логика под node-тесты.
 - `web/static/js/extensions.js` — `registerSongEditor(id, {label, open, enabled})`; редакторы подключаются одной строкой в `web/static/js/app.js` (`import './editors/index.js'`).
 
