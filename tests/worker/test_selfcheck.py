@@ -78,15 +78,39 @@ class SwiftF0:
 '''
 
 
+# Фейковый nltk: data.find ищет ресурс в каталоге nltk_data рядом с src/ и, как настоящий,
+# бросает LookupError, если ресурса нет.
+FAKE_NLTK_DATA = '''
+import os
+path = [os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "nltk_data")]
+
+def find(resource_name):
+    for base in path:
+        full = os.path.join(base, resource_name)
+        if os.path.exists(full):
+            return full
+    raise LookupError("Resource " + resource_name.split("/")[1] + " not found.")
+'''
+
+PUNKT_LANGS_ALL = ("russian", "english")
+
+
 def make_ultrasinger(tmp_path: Path, *, arg_options=ARG_OPTIONS_OK, lyrics_alignment=LYRICS_ALIGNMENT_OK,
-                     midi_creator=MIDI_CREATOR_FIXED, swift_f0=SWIFT_F0_LOCKED) -> Path:
+                     midi_creator=MIDI_CREATOR_FIXED, swift_f0=SWIFT_F0_LOCKED,
+                     punkt_langs=PUNKT_LANGS_ALL) -> Path:
     src = tmp_path / "UltraSinger" / "src"
     files = {
         "UltraSinger.py": "import sys\n" + arg_options,
         "modules/Midi/MidiSegment.py": MIDI_SEGMENT,
         "modules/Midi/midi_creator.py": midi_creator,
         "swift_f0/__init__.py": swift_f0,  # src/ стоит первым в PYTHONPATH проверки
+        "nltk/__init__.py": "from . import data\n",
+        "nltk/data.py": FAKE_NLTK_DATA,
     }
+    for lang in punkt_langs:
+        lang_dir = tmp_path / "UltraSinger" / "nltk_data" / "tokenizers" / "punkt_tab" / lang
+        lang_dir.mkdir(parents=True, exist_ok=True)
+        (lang_dir / "sent_starters.txt").write_text("", encoding="utf-8")
     if lyrics_alignment is not None:
         files["modules/Speech_Recognition/lyrics_alignment.py"] = lyrics_alignment
     for rel, text in files.items():
@@ -116,7 +140,7 @@ def test_intact_branch_passes_all_checks(tmp_path):
     results = selfcheck.run_checks(us)
 
     assert failed(results) == []
-    assert len(results) == 4
+    assert len(results) == 5
     assert selfcheck.main(us) == 0
 
 
@@ -182,3 +206,27 @@ def test_incompatible_swift_f0_signature_is_reported(tmp_path):
     assert len(bad) == 1
     assert "пропала совместимость" in bad[0].message
     assert "SwiftF0" in bad[0].message and "confidence_threshold" in bad[0].message
+
+
+def test_missing_nltk_punkt_tab_is_reported(tmp_path, capsys):
+    # whisperx при выравнивании грузит tokenizers/punkt_tab/<язык> — без данных NLTK задание падает.
+    us = make_ultrasinger(tmp_path, punkt_langs=("english",))
+
+    bad = failed(selfcheck.run_checks(us))
+
+    assert len(bad) == 1
+    assert "punkt_tab" in bad[0].message
+    assert "russian" in bad[0].message
+    assert "english" not in bad[0].message
+    assert "пересоберите образ" in bad[0].message
+    assert selfcheck.main(us) == 1
+    assert "punkt_tab" in capsys.readouterr().out
+
+
+def test_no_nltk_data_at_all_names_both_languages(tmp_path):
+    us = make_ultrasinger(tmp_path, punkt_langs=())
+
+    bad = failed(selfcheck.run_checks(us))
+
+    assert len(bad) == 1
+    assert "russian" in bad[0].message and "english" in bad[0].message

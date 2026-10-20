@@ -5,7 +5,8 @@
   (тот же вызов, что в init_settings);
 - модуль modules.Speech_Recognition.lyrics_alignment импортируется;
 - midi_creator не падает на сегменте нулевой длины и не пишет такую ноту в MIDI;
-- swift-f0 принимает SwiftF0(fmin, fmax, confidence_threshold), как его вызывает pitcher.
+- swift-f0 принимает SwiftF0(fmin, fmax, confidence_threshold), как его вызывает pitcher;
+- в образе есть данные NLTK tokenizers/punkt_tab (russian, english) для выравнивания whisperx.
 
 Импорты UltraSinger выполняются в отдельном процессе с рабочей папкой src/ — так, как его
 запускает воркер; процесс самой проверки модули UltraSinger не загружает.
@@ -148,10 +149,40 @@ def check_swift_f0(src: Path) -> CheckResult:
                                     + ". Версия swift-f0 должна совпадать с uv.lock UltraSinger.")
 
 
+# whisperx.align режет текст на предложения Punkt-моделью tokenizers/punkt_tab/<язык>
+# (PUNKT_LANGUAGES, иначе english); в рантайме сети может не быть — данные кладёт сборка образа.
+PUNKT_LANGS = ("russian", "english")
+
+_NLTK_CODE = """
+import sys
+import nltk.data
+missing = []
+for lang in LANGS:
+    try:
+        nltk.data.find("tokenizers/punkt_tab/" + lang + "/")
+    except LookupError:
+        missing.append(lang)
+if missing:
+    print("MISSING:" + ",".join(missing))
+    sys.exit(3)
+"""
+
+
+def check_nltk_punkt(src: Path) -> CheckResult:
+    name = "данные NLTK punkt_tab (выравнивание whisperx)"
+    ok, out = _run_in_ultrasinger(src, f"LANGS = {PUNKT_LANGS!r}\n" + _NLTK_CODE)
+    if ok:
+        return CheckResult(name, True, "tokenizers/punkt_tab: " + ", ".join(PUNKT_LANGS))
+    missing = [ln[len("MISSING:"):] for ln in out.splitlines() if ln.startswith("MISSING:")]
+    detail = ("нет tokenizers/punkt_tab/ для " + missing[-1].replace(",", ", ")) if missing else _last_line(out)
+    return CheckResult(name, False, "нет данных NLTK punkt_tab — пересоберите образ worker ("
+                                    + detail + ")")
+
+
 def run_checks(us_dir: Path | str | None = None) -> list[CheckResult]:
     src = Path(us_dir or ultrasinger_dir()) / "src"
     return [check_flags(src), check_lyrics_alignment(src), check_midi_zero_length(src),
-            check_swift_f0(src)]
+            check_swift_f0(src), check_nltk_punkt(src)]
 
 
 def main(us_dir: Path | str | None = None) -> int:
@@ -160,7 +191,8 @@ def main(us_dir: Path | str | None = None) -> int:
         print(f"[{'OK' if r.ok else 'ОШИБКА'}] {r.name}: {r.message}")
     bad = [r for r in results if not r.ok]
     if bad:
-        print(f"selfcheck: пропали правки UltraSinger ({len(bad)}). Пересобери worker из ветки karaoke-local.")
+        print(f"selfcheck: не пройдено проверок: {len(bad)} (см. [ОШИБКА] выше). "
+              "Пересобери worker из ветки karaoke-local.")
         return 1
     print("selfcheck: все правки karaoke-local на месте")
     return 0

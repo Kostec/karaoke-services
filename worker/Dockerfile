@@ -61,6 +61,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         --extra-index-url "${TORCH_INDEX}" --index-strategy unsafe-best-match \
     && python /tmp/archcheck/check_torch_arch.py
 
+# 2б) Данные NLTK: whisperx.align грузит tokenizers/punkt_tab/<язык> (ru → russian, иначе english),
+#     а в рантайме докачать их некуда/неоткуда. punkt — для старых путей *.pickle. Проверяет selfcheck.
+RUN python -m nltk.downloader -d /usr/local/share/nltk_data punkt_tab punkt \
+    && test -d /usr/local/share/nltk_data/tokenizers/punkt_tab/russian \
+    && test -d /usr/local/share/nltk_data/tokenizers/punkt_tab/english
+
 # 3) Исходники UltraSinger (ветка с нашими правками).
 COPY --from=ultrasinger . /app/UltraSinger
 
