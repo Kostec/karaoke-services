@@ -8,16 +8,18 @@ from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from karaoke_core import naming, postprocess, ultrastar
-from karaoke_core.db import Job, now
-from karaoke_core.paths import INPUT_AUDIO, INPUT_PARAMS
+from karaoke_core.db import Job, now, song_id_for
+from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_PARAMS
 from karaoke_core.storage import Storage, StorageError
 from karaoke_core.trash import TrashError
 
 from .base import JobContext, JobFailed, remove_tree
-from .progress import PUBLISH, STAGE_POSTPROCESS, STAGE_PREPARE, ProgressTracker
+from .progress import (IMPORT_PREPARE, PUBLISH, STAGE_DOWNLOAD, STAGE_POSTPROCESS, STAGE_PREPARE,
+                       DownloadTracker, ProgressTracker)
 
-__all__ = ["Handler", "GenerateHandler", "InstrumentalHandler", "PublishHandler", "HANDLERS",
-           "prepare_lyrics", "ultrasinger_args", "audio_only_copy"]
+__all__ = ["Handler", "GenerateHandler", "InstrumentalHandler", "ImportHandler", "PublishHandler",
+           "HANDLERS", "prepare_lyrics", "ultrasinger_args", "audio_only_copy", "to_mp3",
+           "download_youtube"]
 
 
 
@@ -206,6 +208,8 @@ def publish_song(ctx: JobContext, job: Job, src: Job) -> None:
     own_id = _save_sources(ctx, job, src, rel_dir, replaced)
     _index(ctx, job, storage, rel_dir, own_id, removed=replaced)
     remove_tree(job_dir)
+    if src.type == "import" and src.params.get("instrumental"):
+        _enqueue_instrumental(ctx, job, src, storage, rel_dir)
     _done(ctx, job)
 
 
@@ -365,6 +369,161 @@ class InstrumentalHandler:
         publish_instrumental(ctx, job, job)
 
 
+# ============================================================================ import
+
+YOUTUBE_FAILED = "YouTube не отдал звук"
+CONVERT_MESSAGE = ("Не удалось перевести звук в mp3 — файл повреждён или формат не поддерживается; "
+                   "загрузите другой файл")
+
+
+def _log_tail(e: JobFailed) -> str:
+    return e.user_message.partition("\n\n")[2]  # «Последние строки лога: …»
+
+
+def _youtube_failed(reason: str, tail: str = "") -> JobFailed:
+    msg = f"{YOUTUBE_FAILED}: {reason}"
+    return JobFailed("youtube", f"{msg}\n\n{tail}" if tail else msg)
+
+
+def _ytdlp_reason(tail: str) -> str:
+    """Причина из вывода yt-dlp: последняя строка ``ERROR: …``."""
+    errors = [ln.strip() for ln in tail.splitlines() if ln.strip().startswith("ERROR:")]
+    if errors:
+        return errors[-1][len("ERROR:"):].strip()
+    return "yt-dlp завершился с ошибкой"
+
+
+def download_youtube(ctx: JobContext, job_id: int, url: str, work: Path,
+                     thumbnail: bool) -> tuple[Path, Path | None]:
+    """Звук (и миниатюра) с YouTube через yt-dlp. Возвращает (mp3, jpg или None)."""
+    work.mkdir(parents=True, exist_ok=True)
+    template = work / "youtube.%(ext)s"
+    cmd = ctx.ytdlp_cmd() + ["-x", "--audio-format", "mp3", "--no-playlist", "--newline",
+                             "-o", str(template)]
+    if thumbnail:
+        cmd += ["--write-thumbnail", "--convert-thumbnails", "jpg"]
+    try:
+        ctx.run_command(job_id, cmd + ["--", url], tracker=DownloadTracker(), what="yt-dlp")
+    except JobFailed as e:
+        tail = _log_tail(e)
+        raise _youtube_failed(_ytdlp_reason(tail), tail) from None
+    mp3 = work / "youtube.mp3"
+    if not mp3.is_file():
+        raise _youtube_failed("yt-dlp не создал mp3")
+    jpg = work / "youtube.jpg"
+    return mp3, (jpg if thumbnail and jpg.is_file() else None)
+
+
+def to_mp3(ctx: JobContext, job_id: int, src: Path, dest: Path) -> None:
+    """Звук в mp3 с одним аудиопотоком: mp3 — копия потока, прочее — перекодирование."""
+    if src.suffix.lower() == ".mp3":
+        audio_only_copy(ctx, job_id, src, dest)
+        return
+    try:
+        ctx.run_command(job_id, ctx.ffmpeg_cmd() + [
+            "-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-i", str(src),
+            "-map", "0:a:0", "-codec:a", "libmp3lame", "-q:a", "0", str(dest)], what="ffmpeg")
+    except JobFailed as e:
+        tail = _log_tail(e)
+        raise JobFailed("input", f"{CONVERT_MESSAGE}\n\n{tail}" if tail else CONVERT_MESSAGE) from None
+    if not dest.is_file():
+        raise JobFailed("input", CONVERT_MESSAGE)
+
+
+def _enqueue_instrumental(ctx: JobContext, job: Job, src: Job, storage: Storage, rel_dir: str) -> None:
+    """Импорт с галочкой «Сделать минусовку» → обычное задание instrumental (история 19).
+    Сбой постановки импорт не роняет — песня уже выложена."""
+    try:
+        entry = storage.read_song(rel_dir)
+        if entry is None or not entry.audio:
+            raise ValueError("песня или её аудио не найдены в папке результата")
+        params = {"rel_dir": rel_dir, "txt_name": entry.txt_name, "audio": entry.audio,
+                  "instrumental": entry.instrumental, "replace": bool(entry.instrumental),
+                  "target_id": storage.target_id}
+        inst = ctx.jobs.enqueue("instrumental", {"artist": entry.artist or src.artist,
+                                                 "title": entry.title or src.title,
+                                                 "song_id": song_id_for(storage.target_id, rel_dir)},
+                                params, parent_id=src.id)
+        ctx.log(job.id, f"Поставлено задание минусовки #{inst.id}.")
+    except Exception as e:  # noqa: BLE001
+        ctx.log(job.id, f"Предупреждение: минусовка не поставлена: {e}")
+
+
+class ImportHandler:
+    """Готовая песня UltraStar (usdb, сборник, файлы) → папка песни → выкладка (Решения §6)."""
+    needs_gpu = False
+
+    def run(self, job: Job, ctx: JobContext) -> None:
+        p = job.params
+        rel_dir = _song_rel_dir(job)
+        job_dir = ctx.paths.job(rel_dir, job.id)
+        inputs = p.get("inputs") or {}
+        in_dir = ctx.paths.abs(inputs["dir"]) if inputs.get("dir") else ctx.paths.job_in(rel_dir, job.id)
+        txt = ctx.paths.abs(inputs["txt"]) if inputs.get("txt") else None
+        if txt is None or not txt.is_file():
+            raise JobFailed("input", "Файл песни (.txt) не найден — импортируйте песню заново")
+        work, folder_root = job_dir / "work", job_dir / "import"
+        for d in (work, folder_root, job_dir / "result"):
+            shutil.rmtree(d, ignore_errors=True)
+        work.mkdir(parents=True)
+        base = naming.base_name(job.artist, job.title)
+        folder = folder_root / base
+        folder.mkdir(parents=True)
+        mp3 = folder / f"{base}.mp3"
+        saved_mp3 = in_dir / INPUT_AUDIO
+
+        saved_thumb = in_dir / f"{INPUT_COVER_STEM}.jpg"
+        cover = ctx.paths.abs(inputs["cover"]) if inputs.get("cover") else None
+        if cover is not None and not cover.is_file():
+            cover = None
+        audio = ctx.paths.abs(inputs["audio"]) if inputs.get("audio") else None
+        if audio is None and saved_mp3.is_file():
+            # «Перезапустить»: звук (и миниатюра) уже скачаны прошлым запуском
+            audio = saved_mp3
+            if cover is None and saved_thumb.is_file():
+                cover = saved_thumb
+        if audio is None:
+            url = (p.get("youtube_url") or "").strip()
+            if not url:
+                raise JobFailed("input", "Нужен звук: загрузите mp3 или вставьте ссылку на YouTube")
+            ctx.progress(job.id, STAGE_DOWNLOAD)
+            ctx.log(job.id, f"Звук с YouTube: {url}")
+            audio, thumb = download_youtube(ctx, job.id, url, work, thumbnail=cover is None)
+            if thumb is not None:
+                shutil.copy2(thumb, saved_thumb)
+                cover = saved_thumb
+            # сразу в in/: сбой на «Подготовке» не заставит «Перезапустить» качать заново
+            shutil.copy2(audio, saved_mp3)
+            audio = saved_mp3
+            ctx.check_cancel(job.id, force=True)
+        elif not audio.is_file():
+            raise JobFailed("input", "Звук песни не найден — импортируйте песню заново")
+
+        ctx.progress(job.id, IMPORT_PREPARE)
+        to_mp3(ctx, job.id, audio, mp3)
+        if not saved_mp3.is_file():
+            shutil.copy2(mp3, saved_mp3)  # source/ должен позволять перегенерацию (история 23)
+
+        song = ultrastar.parse(txt.read_bytes())
+        for key in ("VIDEO", "BACKGROUND", "VIDEOGAP"):
+            song.remove_header(key)
+        song.set_header("MP3", mp3.name)
+        song.set_header("AUDIO", mp3.name)
+        (folder / f"{base}.txt").write_bytes(ultrastar.render(song))
+        try:
+            fin = postprocess.finalize(folder, job.artist, job.title, cover, dest_dir=job_dir / "result")
+        except postprocess.FinalizeError as e:
+            raise JobFailed("postprocess", f"Ошибка подготовки песни: {e}") from None
+        except UnicodeEncodeError:
+            raise JobFailed("postprocess", "Ошибка подготовки песни: имя файла не записать в .txt") from None
+        ctx.log(job.id, f"Подготовка: нот нулевой длины исправлено {fin.zero_fixed}; "
+                        f"обложка: {'есть' if cover is not None else 'нет'}")
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(folder_root, ignore_errors=True)
+        ctx.check_cancel(job.id, force=True)
+        publish_song(ctx, job, job)
+
+
 # ============================================================================ publish
 
 class PublishHandler:
@@ -375,7 +534,7 @@ class PublishHandler:
         src = ctx.jobs.get(job.params.get("source_job_id") or job.parent_id or 0)
         if src is None:
             raise JobFailed("input", "Исходное задание для выкладки не найдено")
-        if src.type == "generate":
+        if src.type in ("generate", "import"):
             publish_song(ctx, job, src)
         elif src.type == "instrumental":
             publish_instrumental(ctx, job, src)
@@ -386,5 +545,6 @@ class PublishHandler:
 HANDLERS: dict[str, Handler] = {
     "generate": GenerateHandler(),
     "instrumental": InstrumentalHandler(),
+    "import": ImportHandler(),
     "publish": PublishHandler(),
 }

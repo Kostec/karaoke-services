@@ -5,9 +5,12 @@ UltraSinger подменяется фейковым деревом src/ во в�
 (`docker --context desktop-linux compose run --rm worker selfcheck`).
 """
 
+import os
 import sys
 import textwrap
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "worker") not in sys.path:
@@ -94,10 +97,27 @@ def find(resource_name):
 
 PUNKT_LANGS_ALL = ("russian", "english")
 
+YT_DLP_OK = """
+from . import version
+"""
+
+
+@pytest.fixture(autouse=True)
+def fake_deno(tmp_path, monkeypatch):
+    """deno в PATH — скрипт, печатающий версию, как настоящий ``deno --version``."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    deno = bin_dir / "deno"
+    deno.write_text("#!/bin/sh\necho 'deno 2.5.6 (stable, release, x86_64-unknown-linux-gnu)'\n",
+                    encoding="utf-8")
+    deno.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return deno
+
 
 def make_ultrasinger(tmp_path: Path, *, arg_options=ARG_OPTIONS_OK, lyrics_alignment=LYRICS_ALIGNMENT_OK,
                      midi_creator=MIDI_CREATOR_FIXED, swift_f0=SWIFT_F0_LOCKED,
-                     punkt_langs=PUNKT_LANGS_ALL) -> Path:
+                     punkt_langs=PUNKT_LANGS_ALL, yt_dlp=YT_DLP_OK) -> Path:
     src = tmp_path / "UltraSinger" / "src"
     files = {
         "UltraSinger.py": "import sys\n" + arg_options,
@@ -113,6 +133,9 @@ def make_ultrasinger(tmp_path: Path, *, arg_options=ARG_OPTIONS_OK, lyrics_align
         (lang_dir / "sent_starters.txt").write_text("", encoding="utf-8")
     if lyrics_alignment is not None:
         files["modules/Speech_Recognition/lyrics_alignment.py"] = lyrics_alignment
+    if yt_dlp is not None:
+        files["yt_dlp/__init__.py"] = yt_dlp
+        files["yt_dlp/version.py"] = "__version__ = '2025.10.22'\n"
     for rel, text in files.items():
         path = src / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -140,7 +163,7 @@ def test_intact_branch_passes_all_checks(tmp_path):
     results = selfcheck.run_checks(us)
 
     assert failed(results) == []
-    assert len(results) == 5
+    assert len(results) == 7
     assert selfcheck.main(us) == 0
 
 
@@ -230,3 +253,22 @@ def test_no_nltk_data_at_all_names_both_languages(tmp_path):
 
     assert len(bad) == 1
     assert "russian" in bad[0].message and "english" in bad[0].message
+
+
+def test_missing_yt_dlp_is_reported(tmp_path):
+    us = make_ultrasinger(tmp_path, yt_dlp=None)
+
+    bad = failed(selfcheck.run_checks(us))
+
+    assert len(bad) == 1
+    assert "yt_dlp" in bad[0].message and "пересоберите образ" in bad[0].message
+
+
+def test_missing_deno_is_reported(tmp_path, fake_deno):
+    us = make_ultrasinger(tmp_path)
+    fake_deno.unlink()
+
+    bad = failed(selfcheck.run_checks(us))
+
+    assert len(bad) == 1
+    assert "deno" in bad[0].message and "пересоберите образ" in bad[0].message

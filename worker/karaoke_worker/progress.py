@@ -6,8 +6,8 @@ import re
 
 from karaoke_core.db import STAGE_PUBLISH
 
-__all__ = ["STAGES", "STAGE_PREPARE", "STAGE_POSTPROCESS", "PUBLISH", "ProgressTracker",
-           "LineSplitter", "clean_line"]
+__all__ = ["STAGES", "STAGE_PREPARE", "STAGE_POSTPROCESS", "PUBLISH", "STAGE_DOWNLOAD",
+           "IMPORT_PREPARE", "ProgressTracker", "DownloadTracker", "LineSplitter", "clean_line"]
 
 # Маркер (подстрока строки без ANSI) → этап по-русски и минимальный процент. Порядок — как в §5.
 STAGES: list[tuple[tuple[str, ...], str, int]] = [
@@ -27,6 +27,9 @@ STAGE_PREPARE = ("Подготовка", 0)
 STAGE_POSTPROCESS = ("Постобработка", 95)
 # Выкладка: в stage пишется db.STAGE_PUBLISH (UI сам показывает «Выкладка»).
 PUBLISH = (STAGE_PUBLISH, 97)
+# Импорт (Решения §6): загрузка звука с YouTube 5→60 %, подготовка папки — 70 %.
+STAGE_DOWNLOAD = ("Загрузка звука", 5)
+IMPORT_PREPARE = ("Подготовка", 70)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
 _TQDM_RE = re.compile(r"(\d{1,3})%\|")
@@ -92,6 +95,27 @@ class ProgressTracker:
             if value > self.percent:
                 return self.set(self.stage or self.stages[self._index][1], value)
         return None
+
+
+_YTDLP_RE = re.compile(r"^\[download\]\s+(\d{1,3}(?:\.\d+)?)%")
+
+
+class DownloadTracker:
+    """Прогресс yt-dlp: строки ``[download]  NN.N% of …`` → процент внутри этапа «Загрузка звука»."""
+
+    def __init__(self, start: float = STAGE_DOWNLOAD[1], end: float = 60):
+        self.start, self.end = start, end
+        self.percent = float(start)
+
+    def feed(self, line: str) -> tuple[str, float] | None:
+        m = _YTDLP_RE.match(clean_line(line).strip())
+        if not m:
+            return None
+        value = round(self.start + (self.end - self.start) * min(float(m.group(1)), 100) / 100, 1)
+        if value <= self.percent:
+            return None
+        self.percent = value
+        return STAGE_DOWNLOAD[0], value
 
 
 class LineSplitter:

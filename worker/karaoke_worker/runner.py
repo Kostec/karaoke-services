@@ -2,7 +2,7 @@
 
 Строго одно задание за раз (8 ГБ VRAM): цикл забирает задание атомарно (``Jobs.claim_next``)
 и выполняет его в этом же потоке. При старте: проверка GPU → статус в БД,
-``Jobs.fail_interrupted()``, уборка брошенных ``jobs/.new-*`` и старых логов.
+``Jobs.fail_interrupted()``, уборка брошенных ``jobs/.new-*``, ``imports/*`` старше часа и старых логов.
 """
 
 from __future__ import annotations
@@ -55,6 +55,15 @@ def _cleanup(ctx: JobContext) -> None:
                 remove_tree(d)
     if songs.is_dir():
         for d in songs.glob("**/jobs/.new-*"):
+            try:
+                if d.is_dir() and now - d.stat().st_mtime > STALE_STAGING_S:
+                    shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                pass
+    imports = ctx.paths.imports_root
+    if imports.is_dir():
+        # разобранные архивы импорта хранятся час (Решения §9)
+        for d in imports.iterdir():
             try:
                 if d.is_dir() and now - d.stat().st_mtime > STALE_STAGING_S:
                     shutil.rmtree(d, ignore_errors=True)

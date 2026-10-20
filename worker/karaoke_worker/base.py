@@ -4,6 +4,7 @@
   ULTRASINGER_CMD  команда UltraSinger (по умолчанию ``python $ULTRASINGER_DIR/src/UltraSinger.py``)
   DEMUCS_CMD       команда demucs (по умолчанию ``python -m demucs.separate``)
   FFMPEG_CMD       ffmpeg (по умолчанию ``ffmpeg``)
+  YTDLP_CMD        yt-dlp для импорта (по умолчанию ``python -m yt_dlp``)
 """
 
 from __future__ import annotations
@@ -147,6 +148,9 @@ class JobContext:
 
     def ffmpeg_cmd(self) -> list[str]:
         return self._cmd("FFMPEG_CMD", ["ffmpeg"])
+
+    def ytdlp_cmd(self) -> list[str]:
+        return self._cmd("YTDLP_CMD", [sys.executable, "-m", "yt_dlp"])
 
     # ------------------------------------------------------------ лог и прогресс
 

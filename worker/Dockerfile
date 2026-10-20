@@ -1,5 +1,6 @@
 # Образ worker: CUDA 12.6 + cuDNN 9, Python 3.12, ffmpeg, UltraSinger из ULTRASINGER_GIT,
-# PyTorch 2.8.0 с индекса cu126 (код Pascal / GTX 1080), пакеты karaoke_core и karaoke_worker.
+# PyTorch 2.8.0 с индекса cu126 (код Pascal / GTX 1080), deno (для yt-dlp),
+# пакеты karaoke_core и karaoke_worker.
 #
 # Исходники UltraSinger приходят как именованный контекст сборки `ultrasinger`
 # (docker-compose.yml → additional_contexts: git-URL ветки или локальная папка).
@@ -69,6 +70,10 @@ RUN python -m nltk.downloader -d /usr/local/share/nltk_data punkt_tab punkt \
 
 # 3) Исходники UltraSinger (ветка с нашими правками).
 COPY --from=ultrasinger . /app/UltraSinger
+
+# 3б) deno — JS-рантайм для yt-dlp (импорт: без него YouTube отдаёт не все форматы).
+#     Фиксированная версия, бинарь в PATH; проверяет selfcheck (deno --version).
+COPY --from=denoland/deno:bin-2.5.6 /deno /usr/local/bin/deno
 
 # 4) Наши пакеты.
 COPY core/ /app/core/

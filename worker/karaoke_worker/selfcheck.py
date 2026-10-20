@@ -6,7 +6,8 @@
 - модуль modules.Speech_Recognition.lyrics_alignment импортируется;
 - midi_creator не падает на сегменте нулевой длины и не пишет такую ноту в MIDI;
 - swift-f0 принимает SwiftF0(fmin, fmax, confidence_threshold), как его вызывает pitcher;
-- в образе есть данные NLTK tokenizers/punkt_tab (russian, english) для выравнивания whisperx.
+- в образе есть данные NLTK tokenizers/punkt_tab (russian, english) для выравнивания whisperx;
+- импорт: yt_dlp импортируется, JS-рантайм deno (нужен yt-dlp для YouTube) запускается.
 
 Импорты UltraSinger выполняются в отдельном процессе с рабочей папкой src/ — так, как его
 запускает воркер; процесс самой проверки модули UltraSinger не загружает.
@@ -15,6 +16,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -179,10 +181,43 @@ def check_nltk_punkt(src: Path) -> CheckResult:
                                     + detail + ")")
 
 
+_YT_DLP_CODE = """
+import yt_dlp.version
+print("yt-dlp " + yt_dlp.version.__version__)
+"""
+
+
+def check_yt_dlp(src: Path) -> CheckResult:
+    """yt-dlp — зависимость UltraSinger; импорт берёт им звук с YouTube (Решения §7)."""
+    name = "yt-dlp (звук с YouTube для импорта)"
+    ok, out = _run_in_ultrasinger(src, _YT_DLP_CODE, timeout=120)
+    if ok:
+        return CheckResult(name, True, _last_line(out))
+    return CheckResult(name, False, "модуль yt_dlp не импортируется — пересоберите образ worker ("
+                                    + _last_line(out) + ")")
+
+
+def check_deno(timeout: float = 60) -> CheckResult:
+    """deno — JS-рантайм, без которого yt-dlp не получает часть форматов YouTube."""
+    name = "deno (JS-рантайм для yt-dlp)"
+    exe = shutil.which("deno")
+    if exe is None:
+        return CheckResult(name, False, "deno не найден в PATH — пересоберите образ worker")
+    try:
+        proc = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return CheckResult(name, False, f"deno --version не запускается — пересоберите образ worker ({e})")
+    out = (proc.stdout + proc.stderr).strip()
+    if proc.returncode != 0:
+        return CheckResult(name, False, "deno --version завершился с ошибкой — пересоберите образ worker ("
+                                        + _last_line(out) + ")")
+    return CheckResult(name, True, out.splitlines()[0] if out else "запускается")
+
+
 def run_checks(us_dir: Path | str | None = None) -> list[CheckResult]:
     src = Path(us_dir or ultrasinger_dir()) / "src"
     return [check_flags(src), check_lyrics_alignment(src), check_midi_zero_length(src),
-            check_swift_f0(src), check_nltk_punkt(src)]
+            check_swift_f0(src), check_nltk_punkt(src), check_yt_dlp(src), check_deno()]
 
 
 def main(us_dir: Path | str | None = None) -> int:
