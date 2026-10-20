@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  beatToMs, lineRange, setSyllable, mergeWithNext, splitBefore, deleteNote, toPayload, isDirty, lineText,
+  beatToMs, lineRange, canPlay, setSyllable, mergeWithNext, splitBefore, deleteNote, toPayload, isDirty, lineText,
 } from '../../web/static/js/editors/lines.js';
 
 const n = (start, length, text, pitch = 5, type = ':') => ({ type, start, length, pitch, text });
@@ -87,4 +87,10 @@ test('тело PUT: строки с разрывами и нотами; приз
   assert.equal(isDirty(s.lines, song().lines), false);
   assert.equal(isDirty(setSyllable(s.lines, 0, 0, 'X'), s.lines), true);
   assert.equal(lineText(s.lines[0]), 'Hello world');
+});
+
+test('▶ без аудио или без BPM (или BPM=0) неактивна, с причиной', () => {
+  assert.equal(canPlay({ audio: 'a.mp3' }, { bpm: 300 }), true);
+  assert.match(canPlay({ audio: null }, { bpm: 300 }), /аудио/i);
+  for (const bpm of [null, 0, '0', undefined, -5]) assert.match(canPlay({ audio: 'a.mp3' }, { bpm }), /BPM/);
 });

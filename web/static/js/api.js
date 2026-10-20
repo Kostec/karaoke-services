@@ -101,3 +101,38 @@ export const api = {
   saveOutput: (body) => request('PUT', '/api/settings/output', body),
   testOutput: (body) => request('POST', '/api/settings/output/test', body),
 };
+
+// ---------------------------------------------------------------- общие помощники
+
+/** Текст ошибки для пользователя: detail сервера, иначе message, иначе запасной. */
+export function errorText(e, fallback = 'Ошибка') {
+  return (e && (e.detail || e.message)) || fallback;
+}
+
+/** Параметры генерации, которые принимает POST /api/jobs/generate (поле params). */
+export const PARAM_KEYS = ['whisper_model', 'language', 'compute_type', 'batch_size', 'align_model',
+  'vad_onset', 'vad_offset', 'demucs_model', 'keep_debug'];
+
+/** Только известные параметры; undefined отбрасывается. */
+export function pickParams(src = {}) {
+  const out = {};
+  for (const k of PARAM_KEYS) if (src && src[k] !== undefined) out[k] = src[k];
+  return out;
+}
+
+/**
+ * multipart для POST /api/jobs/generate — единственное место сборки (форма и редактор текста).
+ * {artist, title, lyrics, params, audio?, cover?, song_id?, replace?}
+ */
+export function generateForm({ artist, title, lyrics = '', params = {}, audio, cover, song_id: songId, replace = false }) {
+  const fd = new FormData();
+  fd.append('artist', artist);
+  fd.append('title', title);
+  if (audio) fd.append('audio', audio);
+  fd.append('lyrics', lyrics);
+  if (cover) fd.append('cover', cover);
+  fd.append('params', JSON.stringify(pickParams(params)));
+  if (songId) fd.append('song_id', songId);
+  fd.append('replace', replace ? 'true' : 'false');
+  return fd;
+}

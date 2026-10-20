@@ -102,3 +102,77 @@ test('автозаполнение: только пустые поля; знач
   assert.deepEqual(planAutofill({ artist: 'Старый', title: 'Своё' }, tags, { artist: 'Старый', title: 'Чужое' }),
     { artist: 'Кино' });
 });
+
+// ---------------------------------------------------------------- дозапрос: обложка и ветки parseV2
+
+const deunsyncable = (b) => { const o = []; for (const x of b) { o.push(x); if (x === 0xff) o.push(0); } return o; };
+const t = (u8) => parseId3(u8, tail(u8));
+
+test('обложка из тегов без распознанной сигнатуры jpg/png/webp — игнорируется молча', () => {
+  const gif = [...ascii('GIF89a'), 1, 0, 1, 0];
+  for (const [mime, data] of [['image/jpeg', [1, 2, 3, 4, 5]], ['image/gif', gif], ['image/png', ascii('not a png')]]) {
+    const file = mp3(tag(3, [frame(3, 'TPE1', [0, ...ascii('A')]),
+      frame(3, 'APIC', [0, ...ascii(mime), 0, 3, 0, ...data])]));
+    const r = t(file);
+    assert.equal(r.cover, null, mime);
+    assert.equal(r.artist, 'A');
+  }
+  const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0];
+  const ok = t(mp3(tag(3, [frame(3, 'APIC', [0, ...ascii('image/jpeg'), 0, 3, 0, ...PNG])])));
+  assert.equal(ok.cover.mime, 'image/png', 'тип — по сигнатуре, а не по заявленному');
+});
+
+test('флаг группировки: v2.3 0x20 и v2.4 0x40 — байт group id пропускается', () => {
+  const v3 = [...ascii('TPE1'), ...be32(1 + 1 + 4), 0, 0x20, 7, 0, ...ascii('Grp3')];
+  const v4 = [...ascii('TIT2'), ...syncsafe(1 + 1 + 4), 0, 0x40, 9, 3, ...utf8('Grp4')];
+  assert.equal(t(mp3(tag(3, [v3]))).artist, 'Grp3');
+  assert.equal(t(mp3(tag(4, [v4]))).title, 'Grp4');
+});
+
+test('v2.3: unsynchronisation на весь тег', () => {
+  const frames = [...frame(3, 'TIT2', [0, ...ascii('Uns')]), ...frame(3, 'APIC', [0, ...ascii('image/jpeg'), 0, 3, 0, ...JPEG])];
+  const body = [...deunsyncable(frames), ...new Array(8).fill(0)];
+  const file = new Uint8Array([...ascii('ID3'), 3, 0, 0x80, ...syncsafe(body.length), ...body, ...MPEG_FRAME]);
+  const r = t(file);
+  assert.equal(r.title, 'Uns');
+  assert.deepEqual([...r.cover.data], JPEG);
+});
+
+test('v2.4: unsynchronisation и data length indicator на кадре', () => {
+  const pic = [0, ...ascii('image/jpeg'), 0, 3, 0, ...JPEG];
+  const unsBody = [...syncsafe(pic.length), ...deunsyncable(pic)];
+  const apic = [...ascii('APIC'), ...syncsafe(unsBody.length), 0, 0x03, ...unsBody];
+  const dliBody = [...syncsafe(5), 3, ...utf8('Dli!')];
+  const tit = [...ascii('TIT2'), ...syncsafe(dliBody.length), 0, 0x01, ...dliBody];
+  const r = t(mp3(tag(4, [apic, tit])));
+  assert.deepEqual([...r.cover.data], JPEG);
+  assert.equal(r.title, 'Dli!');
+});
+
+test('extended header v2.3 и v2.4', () => {
+  const fr3 = frame(3, 'TPE1', [0, ...ascii('Ext3')]);
+  const ext3 = [...be32(6), 0, 0, ...be32(0)];
+  const b3 = [...ext3, ...fr3, 0, 0, 0, 0];
+  assert.equal(t(new Uint8Array([...ascii('ID3'), 3, 0, 0x40, ...syncsafe(b3.length), ...b3, ...MPEG_FRAME])).artist, 'Ext3');
+  const fr4 = frame(4, 'TPE1', [3, ...utf8('Ext4')]);
+  const ext4 = [...syncsafe(6), 1, 0];
+  const b4 = [...ext4, ...fr4, 0, 0, 0, 0];
+  assert.equal(t(new Uint8Array([...ascii('ID3'), 4, 0, 0x40, ...syncsafe(b4.length), ...b4, ...MPEG_FRAME])).artist, 'Ext4');
+});
+
+test('UTF-16 без BOM (как LE) и enc=2 (UTF-16BE)', () => {
+  const le = []; for (const c of 'Без') { const x = c.charCodeAt(0); le.push(x & 0xff, x >> 8); }
+  const be = []; for (const c of 'Би') { const x = c.charCodeAt(0); be.push(x >> 8, x & 0xff); }
+  const r = t(mp3(tag(4, [frame(4, 'TPE1', [1, ...le, 0, 0]), frame(4, 'TIT2', [2, ...be])])));
+  assert.equal(r.artist, 'Без');
+  assert.equal(r.title, 'Би');
+});
+
+test('кадр длиннее тега и обрезанный файл — без исключений, прочитанное сохраняется', () => {
+  const good = frame(3, 'TPE1', [0, ...ascii('Ok')]);
+  const huge = [...ascii('TIT2'), ...be32(100000), 0, 0, 0, ...ascii('x')];
+  const file = mp3(tag(3, [good, huge], 0));
+  assert.deepEqual(t(file), { artist: 'Ok', title: '', cover: null });
+  const cut = file.slice(0, 14);
+  assert.deepEqual(parseId3(cut, new Uint8Array()), { artist: '', title: '', cover: null });
+});

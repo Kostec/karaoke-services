@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { analyzeLyrics, regenFields } from '../../web/static/js/editors/lyrics-text.js';
+import { generateForm } from '../../web/static/js/api.js';
 
 test('строки нумеруются, метки [..] помечаются, счётчики', () => {
   const r = analyzeLyrics('[Куплет 1]\nПервая строка\n\n  [Припев]  \nНе [метка] внутри\n[незакрытая\n');
@@ -24,12 +25,12 @@ test('CRLF и пустой текст', () => {
 test('поля задания generate: replace, song_id, параметры песни поверх умолчаний', () => {
   const song = { song_id: 's1', artist: 'A', title: 'T', own: true, params: { whisper_model: 'large-v2', rel_dir: 'x' } };
   const f = regenFields(song, 'текст\r\nстрока', { whisper_model: 'medium', language: 'ru' });
-  assert.equal(f.artist, 'A');
-  assert.equal(f.title, 'T');
-  assert.equal(f.song_id, 's1');
-  assert.equal(f.replace, 'true');
-  assert.equal(f.lyrics, 'текст\nстрока');
-  assert.deepEqual(JSON.parse(f.params), { whisper_model: 'large-v2', language: 'ru' });
+  assert.deepEqual(f, { artist: 'A', title: 'T', lyrics: 'текст\nстрока', song_id: 's1', replace: true,
+    params: { whisper_model: 'large-v2', language: 'ru' } });
   const foreign = regenFields({ song_id: 's2', artist: 'B', title: 'U', own: false }, 'x', { language: 'en' });
-  assert.deepEqual(JSON.parse(foreign.params), { language: 'en' });
+  assert.deepEqual(foreign.params, { language: 'en' });
+  // готово для общего generateForm из api.js
+  const fd = generateForm(f);
+  assert.equal(fd.get('replace'), 'true');
+  assert.deepEqual(JSON.parse(fd.get('params')), { whisper_model: 'large-v2', language: 'ru' });
 });

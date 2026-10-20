@@ -2,11 +2,11 @@
 // склейка/разбивка строк, удаление нот, ▶ отрывка строки, сохранение PUT /notes.
 // Дуэты и #RELATIVE — только чтение (причину присылает сервер).
 
-import { api, ApiError } from '../api.js';
+import { api, errorText } from '../api.js';
 import { h, clear, songName } from '../ui.js';
 import { openShell, fmtTime } from './shell.js';
 import {
-  lineRange, lineText, setSyllable, mergeWithNext, splitBefore, deleteNote, toPayload, isDirty,
+  lineRange, lineText, canPlay, setSyllable, mergeWithNext, splitBefore, deleteNote, toPayload, isDirty,
 } from './lines.js';
 
 export async function openLinesEditor(song, { reload } = {}) {
@@ -117,11 +117,11 @@ export async function openLinesEditor(song, { reload } = {}) {
     const ro = !data.editable;
     const { start, end } = lineRange(line, data.gap, data.bpm);
     const preview = h('div', { class: 'ed-preview' }, lineText(line) || '—');
+    const playable = canPlay(song, data);
     const timed = Number(data.bpm) > 0;
     const playBtn = h('button', {
-      type: 'button', class: 'ed-play', disabled: !song.audio || !timed,
-      title: !song.audio ? 'У песни нет аудиофайла' : !timed ? 'В песне нет #BPM'
-        : `Проиграть ${fmtTime(start)}–${fmtTime(end)}`,
+      type: 'button', class: 'ed-play', disabled: playable !== true,
+      title: playable === true ? `Проиграть ${fmtTime(start)}–${fmtTime(end)}` : playable,
       'aria-label': `Проиграть строку ${li + 1}`,
     }, '▶');
     playBtn.addEventListener('click', () => play(li, playBtn));
@@ -183,7 +183,7 @@ export async function openLinesEditor(song, { reload } = {}) {
       shell.message('Сохранено. Прежняя версия .txt — в корзине.', 'ok');
       reload?.();
     } catch (e) {
-      shell.message(e instanceof ApiError ? e.detail : (e.message || 'Не удалось сохранить'), 'err');
+      shell.message(errorText(e, 'Не удалось сохранить'), 'err');
     } finally {
       busy = false;
       updateState();
@@ -193,6 +193,6 @@ export async function openLinesEditor(song, { reload } = {}) {
   try {
     await load();
   } catch (e) {
-    shell.message(`Не удалось открыть песню: ${e.detail || e.message}`, 'err');
+    shell.message(`Не удалось открыть песню: ${errorText(e)}`, 'err');
   }
 }

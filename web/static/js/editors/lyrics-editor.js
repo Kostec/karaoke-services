@@ -1,7 +1,7 @@
 // Редактор исходного текста (G05, история 48): моноширинный текст с номерами строк,
 // подсветка строк-меток «[...]» («будет удалена»), «Сохранить и перегенерировать».
 
-import { api, getDefaults } from '../api.js';
+import { api, getDefaults, generateForm, errorText } from '../api.js';
 import { h, clear, toast, songName } from '../ui.js';
 import { openShell } from './shell.js';
 import { analyzeLyrics, regenFields } from './lyrics-text.js';
@@ -57,16 +57,14 @@ export async function openLyricsEditor(song) {
     shell.message('');
     let defaults = {};
     try { defaults = (await getDefaults()).defaults || {}; } catch { /* сервер подставит свои */ }
-    const fd = new FormData();
-    for (const [k, v] of Object.entries(regenFields(song, ta.value, defaults))) fd.append(k, v);
     try {
-      await api.generate(fd);
+      await api.generate(generateForm(regenFields(song, ta.value, defaults)));
       original = ta.value;
       await shell.close(true);
       toast(`«${songName(song.artist, song.title)}» поставлена на перегенерацию`);
       location.hash = '#queue';
     } catch (e) {
-      shell.message(e.detail || 'Не удалось поставить задание', 'err');
+      shell.message(errorText(e, 'Не удалось поставить задание'), 'err');
       render();
     }
   });
@@ -82,7 +80,7 @@ export async function openLyricsEditor(song) {
       : 'Текст собран из слов готовой песни (.txt). После правки песня будет сгенерирована заново.';
     shell.message('');
   } catch (e) {
-    shell.message(`Не удалось загрузить текст: ${e.detail}`, 'err');
+    shell.message(`Не удалось загрузить текст: ${errorText(e)}`, 'err');
   }
   render();
   ta.focus();

@@ -11,7 +11,7 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-19T23:17:21+03:00",
-  "updatedAt": "2026-10-20T09:09:12+03:00",
+  "updatedAt": "2026-10-20T09:10:26+03:00",
   "finishedAt": null,
   "stages": [
     {
@@ -178,12 +178,12 @@ window.STATE =
         "worker",
         "docker-compose.yml"
       ],
-      "status": "repair",
+      "status": "done",
       "retries": 0,
       "repairs": 2,
       "handoffs": 0,
       "startedAt": "2026-10-20T07:30:26+03:00",
-      "commit": "4a59012",
+      "commit": "a3e5c70",
       "tests": {
         "passed": 264,
         "failed": 0
@@ -195,7 +195,7 @@ window.STATE =
         "__main__ не глотает ImportError внутри runner",
         "D02: swift-f0 0.3.0 несовместим — фиксировать версии по uv.lock UltraSinger"
       ],
-      "finishedAt": "2026-10-20T08:39:04+03:00"
+      "finishedAt": "2026-10-20T09:10:26+03:00"
     },
     {
       "id": "04",
@@ -468,7 +468,8 @@ window.STATE =
     "worker без GPU берёт выкладку, только если она первая в очереди (нужен Jobs.claim_next(types))",
     "отмена новой песни удаляет in/ — «Перезапустить» отменённую без source/ невозможно",
     "songs.js: title кнопки подменяет её доступное имя (неактивные кнопки редакторов читаются причиной)",
-    "фикстурные сохранения T07 положили 3 версии тестовой песни в корзину тома data"
+    "фикстурные сохранения T07 положили 3 версии тестовой песни в корзину тома data",
+    "lock_constraints.py: фильтр nvidia- слишком широкий (нужен nvidia-.*-cu12); версии torch в двух местах; нет теста преобразования"
   ],
   "reviewers": {
     "manifestSpec": "a489e47ea70f9876b",

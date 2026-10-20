@@ -1,11 +1,9 @@
 // Раздел «Новая песня» (и перегенерация песни из списка: #new?song=<song_id>).
 
-import { api } from './api.js';
+import { api, PARAM_KEYS, generateForm, errorText } from './api.js';
 import { h, clear, toast, debounce, songName, field } from './ui.js';
 import { readId3, planAutofill } from './id3.js';
 
-const PARAM_KEYS = ['whisper_model', 'language', 'compute_type', 'batch_size', 'align_model',
-  'vad_onset', 'vad_offset', 'demucs_model', 'keep_debug'];
 
 let root, form, f = {}, defaults = null, defaultsError = null;
 let regen = null; // карточка песни при перегенерации
@@ -46,7 +44,7 @@ async function build() {
   try {
     defaults = await api.defaults();
   } catch (e) {
-    defaultsError = e.detail;
+    defaultsError = errorText(e);
   }
   const d = defaults || { whisper_models: [], compute_types: [], demucs_models: [], languages: [], defaults: {}, align_models: {} };
 
@@ -200,7 +198,7 @@ async function loadRegen(songId) {
     if (song.params) setParams({ ...(defaults?.defaults || {}), ...song.params });
     let text = song.lyrics;
     if (text == null) {
-      try { text = (await api.lyrics(songId)).text; } catch (e) { toast(`Текст не загрузился: ${e.detail}`, 'err'); }
+      try { text = (await api.lyrics(songId)).text; } catch (e) { toast(`Текст не загрузился: ${errorText(e)}`, 'err'); }
     }
     f.lyrics.value = text || '';
     f.regenBanner.textContent = `Перегенерация «${songName(song.artist, song.title)}». После успеха старая версия уйдёт в корзину.`;
@@ -210,7 +208,7 @@ async function loadRegen(songId) {
     f.cancelRegen.hidden = false;
   } catch (e) {
     regen = null;
-    f.regenBanner.textContent = `Не удалось открыть песню: ${e.detail}`;
+    f.regenBanner.textContent = `Не удалось открыть песню: ${errorText(e)}`;
     f.regenBanner.className = 'banner err';
     return;
   } finally {
@@ -449,16 +447,11 @@ async function onSubmit(ev) {
   if (!(await checkCover())) ok = false;
   if (!ok) return;
 
-  const fd = new FormData();
-  fd.append('artist', artist);
-  fd.append('title', title);
-  if (f.audio.files[0]) fd.append('audio', f.audio.files[0]);
-  fd.append('lyrics', f.lyrics.value);
-  if (f.cover.files[0]) fd.append('cover', f.cover.files[0]);
-  else if (tagCover) fd.append('cover', tagCover);
-  fd.append('params', JSON.stringify(collectParams()));
-  if (regen) fd.append('song_id', regen.song_id);
-  fd.append('replace', replace ? 'true' : 'false');
+  const fd = generateForm({
+    artist, title, lyrics: f.lyrics.value, params: collectParams(),
+    audio: f.audio.files[0], cover: f.cover.files[0] || tagCover,
+    song_id: regen?.song_id, replace,
+  });
 
   submitting = true;
   updateSubmit();
@@ -474,9 +467,9 @@ async function onSubmit(ev) {
       showDup(e.data.song_id);
       f.dup.scrollIntoView({ block: 'center', behavior: 'smooth' });
     } else {
-      f.error.textContent = e.detail;
+      f.error.textContent = errorText(e);
       f.error.hidden = false;
-      markField(e.data.field, e.detail);
+      markField(e.data?.field, errorText(e));
     }
   } finally {
     submitting = false;

@@ -94,34 +94,30 @@ function textFrame(b) {
   return clean(decodeText(b.subarray(1, end), enc));
 }
 
-function sniffMime(data, declared) {
+/** Тип картинки только по сигнатуре (jpg/png/webp); иначе '' — такую обложку не берём. */
+function sniffMime(data) {
   if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return 'image/jpeg';
   if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return 'image/png';
-  if (ascii(data, 0, 4) === 'RIFF' && ascii(data, 8, 12) === 'WEBP') return 'image/webp';
-  const m = (declared || '').toLowerCase();
-  if (m === 'jpg' || m === 'image/jpg') return 'image/jpeg';
-  if (m === 'png') return 'image/png';
-  return m.includes('/') ? m : '';
+  if (data.length >= 12 && ascii(data, 0, 4) === 'RIFF' && ascii(data, 8, 12) === 'WEBP') return 'image/webp';
+  return '';
 }
 
 /** Кадр APIC (v2.3/2.4) или PIC (v2.2) → {type, mime, data} | null. */
 function pictureFrame(b, v22) {
   if (b.length < 4) return null;
   const enc = b[0];
-  let pos, declared;
+  let pos;
   if (v22) {
-    declared = ascii(b, 1, 4);
-    pos = 4;
+    pos = 4; // формат «JPG»/«PNG» — тип всё равно берётся по сигнатуре
   } else {
     const [end, tl] = findTerminator(b, 1, 0);
-    declared = ascii(b, 1, end);
     pos = end + tl;
   }
   const type = b[pos];
   const [dEnd, dl] = findTerminator(b, pos + 1, enc);
   const data = b.slice(dEnd + dl);
   if (!data.length) return null;
-  const mime = sniffMime(data, declared);
+  const mime = sniffMime(data);
   return mime ? { type, mime, data } : null;
 }
 
@@ -157,10 +153,12 @@ function parseV2(head) {
     let body = b.subarray(start, end);
     if (ver === 4) {
       if (fmt & 0x0c) continue; // сжатие/шифрование не поддерживаем
-      if (fmt & 0x01) body = body.subarray(4);
+      if (fmt & 0x40) body = body.subarray(1); // group id
+      if (fmt & 0x01) body = body.subarray(4); // data length indicator
       if (fmt & 0x02) body = deunsync(body);
-    } else if (ver === 3 && fmt & 0xc0) {
-      continue;
+    } else if (ver === 3) {
+      if (fmt & 0xc0) continue; // сжатие/шифрование
+      if (fmt & 0x20) body = body.subarray(1); // group id
     }
     if (id === 'TPE1' || id === 'TP1') res.artist = res.artist || textFrame(body);
     else if (id === 'TIT2' || id === 'TT2') res.title = res.title || textFrame(body);

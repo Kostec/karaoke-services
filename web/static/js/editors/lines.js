@@ -76,3 +76,10 @@ export function toPayload(lines) {
 export function isDirty(lines, original) {
   return JSON.stringify(toPayload(lines)) !== JSON.stringify(toPayload(original));
 }
+
+/** Можно ли проиграть строку: true или причина (для подсказки неактивной ▶). */
+export function canPlay(song, data) {
+  if (!song?.audio) return 'У песни нет аудиофайла';
+  if (!(Number(data?.bpm) > 0)) return 'В песне нет #BPM — время строк неизвестно';
+  return true;
+}
