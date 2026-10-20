@@ -1,7 +1,7 @@
 From 4c0ffaa5f90d80fa3b37b72036168bef5ada455d Mon Sep 17 00:00:00 2001
 From: Kostec <rad-koc@yandex.ru>
 Date: Mon, 19 Oct 2026 23:25:47 +0300
-Subject: [PATCH 1/2] fixes for lyrics and empty notes
+Subject: [PATCH 1/3] fixes for lyrics and empty notes
 
 ---
  src/Settings.py                           |  4 +++
@@ -190,7 +190,7 @@ index c0cd6e4..a99bc18 100644
 From a3dee18d7acaf706df671085e0f359636e87ee4a Mon Sep 17 00:00:00 2001
 From: Kostec <rad-koc@yandex.ru>
 Date: Mon, 19 Oct 2026 23:30:02 +0300
-Subject: [PATCH 2/2] missed file
+Subject: [PATCH 2/3] missed file
 
 ---
  .../Speech_Recognition/lyrics_alignment.py    | 273 ++++++++++++++++++
@@ -476,3 +476,375 @@ index 0000000..905b8dc
 +    for line in unplaced:
 +        print(f"{ULTRASINGER_HEAD} {red_highlighted('Lyrics line could not be placed, skipped:')} {line}")
 +    return segments
+From 8c6008c2dda20053f50a70279028ec61be5ad16b Mon Sep 17 00:00:00 2001
+From: Kostec <rad-koc@yandex.ru>
+Date: Tue, 20 Oct 2026 10:58:41 +0300
+Subject: [PATCH 3/3] =?UTF-8?q?Local=20patch:=20--lyrics=5Ftiming=20?=
+ =?UTF-8?q?=E2=80=94=20LRC=20line=20timestamps=20as=20lyrics=20alignment?=
+ =?UTF-8?q?=20windows?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../Speech_Recognition/test_lrc_timing.py     |  98 +++++++++++++++
+ src/Settings.py                               |   1 +
+ src/UltraSinger.py                            |  13 ++
+ src/modules/Speech_Recognition/Whisper.py     |  11 +-
+ src/modules/Speech_Recognition/lrc_timing.py  | 115 ++++++++++++++++++
+ src/modules/common_print.py                   |   3 +
+ 6 files changed, 240 insertions(+), 1 deletion(-)
+ create mode 100644 pytest/modules/Speech_Recognition/test_lrc_timing.py
+ create mode 100644 src/modules/Speech_Recognition/lrc_timing.py
+
+diff --git a/pytest/modules/Speech_Recognition/test_lrc_timing.py b/pytest/modules/Speech_Recognition/test_lrc_timing.py
+new file mode 100644
+index 0000000..88c8697
+--- /dev/null
++++ b/pytest/modules/Speech_Recognition/test_lrc_timing.py
+@@ -0,0 +1,98 @@
++"""Tests for lrc_timing.py (local patch: --lyrics_timing)"""
++
++import pytest
++
++from modules.Speech_Recognition.lrc_timing import build_lrc_segments, load_lrc_line_times, match_lrc_lines, normalize_line, parse_lrc
++
++
++def test_parse_lrc_formats_metadata_and_pauses():
++    text = (
++        "﻿[ar:Кино]\n"
++        "[ti:Группа крови]\n"
++        "[00:12.50]Тёплое место, но улицы ждут\r\n"
++        "[00:17]Отпечатков наших ног\n"
++        "[00:20.00]\n"
++        "[01:02.345]Звёздная пыль на сапогах\n"
++    )
++    assert parse_lrc(text) == [
++        (12.5, "Тёплое место, но улицы ждут"),
++        (17.0, "Отпечатков наших ног"),
++        (20.0, ""),
++        (62.345, "Звёздная пыль на сапогах"),
++    ]
++
++
++def test_parse_lrc_several_tags_per_line_are_sorted():
++    text = "[00:10.00][00:30.00]Chorus line\n[00:20.00]Verse line\n"
++    assert parse_lrc(text) == [(10.0, "Chorus line"), (20.0, "Verse line"), (30.0, "Chorus line")]
++
++
++def test_parse_lrc_offset_positive_shows_lyrics_sooner():
++    text = "[offset:+500]\n[00:01.00]a\n[00:10.00]b\n"
++    assert parse_lrc(text) == [(0.5, "a"), (9.5, "b")]
++
++
++def test_parse_lrc_offset_negative_and_clamped_to_zero():
++    assert parse_lrc("[offset:-250]\n[00:01.00]a\n") == [(1.25, "a")]
++    assert parse_lrc("[offset:2000]\n[00:01.00]a\n") == [(0.0, "a")]
++
++
++def test_parse_lrc_ignores_plain_text_lines():
++    assert parse_lrc("no tags here\n[00:05.00]x\n") == [(5.0, "x")]
++
++
++def test_normalize_line_ignores_case_spaces_punctuation_and_yo():
++    assert normalize_line("  Тёплое   место, НО улицы — ждут! ") == "теплое место но улицы ждут"
++
++
++def test_match_lrc_lines_skips_pauses_and_tag_lines():
++    lyrics = ["Тёплое место, но улицы ждут", "отпечатков наших ног"]
++    entries = [(1.0, "[Куплет]"), (12.5, "теплое место но улицы ждут"), (15.0, ""), (17.0, "Отпечатков  наших ног.")]
++    assert match_lrc_lines(lyrics, entries) == [12.5, 17.0]
++
++
++def test_match_lrc_lines_mismatch_returns_none():
++    entries = [(1.0, "first line"), (2.0, "second line")]
++    assert match_lrc_lines(["first line"], entries) is None                       # different count
++    assert match_lrc_lines(["first line", "edited line"], entries) is None        # different text
++    assert match_lrc_lines(["first line", "second line"], []) is None
++
++
++def test_build_lrc_segments_windows_by_rule():
++    lyrics = ["Line one", "Line two", "Line three"]
++    segments = build_lrc_segments(lyrics, [0.2, 10.0, 20.0], 30.0)
++    assert segments == [
++        {"text": "Line one", "start": 0.0, "end": 10.5},     # 0.2 - 0.5 clamped to 0
++        {"text": "Line two", "start": 9.5, "end": 20.5},
++        {"text": "Line three", "start": 19.5, "end": 30.0},  # last line: to the end of audio
++    ]
++
++
++def test_build_lrc_segments_clamped_to_duration():
++    segments = build_lrc_segments(["a", "b"], [5.0, 9.8], 10.0)
++    assert segments == [{"text": "a", "start": 4.5, "end": 10.0}, {"text": "b", "start": 9.3, "end": 10.0}]
++
++
++def test_load_lrc_line_times_matching_file(tmp_path):
++    lrc = tmp_path / "lyrics.lrc"
++    lrc.write_text("[ar:x]\n[00:01.00]Hello, world\n[00:02.00]\n[00:03.50]Bye\n", encoding="utf-8")
++    assert load_lrc_line_times(str(lrc), ["hello world", "Bye!"]) == [1.0, 3.5]
++
++
++def test_load_lrc_line_times_mismatch_warns(tmp_path, capsys):
++    lrc = tmp_path / "lyrics.lrc"
++    lrc.write_text("[00:01.00]Hello\n[00:03.50]Bye\n", encoding="utf-8")
++    assert load_lrc_line_times(str(lrc), ["Hello", "Edited"]) is None
++    assert "LRC line timing not used" in capsys.readouterr().out
++
++
++def test_load_lrc_line_times_missing_file_warns(tmp_path, capsys):
++    assert load_lrc_line_times(str(tmp_path / "nope.lrc"), ["Hello"]) is None
++    assert "LRC line timing not used" in capsys.readouterr().out
++
++
++def test_load_lrc_line_times_undecodable_file_warns(tmp_path, capsys):
++    lrc = tmp_path / "lyrics.lrc"
++    lrc.write_bytes("[00:01.00]Привет\n".encode("cp1251") + b"\xff\xfe\x81\n")
++    assert load_lrc_line_times(str(lrc), ["Привет"]) is None
++    assert "LRC line timing not used" in capsys.readouterr().out
+diff --git a/src/Settings.py b/src/Settings.py
+index 8722ca7..a95ab30 100644
+--- a/src/Settings.py
++++ b/src/Settings.py
+@@ -35,6 +35,7 @@ class Settings:
+     language = None
+     # Local patch: lyrics-guided transcription and VAD tuning
+     lyrics_path = None  # --lyrics; default: <input>.lyrics.txt next to the input file
++    lyrics_timing_path = None  # --lyrics_timing <file.lrc>: line windows from LRC tags instead of whisper
+     vad_onset = None    # --vad_onset (whisperx default 0.5); higher = ignore more non-singing
+     vad_offset = None   # --vad_offset (whisperx default 0.363)
+     format_version = FormatVersion.V1_2_0
+diff --git a/src/UltraSinger.py b/src/UltraSinger.py
+index 44fc96a..02464a0 100644
+--- a/src/UltraSinger.py
++++ b/src/UltraSinger.py
+@@ -52,6 +52,7 @@ from modules.Speech_Recognition.hyphenation import (
+ )
+ from modules.Speech_Recognition.Whisper import transcribe_with_whisper
+ from modules.Speech_Recognition.lyrics_alignment import find_lyrics_file, read_lyrics
++from modules.Speech_Recognition.lrc_timing import load_lrc_line_times
+ import hashlib
+ from modules.Ultrastar import (
+     ultrastar_writer,
+@@ -628,12 +629,20 @@ def transcribe_audio(cache_folder_path: str, processing_audio_path: str) -> Tran
+             print(f"{ULTRASINGER_HEAD} Using lyrics from {blue_highlighted(lyrics_file)} ({len(lyrics_lines)} lines)")
+         elif settings.lyrics_path:
+             print(f"{ULTRASINGER_HEAD} {red_highlighted('Lyrics file not found:')} {settings.lyrics_path}")
++        lyrics_line_times = None
++        if settings.lyrics_timing_path:
++            if lyrics_lines:
++                lyrics_line_times = load_lrc_line_times(settings.lyrics_timing_path, lyrics_lines)
++            else:
++                print(f"{ULTRASINGER_HEAD} {red_highlighted('LRC line timing not used:')} no lyrics (--lyrics)")
+         vad_options = {}
+         if settings.vad_onset is not None:
+             vad_options["vad_onset"] = settings.vad_onset
+         if settings.vad_offset is not None:
+             vad_options["vad_offset"] = settings.vad_offset
+         lyrics_hash = hashlib.md5("\n".join(lyrics_lines).encode("utf-8")).hexdigest()[:8] if lyrics_lines else "none"
++        if lyrics_line_times:
++            lyrics_hash += "-lrc" + hashlib.md5(repr(lyrics_line_times).encode("utf-8")).hexdigest()[:8]
+         transcription_config = f"{settings.transcriber}_{settings.whisper_model.value}_{whisper_device}_{whisper_align_model_string}_{settings.whisper_batch_size}_{settings.whisper_compute_type}_{settings.language}_lyrics-{lyrics_hash}_vad-{settings.vad_onset}-{settings.vad_offset}"
+         transcription_path = os.path.join(cache_folder_path, f"{transcription_config}.json")
+         cached_transcription_available = check_file_exists(transcription_path)
+@@ -649,6 +658,7 @@ def transcribe_audio(cache_folder_path: str, processing_audio_path: str) -> Tran
+                 settings.keep_numbers,
+                 lyrics_lines,
+                 vad_options or None,
++                lyrics_line_times,
+             )
+             with open(transcription_path, "w", encoding=FILE_ENCODING) as file:
+                 file.write(transcription_result.to_json())
+@@ -817,6 +827,8 @@ def init_settings(argv: list[str]) -> Settings:
+             settings.language = arg
+         elif opt in ("--lyrics"):
+             settings.lyrics_path = arg
++        elif opt in ("--lyrics_timing"):
++            settings.lyrics_timing_path = arg
+         elif opt in ("--vad_onset"):
+             settings.vad_onset = float(arg)
+         elif opt in ("--vad_offset"):
+@@ -904,6 +916,7 @@ def arg_options():
+         "whisper_compute_type=",
+         "language=",
+         "lyrics=",
++        "lyrics_timing=",
+         "vad_onset=",
+         "vad_offset=",
+         "plot",
+diff --git a/src/modules/Speech_Recognition/Whisper.py b/src/modules/Speech_Recognition/Whisper.py
+index a99bc18..adca2c2 100644
+--- a/src/modules/Speech_Recognition/Whisper.py
++++ b/src/modules/Speech_Recognition/Whisper.py
+@@ -29,6 +29,7 @@ from modules.Speech_Recognition.TranscriptionResult import TranscriptionResult
+ from modules.console_colors import ULTRASINGER_HEAD, blue_highlighted, red_highlighted
+ from modules.Speech_Recognition.TranscribedData import TranscribedData, from_whisper
+ from modules.Speech_Recognition.lyrics_alignment import filter_hallucinations, build_lyrics_segments
++from modules.Speech_Recognition.lrc_timing import build_lrc_segments
+ 
+ #Addition for numbers to words
+ import re
+@@ -100,6 +101,7 @@ def transcribe_with_whisper(
+     keep_numbers: bool = False,
+     lyrics_lines: list = None,
+     vad_options: dict = None,
++    lyrics_line_times: list = None,
+ ) -> TranscriptionResult:
+     """Transcribe with whisper"""
+     # Info: Regardless of the audio sampling rate used in the original audio file, whisper resample the audio signal to 16kHz (via ffmpeg). So the standard input from (44.1 or 48 kHz) should work.
+@@ -168,12 +170,19 @@ def transcribe_with_whisper(
+         # Local patch: replace whisper's words with the real lyrics, using whisper only for timing
+         if lyrics_lines:
+             audio_duration = len(audio) / 16000
+-            lyrics_segments = build_lyrics_segments(result_aligned, lyrics_lines, audio_duration)
++            # Local patch: --lyrics_timing gives line windows from LRC tags (already matched to lyrics_lines)
++            if lyrics_line_times:
++                lyrics_segments = build_lrc_segments(lyrics_lines, lyrics_line_times, audio_duration)
++                windows_source = "lrc"
++            else:
++                lyrics_segments = build_lyrics_segments(result_aligned, lyrics_lines, audio_duration)
++                windows_source = "whisper"
+             try:
+                 import json as _json
+                 _dbg = {"whisper": [{"text": s.get("text"), "start": s.get("start"), "end": s.get("end"),
+                                       "words": [[w.get("word"), w.get("start"), w.get("end")] for w in s.get("words", [])]}
+                                      for s in result_aligned.get("segments", [])],
++                        "lyrics_windows_source": windows_source,
+                         "lyrics_windows": lyrics_segments}
+                 with open(os.path.join(os.path.dirname(audio_path), "lyrics_debug.json"), "w", encoding="utf-8") as _f:
+                     _json.dump(_dbg, _f, ensure_ascii=False, indent=1, default=float)
+diff --git a/src/modules/Speech_Recognition/lrc_timing.py b/src/modules/Speech_Recognition/lrc_timing.py
+new file mode 100644
+index 0000000..9b49a2b
+--- /dev/null
++++ b/src/modules/Speech_Recognition/lrc_timing.py
+@@ -0,0 +1,115 @@
++"""Line timing from LRC for lyrics-guided transcription (local patch: --lyrics_timing).
++
++If the lyrics come with an LRC file (e.g. syncedLyrics from LRCLIB), every lyric line
++already has its start time. Then the windows for the second whisperx.align pass are
++taken from the LRC tags instead of guessing them from whisper's recognized words.
++Pure functions only (no torch / whisperx imports) so they can be tested without models.
++"""
++
++import re
++
++from modules.console_colors import ULTRASINGER_HEAD, blue_highlighted, red_highlighted
++from modules.Speech_Recognition.lyrics_alignment import _norm_words
++
++LRC_PAD = 0.5  # seconds before the line tag and after the next line tag
++MIN_WINDOW = 0.3
++
++_TIME_TAG_RE = re.compile(r"\[(\d+):(\d{1,2})(?:[.:](\d{1,3}))?\]")
++_OFFSET_RE = re.compile(r"^\s*\[offset:\s*([+-]?\d+)\s*\]\s*$", re.IGNORECASE)
++_TAG_ONLY_LINE_RE = re.compile(r"^\s*\[[^\]]*\]\s*$")  # [Chorus], [Припев]
++
++
++def _tag_seconds(match) -> float:
++    minutes, seconds, fraction = match.group(1), match.group(2), match.group(3)
++    value = int(minutes) * 60 + int(seconds)
++    if fraction:
++        value += int(fraction) / (10 ** len(fraction))
++    return value
++
++
++def parse_lrc(text: str) -> list:
++    """LRC text -> [(seconds, line_text)] sorted by time.
++
++    Supports [mm:ss.xx], [mm:ss.xxx], [mm:ss], several time tags per line,
++    metadata tags ([ar:...], [ti:...]) and [offset:+/-ms] (positive = lyrics sooner).
++    Lines with a time tag but without text (pauses) are kept with "" text.
++    """
++    offset = 0.0
++    entries = []
++    for raw in (text or "").lstrip("﻿").splitlines():
++        offset_match = _OFFSET_RE.match(raw)
++        if offset_match:
++            offset = int(offset_match.group(1)) / 1000
++            continue
++        line = raw.strip()
++        times = []
++        while True:
++            match = _TIME_TAG_RE.match(line)
++            if not match:
++                break
++            times.append(_tag_seconds(match))
++            line = line[match.end():].lstrip()
++        if not times:
++            continue  # metadata or plain text
++        line = re.sub(r"\s+", " ", line).strip()
++        for t in times:
++            entries.append((t, line))
++    entries = [(round(max(t - offset, 0.0), 3), line) for t, line in entries]
++    entries.sort(key=lambda e: e[0])
++    return entries
++
++
++def normalize_line(text: str) -> str:
++    """Line key for comparing lyrics with LRC: lower case, ё->е, no punctuation, single spaces."""
++    return " ".join(_norm_words(text or ""))
++
++
++def match_lrc_lines(lyrics_lines: list, lrc_entries: list):
++    """Start time for every lyric line, matched to LRC lines in order.
++
++    LRC lines without words (pauses, [Chorus]-style tags) are skipped.
++    Returns None if the number of lines or any normalized line differs.
++    """
++    sung = [(t, line) for t, line in lrc_entries
++            if not _TAG_ONLY_LINE_RE.match(line) and normalize_line(line)]
++    if not lyrics_lines or len(sung) != len(lyrics_lines):
++        return None
++    for (_, lrc_line), lyric_line in zip(sung, lyrics_lines):
++        if normalize_line(lrc_line) != normalize_line(lyric_line):
++            return None
++    return [t for t, _ in sung]
++
++
++def build_lrc_segments(lyrics_lines: list, line_times: list, audio_duration: float) -> list:
++    """Whisperx-style segments [{"text", "start", "end"}] for the second whisperx.align pass.
++
++    Window of a line = [its tag - 0.5 s; next line's tag + 0.5 s], the last line lasts
++    to the end of the audio; bounds are clamped to [0; audio_duration].
++    """
++    segments = []
++    for i, (line, t) in enumerate(zip(lyrics_lines, line_times)):
++        end = line_times[i + 1] + LRC_PAD if i + 1 < len(line_times) else audio_duration
++        end = min(max(end, 0.0), audio_duration)
++        start = min(max(t - LRC_PAD, 0.0), audio_duration)
++        start = min(start, max(end - MIN_WINDOW, 0.0))  # tag at/after the end of audio
++        segments.append({"text": line, "start": round(start, 3), "end": round(end, 3)})
++    return segments
++
++
++def load_lrc_line_times(lrc_path: str, lyrics_lines: list):
++    """--lyrics_timing: start time for every lyric line from the LRC file, or None (with a warning)."""
++    reason = None
++    try:
++        with open(lrc_path, encoding="utf-8-sig") as f:
++            entries = parse_lrc(f.read())
++    except (OSError, UnicodeError) as e:  # unreadable or not UTF-8
++        entries, reason = [], f"cannot read {lrc_path}: {e}"
++    times = match_lrc_lines(lyrics_lines, entries) if reason is None else None
++    if times is None:
++        if reason is None:
++            sung = sum(1 for _, line in entries if not _TAG_ONLY_LINE_RE.match(line) and normalize_line(line))
++            reason = f"lyrics differ from LRC lines ({len(lyrics_lines or [])} lyric lines, {sung} LRC lines)"
++        print(f"{ULTRASINGER_HEAD} {red_highlighted('LRC line timing not used:')} {reason}")
++        return None
++    print(f"{ULTRASINGER_HEAD} Line timing from LRC {blue_highlighted(lrc_path)} ({len(times)} lines)")
++    return times
+diff --git a/src/modules/common_print.py b/src/modules/common_print.py
+index 909ab51..0513ff6 100644
+--- a/src/modules/common_print.py
++++ b/src/modules/common_print.py
+@@ -41,6 +41,9 @@ def print_help() -> None:
+     --whisper_batch_size    Reduce if low on GPU mem >> ((default) is 16)
+     --whisper_compute_type  Change to "int8" if low on GPU mem (may reduce accuracy) >> ((default) is "float16" for cuda devices, "int8" for cpu)
+     --keep_numbers          Numbers will be transcribed as numerics instead of as words >> True|False >> ((default) is False)
++    --lyrics                Real lyrics (txt, one line per sung line); whisper is used only for timing
++    --lyrics_timing         LRC file with line tags for --lyrics: alignment windows from the tags instead of whisper
++                            (ignored with a warning if its lines differ from the lyrics)
+     
+     [pitcher]
+     # Default is crepe
