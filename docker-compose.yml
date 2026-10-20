@@ -22,12 +22,21 @@ x-env: &app-env
   DEFAULT_BATCH_SIZE: ${DEFAULT_BATCH_SIZE:-4}
   DEFAULT_ALIGN_MODEL_RU: ${DEFAULT_ALIGN_MODEL_RU:-jonatasgrosman/wav2vec2-large-xlsr-53-russian}
   TZ: ${TZ:-Europe/Moscow}
+  # yt-dlp: веб — метаданные ссылок, воркер — загрузка звука (пусто — python -m yt_dlp образа).
+  YTDLP_CMD: ${YTDLP_CMD:-}
+
+# Постоянные DNS и только IPv4: у контейнеров нет IPv6-маршрута, а Яндекс/YouTube отдают AAAA первыми.
+x-net: &app-net
+  dns: [77.88.8.8, 1.1.1.1]
+  sysctls:
+    - net.ipv6.conf.all.disable_ipv6=1
 
 services:
   web:
     build:
       context: .
       dockerfile: web/Dockerfile
+    <<: *app-net
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-8090}:8080"
@@ -48,6 +57,7 @@ services:
       additional_contexts:
         ultrasinger: ${ULTRASINGER_GIT:-https://github.com/Kostec/UltraSinger.git#karaoke-local}
     image: karaoke-services-worker
+    <<: *app-net
     restart: unless-stopped
     environment:
       <<: *app-env

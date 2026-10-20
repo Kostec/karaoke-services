@@ -186,3 +186,27 @@ def test_claim_next_with_types_takes_oldest_of_those_types_only(jobs):
     assert jobs.claim_next(types=["publish"]) is None
     assert jobs.claim_next(types=[]) is None
     assert jobs.claim_next().id == gen.id
+
+
+def test_settings_yandex_token_roundtrip_and_delete(path):
+    settings = db.Settings(db.connect(path))
+    assert settings.get_yandex() is None
+    settings.set_yandex("  y0_AgAAAA-key  ")
+    assert db.Settings(db.connect(path)).get_yandex() == "y0_AgAAAA-key"
+    raw = settings.conn.execute("SELECT value FROM settings WHERE key=?", (db.YANDEX_KEY,)).fetchone()[0]
+    assert raw == '{"token": "y0_AgAAAA-key"}' and db.YANDEX_KEY == "yandex_music"
+    settings.set_yandex("")
+    assert settings.get_yandex() is None
+    assert settings.conn.execute("SELECT 1 FROM settings WHERE key=?", (db.YANDEX_KEY,)).fetchone() is None
+    settings.set_yandex("k2")
+    settings.set_yandex(None)
+    assert settings.get_yandex() is None
+    settings.set_yandex(None)  # удаление отсутствующего — не ошибка
+
+
+def test_settings_yandex_tolerates_garbage(path):
+    settings = db.Settings(db.connect(path))
+    settings._set(db.YANDEX_KEY, "not json")
+    assert settings.get_yandex() is None
+    settings._set(db.YANDEX_KEY, '{"token": ""}')
+    assert settings.get_yandex() is None

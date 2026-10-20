@@ -22,7 +22,7 @@ __all__ = [
     "connect", "Jobs", "Job", "Settings", "OutputTarget", "Library", "LibraryItem",
     "Songs", "OwnSong", "song_id_for", "JOB_STATES", "FINAL_STATES",
     "INTERRUPTED_MESSAGE", "ACTIVE_STATES", "STAGE_PUBLISH", "GPU_STATUS_KEY",
-    "UsdbAccount", "USDB_KEY",
+    "UsdbAccount", "USDB_KEY", "YANDEX_KEY",
 ]
 
 JOB_STATES = ("queued", "running", "publishing", "done", "failed", "cancelled")
@@ -34,6 +34,8 @@ STAGE_PUBLISH = "publish"
 GPU_STATUS_KEY = "gpu_status"
 # Ключ settings с учёткой usdb (JSON {user, password}); API отдаёт только has_password.
 USDB_KEY = "usdb"
+# Ключ settings с OAuth-токеном Яндекс Музыки (JSON {"token": …}); API отдаёт только has_token.
+YANDEX_KEY = "yandex_music"
 INTERRUPTED_MESSAGE = "прервано перезапуском"
 
 _SCHEMA_V1 = """
@@ -422,6 +424,30 @@ class Settings:
         self._set(USDB_KEY, json.dumps({"user": account.user, "password": account.password or ""},
                                        ensure_ascii=False))
         return account
+
+    def get_yandex(self) -> str | None:
+        """OAuth-токен Яндекс Музыки из «Настроек» или ``None``."""
+        raw = self._get(YANDEX_KEY)
+        if raw is None:
+            return None
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return None
+        ym_key = value.get("token") if isinstance(value, dict) else None
+        return str(ym_key).strip() or None if ym_key else None
+
+    def set_yandex(self, token: str | None) -> None:
+        """Сохранить токен Яндекс Музыки; ``None``/пусто — удалить."""
+        ym_key = (token or "").strip()
+        with _tx(self.conn):
+            if ym_key:
+                self.conn.execute(
+                    "INSERT INTO settings (key, value) VALUES (?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (YANDEX_KEY, json.dumps({"token": ym_key})))
+            else:
+                self.conn.execute("DELETE FROM settings WHERE key=?", (YANDEX_KEY,))
 
     def get_gpu_status(self) -> dict | None:
         """Последний результат проверки GPU воркером (``gpucheck.check()``) или ``None``."""
