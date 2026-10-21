@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from pathlib import Path, PurePosixPath
@@ -16,9 +17,10 @@ from karaoke_core.trash import TrashError
 
 from .base import _NETWORK_MARKERS, JobContext, JobFailed, remove_tree
 from .progress import (IMPORT_PREPARE, PUBLISH, STAGE_DOWNLOAD, STAGE_POSTPROCESS, STAGE_PREPARE,
-                       DownloadTracker, ProgressTracker)
+                       STAGE_VIDEO_DOWNLOAD, DownloadTracker, ProgressTracker)
 
 __all__ = ["Handler", "GenerateHandler", "InstrumentalHandler", "ImportHandler", "PublishHandler",
+           "VideoHandler", "download_video", "publish_video", "INPUT_VIDEO_STEM",
            "HANDLERS", "prepare_lyrics", "ultrasinger_args", "parse_lrc", "lyrics_lines", "lrc_matches", "audio_only_copy", "to_mp3",
            "download_youtube", "download_link", "download_song_youtube", "search_youtube",
            "rank_search_results", "song_end_ms"]
@@ -201,6 +203,9 @@ def _save_sources(ctx: JobContext, job: Job, src: Job, rel_dir: str, replaced: s
     """in/ задания → source/ (+ params.json); запись «своей» песни в БД. Возвращает её id."""
     params = {k: v for k, v in src.params.items() if k != "inputs"}
     params.update(artist=src.artist, title=src.title)
+    video_url = (src.params.get("video") or {}).get("url") or src.params.get("video_url")
+    if video_url:
+        params["video_url"] = video_url  # по ней перезапуск или перегенерация скачают видео заново
     try:
         inputs = src.params.get("inputs") or {}
         in_dir = ctx.paths.abs(inputs["dir"]) if inputs.get("dir") else ctx.paths.job_in(_song_rel_dir(src), src.id)
@@ -210,7 +215,7 @@ def _save_sources(ctx: JobContext, job: Job, src: Job, rel_dir: str, replaced: s
         tmp.mkdir(parents=True)
         if in_dir.is_dir():
             for f in in_dir.iterdir():
-                if f.is_file():
+                if f.is_file() and not _is_input_video(f):  # видео уже в папке результата
                     shutil.copy2(f, tmp / f.name)
         (tmp / INPUT_PARAMS).write_text(json.dumps(params, ensure_ascii=False, indent=1), "utf-8")
         shutil.rmtree(source, ignore_errors=True)
@@ -224,6 +229,60 @@ def _save_sources(ctx: JobContext, job: Job, src: Job, rel_dir: str, replaced: s
     except Exception as e:  # noqa: BLE001 — песня уже выложена
         ctx.log(job.id, f"Предупреждение: исходники не сохранены: {e}")
         return None
+
+
+def _is_input_video(f: Path) -> bool:
+    return f.stem == INPUT_VIDEO_STEM and f.suffix.lower() in naming.VIDEO_EXTS
+
+
+def _video_name(value: str | None) -> str | None:
+    """Имя видеофайла из ``#VIDEO`` (ссылка ``v=…`` или путь с папками — не файл песни)."""
+    value = (value or "").strip()
+    if not value or "/" in value or "\\" in value:
+        return None
+    return value if PurePosixPath(value).suffix.lower() in naming.VIDEO_EXTS else None
+
+
+def _set_videogap(data: bytes, gap: str | None) -> bytes:
+    """``#VIDEOGAP:gap`` или удаление строки (``gap`` None); прочие байты не меняются."""
+    if gap is not None:
+        return ultrastar.set_header_line(data, "VIDEOGAP", gap)
+    song = ultrastar.parse(data)
+    return ultrastar.render(song) if song.remove_header("VIDEOGAP") else data
+
+
+def _carry_video(ctx: JobContext, job: Job, storage: Storage, old_rel: str, result: Path) -> None:
+    """История 23: у заменяемой песни было видео, а в новом результате своего нет — файл
+    переносится в result/ (пока старая папка не ушла в корзину), заголовки — под новое имя.
+    Сбой — только предупреждение: песня важнее видео."""
+    txts = sorted(f for f in result.iterdir() if f.is_file() and f.suffix.lower() == ".txt")
+    if not txts:
+        return
+    txt = txts[0]
+    data = txt.read_bytes()
+    own = _video_name(ultrastar.parse(data).header("VIDEO"))
+    if own and (result / own).is_file():
+        return  # своё видео нового результата побеждает (история 30)
+    part = None
+    try:
+        old = storage.read_song(old_rel)
+        if old is None or not old.video:
+            return
+        old_song = ultrastar.parse(storage.read(f"{old_rel}/{old.txt_name}"))
+        name = txt.stem + naming.video_suffix(PurePosixPath(old.video).suffix)
+        data = ultrastar.set_header_line(data, "VIDEO", name)
+        data = _set_videogap(data, postprocess.format_videogap(
+            ultrastar.number(old_song.header("VIDEOGAP"), None)))
+        part = result / f".{name}.part"
+        with storage.open_read(f"{old_rel}/{old.video}") as f, open(part, "wb") as g:
+            shutil.copyfileobj(f, g, 1024 * 1024)
+        os.replace(part, result / name)
+        txt.write_bytes(data)
+        ctx.log(job.id, f"Видео прежней версии перенесено: {name}")
+    except (StorageError, OSError, ValueError) as e:
+        if part is not None:
+            part.unlink(missing_ok=True)
+        ctx.log(job.id, f"Предупреждение: видео прежней версии не перенесено: {e}")
 
 
 def publish_song(ctx: JobContext, job: Job, src: Job) -> None:
@@ -240,6 +299,8 @@ def publish_song(ctx: JobContext, job: Job, src: Job) -> None:
     try:
         storage = ctx.storage()
         old_here = bool(replaced) and p.get("target_id") in (None, storage.target_id) and storage.exists(replaced)
+        if old_here:
+            _carry_video(ctx, job, storage, replaced, result)
         if old_here and replaced == rel_dir:
             # та же папка: старая версия — в корзину, при сбое выкладки — обратно
             item = ctx.trash.move_to_trash(storage, replaced, reason="заменена новой версией")
@@ -788,6 +849,161 @@ class ImportHandler:
         publish_song(ctx, job, job)
 
 
+# ============================================================================ video
+
+INPUT_VIDEO_STEM = "video"  # in/video.<ext>: файл пользователя или скачанное yt-dlp
+VIDEO_FAILED = "Не удалось скачать видео"
+VIDEO_NO_FORMAT = ("По ссылке нет видео (сайт не отдал видеодорожку) — возможно, это ссылка на музыку; "
+                   "вставьте ссылку на ролик или загрузите файл")
+VIDEO_FORBIDDEN = "Сайт видео отказал в доступе (HTTP 403) — попробуйте позже или обновите yt-dlp"
+VIDEO_NETWORK = "Нет связи с сайтом видео — проверьте интернет и попробуйте ещё раз"
+VIDEO_YANDEX = "Яндекс Музыка отдаёт только звук — вставьте ссылку на видео"
+
+
+def _video_sort(height) -> str:
+    """``-S`` yt-dlp: ``res:H`` — ровно H, иначе ближайшее снизу, иначе сверху; 0 — лучшее."""
+    try:
+        h = int(height or 0)
+    except (TypeError, ValueError):
+        h = 0
+    return f"res:{h},vcodec:h264,ext:mp4" if h > 0 else "vcodec:h264,ext:mp4"
+
+
+def download_video(ctx: JobContext, job_id: int, url: str, dest_dir: Path, height) -> Path:
+    """Только видеодорожка по ссылке (yt-dlp; H.264/mp4 в приоритете, ``height`` 0 — лучшее) →
+    ``dest_dir/video.mp4``. Качается во временную ``dest_dir/.video-download``: недокачанное
+    «Перезапустить» не примет за готовое."""
+    try:
+        link = musiclink.classify(url)
+    except musiclink.MusicLinkError as e:
+        raise JobFailed("input", str(e)) from None
+    if musiclink.is_yandex(link):
+        raise JobFailed("input", VIDEO_YANDEX)
+    ctx.progress(job_id, STAGE_VIDEO_DOWNLOAD)
+    ctx.log(job_id, f"Видео по ссылке: {link.url}")
+    work = dest_dir / ".video-download"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    cmd = ctx.ytdlp_cmd() + ["-4", "--no-playlist", "--newline", "-f", "bv*", "-S", _video_sort(height),
+                             "--remux-video", "mp4", "-o", str(work / "video.%(ext)s"), "--", link.url]
+    tracker = DownloadTracker(start=STAGE_VIDEO_DOWNLOAD[1], end=90, stage=STAGE_VIDEO_DOWNLOAD[0])
+    try:
+        ctx.run_command(job_id, cmd, tracker=tracker, what="yt-dlp")
+    except JobFailed as e:
+        tail = _log_tail(e)
+        reason = _ytdlp_reason(tail)
+        low = reason.lower()
+        if "format is not available" in low:
+            msg = VIDEO_NO_FORMAT
+        elif "http error 403" in low:
+            msg = VIDEO_FORBIDDEN
+        elif any(m in tail for m in _NETWORK_MARKERS):
+            msg = VIDEO_NETWORK
+        else:
+            msg = f"{VIDEO_FAILED}: {reason}"
+        raise JobFailed("video", f"{msg}\n\n{tail}" if tail else msg) from None
+    found = sorted(f for f in work.iterdir() if f.is_file() and f.suffix.lower() in naming.VIDEO_EXTS)
+    if not found:
+        raise JobFailed("video", f"{VIDEO_FAILED}: yt-dlp не создал видеофайл")
+    ctx.check_cancel(job_id, force=True)
+    dest = dest_dir / f"{INPUT_VIDEO_STEM}{found[0].suffix.lower()}"
+    os.replace(found[0], dest)
+    shutil.rmtree(work, ignore_errors=True)
+    return dest
+
+
+def _saved_video(in_dir: Path) -> Path | None:
+    if not in_dir.is_dir():
+        return None
+    found = sorted(f for f in in_dir.iterdir() if f.is_file() and _is_input_video(f))
+    return found[0] if found else None
+
+
+def publish_video(ctx: JobContext, job: Job, src: Job) -> None:
+    """Видео из ``jobs/<id>/result/`` → папка песни; в ``.txt`` меняются только ``#VIDEO``/``#VIDEOGAP``
+    (прежняя версия ``.txt`` — в корзину); старый видеофайл с другим именем удаляется (в корзину — нет)."""
+    p = src.params
+    rel_dir, txt_name = p["rel_dir"], p["txt_name"]
+    job_dir = ctx.paths.job(rel_dir, src.id)
+    result = job_dir / "result"
+    remove = bool(p.get("remove"))
+    video = None
+    if not remove:
+        found = [f for f in result.iterdir() if f.is_file()] if result.is_dir() else []
+        if len(found) != 1:
+            raise JobFailed("publish", "ошибка выкладки: видео не найдено в томе")
+        video = found[0]
+    _start_publish(ctx, job)
+    txt_rel = f"{rel_dir}/{txt_name}"
+    try:
+        storage = ctx.storage()
+        txt = storage.read(txt_rel)
+        song = ultrastar.parse(txt)
+        old = _video_name(song.header("VIDEO"))
+        if remove:
+            changed = [song.remove_header(k) for k in ("VIDEO", "VIDEOGAP")]
+            new_txt = ultrastar.render(song) if any(changed) else txt
+        else:
+            try:
+                new_txt = ultrastar.set_header_line(txt, "VIDEO", video.name)
+                if p.get("videogap") is not None:
+                    new_txt = _set_videogap(new_txt, postprocess.format_videogap(p["videogap"]))
+            except ValueError:
+                raise JobFailed("publish", "ошибка выкладки: имя видео не записать в кодировке .txt") from None
+            with open(video, "rb") as f:
+                storage.write_atomic(f"{rel_dir}/{video.name}", f)
+        if new_txt != txt:
+            ctx.trash.save_version(storage, txt_rel,
+                                   reason="версия до удаления видео" if remove else "версия до видео")
+            storage.write_atomic(txt_rel, new_txt)
+        if old and (remove or old != video.name) and storage.exists(f"{rel_dir}/{old}"):
+            storage.delete_file(f"{rel_dir}/{old}")
+            ctx.log(job.id, f"Прежнее видео «{old}» удалено.")
+    except (StorageError, TrashError, OSError) as e:
+        raise _publish_error(ctx, e) from None
+    ctx.log(job.id, f"Видео убрано: {rel_dir}" if remove else f"Видео выложено: {rel_dir}/{video.name}")
+    _index(ctx, job, storage, rel_dir, None)
+    remove_tree(job_dir)
+    _done(ctx, job)
+
+
+class VideoHandler:
+    """Видео к песне в папке результата (истории 14–20): файл ``inputs.video``, ссылка
+    ``video_url`` (качество ``video_height``) или ``remove``; без GPU."""
+    needs_gpu = False
+
+    def run(self, job: Job, ctx: JobContext) -> None:
+        p = job.params
+        rel_dir, txt_name = p["rel_dir"], p["txt_name"]
+        job_dir = ctx.paths.job(rel_dir, job.id)
+        result = job_dir / "result"
+        shutil.rmtree(result, ignore_errors=True)
+        result.mkdir(parents=True)
+        if not p.get("remove"):
+            inputs = p.get("inputs") or {}
+            in_dir = ctx.paths.abs(inputs["dir"]) if inputs.get("dir") else ctx.paths.job_in(rel_dir, job.id)
+            src = ctx.paths.abs(inputs["video"]) if inputs.get("video") else None
+            if src is None or not src.is_file():
+                src = _saved_video(in_dir)  # «Перезапустить» не качает заново
+            if src is None:
+                url = (p.get("video_url") or "").strip()
+                if not url:
+                    raise JobFailed("input", "Нужно видео: загрузите файл или вставьте ссылку")
+                in_dir.mkdir(parents=True, exist_ok=True)
+                src = download_video(ctx, job.id, url, in_dir, p.get("video_height"))
+            ext = src.suffix.lower()
+            if ext not in naming.VIDEO_EXTS:
+                raise JobFailed("input", f"Формат видео {ext or 'без расширения'} не поддерживается")
+            dest = result / (PurePosixPath(txt_name).stem + naming.video_suffix(ext))
+            try:
+                os.link(src, dest)  # тот же том: без второй копии сотен МБ
+            except OSError:
+                shutil.copy2(src, dest)
+            ctx.log(job.id, f"Видео песни: {dest.name}")
+        ctx.check_cancel(job.id, force=True)
+        publish_video(ctx, job, job)
+
+
 # ============================================================================ publish
 
 class PublishHandler:
@@ -802,6 +1018,8 @@ class PublishHandler:
             publish_song(ctx, job, src)
         elif src.type == "instrumental":
             publish_instrumental(ctx, job, src)
+        elif src.type == "video":
+            publish_video(ctx, job, src)
         else:
             raise JobFailed("input", f"Задание типа «{src.type}» нельзя выложить повторно")
 
@@ -811,4 +1029,5 @@ HANDLERS: dict[str, Handler] = {
     "instrumental": InstrumentalHandler(),
     "import": ImportHandler(),
     "publish": PublishHandler(),
+    "video": VideoHandler(),
 }

@@ -62,3 +62,13 @@ def test_song_file_names_come_from_one_place():
     assert naming.song_file("Bros.", "T", naming.SUFFIX_AUDIO) == "Bros - T.mp3"
     assert naming.song_file("Bros.", "T", naming.cover_suffix(".JPEG")) == "Bros - T [CO].jpg"
     assert naming.song_file("Bros.", "T", naming.cover_suffix(".png")) == "Bros - T [CO].png"
+
+
+def test_video_suffix_keeps_extension_lowercased():
+    assert naming.video_suffix(".MP4") == ".mp4"
+    assert naming.video_suffix("mkv") == ".mkv"
+    assert naming.song_file("А", "Б", naming.video_suffix(".webm")) == "А - Б.webm"
+
+
+def test_video_exts_are_the_supported_containers():
+    assert naming.VIDEO_EXTS == {".mp4", ".m4v", ".mkv", ".webm", ".avi", ".mov", ".mpg", ".mpeg"}

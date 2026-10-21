@@ -60,6 +60,7 @@ class SongEntry:
     audio: str | None = None
     instrumental: str | None = None
     cover: str | None = None
+    video: str | None = None
     is_duet: bool = False
     mtime: float | None = None
 
@@ -424,6 +425,7 @@ class Storage(ABC):
             audio=present("AUDIO") or present("MP3"),
             instrumental=present("INSTRUMENTAL"),
             cover=present("COVER"),
+            video=present("VIDEO"),
             is_duet=bool(song.is_duet),
             mtime=e.mtime or None,
         )

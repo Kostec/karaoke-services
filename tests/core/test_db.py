@@ -210,3 +210,23 @@ def test_settings_yandex_tolerates_garbage(path):
     assert settings.get_yandex() is None
     settings._set(db.YANDEX_KEY, '{"token": ""}')
     assert settings.get_yandex() is None
+
+
+def test_library_keeps_video(path):
+    lib = db.Library(db.connect(path))
+    lib.upsert(db.LibraryItem(target_id="t1", rel_dir="A/A - B", txt_name="A - B.txt", video="A - B.mp4"))
+    item = lib.get("t1", "A/A - B")
+    assert item.video == "A - B.mp4"
+    assert item.to_dict()["video"] == "A - B.mp4"
+
+
+def test_old_v1_database_migrates_to_video_column(path):
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.executescript(db._SCHEMA_V1 + ";PRAGMA user_version = 1;")
+    conn.execute("INSERT INTO library (target_id, rel_dir, txt_name) VALUES ('t1', 'A/A - B', 'A - B.txt')")
+    conn.commit()
+    conn.close()
+    item = db.Library(db.connect(path)).get("t1", "A/A - B")
+    assert (item.txt_name, item.video) == ("A - B.txt", None)

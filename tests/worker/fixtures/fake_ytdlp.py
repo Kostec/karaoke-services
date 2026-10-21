@@ -8,6 +8,9 @@
   nothumb  — звук есть, миниатюры нет;
   forbidden — «ERROR: … HTTP Error 403: Forbidden», код 1;
   network  — «ERROR: … Temporary failure in name resolution», код 1.
+  novideo  — «ERROR: … Requested format is not available», код 1 (у ссылки нет видеодорожки).
+Видеорежим (без ``-x``): ``-4 --no-playlist -f bv* -S <сортировка с vcodec:h264,ext:mp4> --remux-video mp4
+-o <шаблон> <ссылка>``; пишет ``<шаблон>`` с расширением mp4 (``FAKE-MP4 <ссылка> <сортировка>``).
 FAKE_YTDLP_DEAD — id роликов через запятую: их загрузка падает «Video unavailable … removed».
 Поиск: ``-4 -J --flat-playlist -- ytsearchN:<запрос>`` печатает одну строку JSON плейлиста,
 entries — из FAKE_YTDLP_SEARCH (JSON-список, по умолчанию пусто).
@@ -35,9 +38,27 @@ def search(argv: list[str]) -> int:
     return 0
 
 
+def video_args_ok(argv: list[str]) -> bool:
+    for flag in ("-4", "--no-playlist", "-o", "-f", "-S", "--remux-video"):
+        if flag not in argv:
+            print(f"bad args (нет {flag}): {argv}", flush=True)
+            return False
+    sort = argv[argv.index("-S") + 1]
+    if (argv[argv.index("-f") + 1] != "bv*" or argv[argv.index("--remux-video") + 1] != "mp4"
+            or not sort.endswith("vcodec:h264,ext:mp4")):
+        print(f"bad args (видео): {argv}", flush=True)
+        return False
+    return True
+
+
 def main(argv: list[str]) -> int:
     if "-J" in argv:
         return search(argv)
+    video = "-x" not in argv and "-f" in argv
+    if video:
+        if not video_args_ok(argv):
+            return 2
+        return download(argv, video=True)
     for flag in ("-4", "-x", "--no-playlist", "-o"):
         if flag not in argv:
             print(f"bad args (нет {flag}): {argv}", flush=True)
@@ -45,6 +66,10 @@ def main(argv: list[str]) -> int:
     if "--audio-format" not in argv or argv[argv.index("--audio-format") + 1] != "mp3":
         print(f"bad args (нет --audio-format mp3): {argv}", flush=True)
         return 2
+    return download(argv, video=False)
+
+
+def download(argv: list[str], video: bool) -> int:
     template = argv[argv.index("-o") + 1]
     url = argv[-1]
     mode = os.environ.get("FAKE_YTDLP_MODE", "")
@@ -56,6 +81,10 @@ def main(argv: list[str]) -> int:
         return 1
     if mode == "fail":
         print(f"ERROR: [youtube] {url[-11:]}: Video unavailable. This video is private", flush=True)
+        return 1
+    if mode == "novideo" and video:
+        print(f"ERROR: [youtube] {url[-11:]}: Requested format is not available. Use --list-formats for "
+              "a list of available formats", flush=True)
         return 1
     if mode == "forbidden":
         print("ERROR: unable to download video data: HTTP Error 403: Forbidden", flush=True)
@@ -74,6 +103,11 @@ def main(argv: list[str]) -> int:
     def out(ext: str) -> Path:
         return Path(template.replace("%(ext)s", ext))
 
+    if video:
+        sort = argv[argv.index("-S") + 1]
+        out("mp4").write_bytes(f"FAKE-MP4 {url} {sort}".encode())
+        print(f"[VideoRemuxer] Not remuxing media file: {out('mp4')}", flush=True)
+        return 0
     out("mp3").write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00YT-AUDIO " + url.encode())
     print(f"[ExtractAudio] Destination: {out('mp3')}", flush=True)
     if "--write-thumbnail" in argv and mode != "nothumb":

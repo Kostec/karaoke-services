@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import naming, ultrastar
 
-__all__ = ["finalize", "FinalizedSong", "FinalizeError"]
+__all__ = ["finalize", "FinalizedSong", "FinalizeError", "format_videogap"]
 
 # Заголовки, которые приходят от MusicBrainz и удаляются при несовпадении исполнителя.
 MB_HEADERS = ("COVER", "COVERURL", "YEAR", "GENRE")
@@ -79,13 +79,25 @@ def _by_suffix(folder: Path, marker: str) -> Path | None:
     return found[0] if found else None
 
 
+def format_videogap(value) -> str | None:
+    """Значение ``#VIDEOGAP`` в секундах: до 3 знаков, без «.0»; 0 или пусто — ``None`` (строки нет)."""
+    if value in (None, ""):
+        return None
+    gap = round(float(value), 3)
+    if gap == 0:
+        return None
+    return f"{gap:.3f}".rstrip("0").rstrip(".")
+
+
 def finalize(out_dir, artist: str, title: str, cover_path=None, *,
-             dest_dir=None) -> FinalizedSong:
+             dest_dir=None, video_path=None, videogap=None) -> FinalizedSong:
     """Собрать готовую песню из выхода UltraSinger.
 
     ``out_dir`` — папка песни UltraSinger (``<Artist - Title>/``) или папка,
     в которой она лежит. Результат — в ``dest_dir`` (по умолчанию
     ``<out_dir>/../result``); папка результата пересоздаётся.
+    ``video_path`` — видеофайл: копия ``<A - T>.<ext>``, ``#VIDEO`` и ``#VIDEOGAP``
+    (если ``videogap`` не 0).
     """
     out_dir = Path(out_dir)
     if not out_dir.is_dir():
@@ -166,6 +178,20 @@ def finalize(out_dir, artist: str, title: str, cover_path=None, *,
     mids = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".mid")
     if mids:
         copies.append((mids[0], file_name(naming.SUFFIX_MIDI)))
+
+    # Видео — как есть, с исходным расширением.
+    if video_path is not None:
+        video_src = Path(video_path)
+        if not video_src.is_file():
+            raise FinalizeError("Файл видео не найден")
+        name = file_name(naming.video_suffix(video_src.suffix))
+        copies.append((video_src, name))
+        song.set_header("VIDEO", name)
+        gap = format_videogap(videogap)
+        if gap is None:
+            song.remove_header("VIDEOGAP")
+        else:
+            song.set_header("VIDEOGAP", gap)
 
     # 3. Нулевые ноты.
     zero_fixed = ultrastar.fix_zero_length(song)

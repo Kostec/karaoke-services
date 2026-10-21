@@ -661,3 +661,21 @@ def test_swap_puts_old_file_back_when_new_one_cannot_be_placed(tmp_path):
         st.write_atomic("A/A - B/A - B.txt", b"new")
     assert (share / "A/A - B/A - B.txt").read_bytes() == b"old"
     assert sorted(p.name for p in (share / "A/A - B").iterdir()) == ["A - B.txt"]
+
+
+def test_read_song_reports_video_file_from_header(env):
+    st, root = env
+    d = "Исполнитель/Исполнитель - Песня"
+    put(root, f"{d}/Исполнитель - Песня.txt", SOLO.replace(b"#BPM:", "#VIDEO:Исполнитель - Песня.mp4\n#BPM:".encode()))
+    put(root, f"{d}/Исполнитель - Песня.mp4", b"v")
+    s = st.read_song(d)
+    assert s.video == "Исполнитель - Песня.mp4"
+    assert s.to_library_item("t1").video == "Исполнитель - Песня.mp4"
+
+
+def test_read_song_video_link_or_missing_file_is_none(env):
+    st, root = env
+    put(root, "a/A.txt", SOLO.replace(b"#BPM:", b"#VIDEO:v=abcdefghijk,co=cover.jpg\n#BPM:"))
+    put(root, "b/B.txt", SOLO.replace(b"#BPM:", b"#VIDEO:B.mp4\n#BPM:"))
+    assert st.read_song("a").video is None
+    assert st.read_song("b").video is None

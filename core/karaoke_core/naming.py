@@ -59,6 +59,16 @@ def cover_suffix(ext: str) -> str:
     return f"{_COVER_MARK}{ext}"
 
 
+# Контейнеры видео, которые кладутся в папку песни как есть (R07).
+VIDEO_EXTS = frozenset({".mp4", ".m4v", ".mkv", ".webm", ".avi", ".mov", ".mpg", ".mpeg"})
+
+
+def video_suffix(ext: str) -> str:
+    """Суффикс видео ``".<ext>"`` (расширение в нижнем регистре): файл ``<A - T>.<ext>``."""
+    ext = (ext or ".mp4").lower()
+    return ext if ext.startswith(".") else "." + ext
+
+
 def song_file(artist: str, title: str, suffix: str) -> str:
     """Имя файла песни: ``<Исполнитель - Название>`` + суффикс (``SUFFIX_*``, :func:`cover_suffix`)."""
     return base_name(artist, title) + suffix

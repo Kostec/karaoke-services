@@ -90,7 +90,12 @@ CREATE TABLE songs (
 );
 """
 
-_MIGRATIONS = [_SCHEMA_V1]
+# V2: видео песни (имя файла из #VIDEO или NULL).
+_SCHEMA_V2 = """
+ALTER TABLE library ADD COLUMN video TEXT
+"""
+
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2]
 
 
 def now() -> str:
@@ -483,6 +488,7 @@ class LibraryItem:
     audio: str | None = None
     instrumental: str | None = None
     cover: str | None = None
+    video: str | None = None
     is_duet: bool = False
     own_song_id: str | None = None
     mtime: float | None = None

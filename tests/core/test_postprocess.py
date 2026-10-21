@@ -129,3 +129,27 @@ def test_artist_with_trailing_dot_gets_consistent_names(out_dir):
     assert res.rel_dir == "Bros/Bros - Song"
     assert "Bros - Song [Instrumental].mp3" in res.files
     assert _txt(res, "Bros - Song").header("ARTIST") == "Bros."
+
+
+def test_video_is_copied_under_song_name_with_videogap(out_dir, tmp_path):
+    video = tmp_path / "in" / "video.MKV"
+    video.parent.mkdir()
+    video.write_bytes(b"MKV-DATA")
+    res = postprocess.finalize(out_dir, "Тестовая Группа", "Песня Ёлки", None, video_path=video,
+                               videogap=-1.25)
+    assert f"{MB_BASE}.mkv" in res.files
+    assert (res.dir / f"{MB_BASE}.mkv").read_bytes() == b"MKV-DATA"
+    song = _txt(res, MB_BASE)
+    assert song.header("VIDEO") == f"{MB_BASE}.mkv"
+    assert song.header("VIDEOGAP") == "-1.25"
+
+
+def test_video_with_zero_gap_has_no_videogap_and_no_video_means_no_header(out_dir, tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"MP4")
+    res = postprocess.finalize(out_dir, "Тестовая Группа", "Песня Ёлки", None, video_path=video, videogap=0)
+    song = _txt(res, MB_BASE)
+    assert song.header("VIDEO") == f"{MB_BASE}.mp4"
+    assert song.header("VIDEOGAP") is None
+    res = postprocess.finalize(out_dir, "Тестовая Группа", "Песня Ёлки", None)
+    assert not any(f.endswith(".mp4") for f in res.files)
