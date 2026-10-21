@@ -1,7 +1,7 @@
 window.STATE =
 {
   "slug": "duets-video",
-  "dir": "2026-10-21-duets-video--wip",
+  "dir": "2026-10-21-duets-video",
   "title": "Дуэты (в т.ч. в редакторе нот) и видео к песням: ссылкой или файлом, опция видео при загрузке по ссылке и из usdb",
   "mode": "semi",
   "depth": "normal",
@@ -11,8 +11,8 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "skillDir": "C:/Users/work/.claude/skills/autopilot",
   "startedAt": "2026-10-21T21:43:27+03:00",
-  "updatedAt": "2026-10-22T02:04:00+03:00",
-  "finishedAt": null,
+  "updatedAt": "2026-10-22T02:27:00+03:00",
+  "finishedAt": "2026-10-22T02:27:00+03:00",
   "stages": [
     {
       "id": "preflight",
@@ -51,20 +51,22 @@ window.STATE =
       "id": "build",
       "status": "done",
       "startedAt": "2026-10-21T22:20:00+03:00",
-      "note": "6 из 6 тасков готовы",
+      "note": "8 из 8 тасков (2 — доводка по ревью)",
       "finishedAt": "2026-10-22T01:05:00+03:00"
     },
     {
       "id": "review",
       "status": "done",
       "startedAt": "2026-10-21T22:37:30+03:00",
-      "note": "проверено 6 из 6",
+      "note": "проверено 8 из 8",
       "finishedAt": "2026-10-22T01:05:00+03:00"
     },
     {
       "id": "final",
-      "status": "active",
-      "startedAt": "2026-10-22T01:05:00+03:00"
+      "status": "done",
+      "startedAt": "2026-10-22T01:05:00+03:00",
+      "finishedAt": "2026-10-22T02:27:00+03:00",
+      "note": "приёмка: 10 реализовано, 1 частично (генерацию на GPU не гоняли)"
     }
   ],
   "requirements": {
@@ -305,11 +307,17 @@ window.STATE =
         "worker/",
         "web/static/js/video-block.js"
       ],
-      "status": "review",
+      "status": "done",
       "retries": 0,
       "repairs": 0,
       "handoffs": 0,
-      "startedAt": "2026-10-22T01:31:00+03:00"
+      "startedAt": "2026-10-22T01:31:00+03:00",
+      "finishedAt": "2026-10-22T02:27:00+03:00",
+      "tests": {
+        "passed": 655,
+        "failed": 0
+      },
+      "commit": "e77cb99"
     },
     {
       "id": "08",
@@ -326,16 +334,22 @@ window.STATE =
         "web/static/js/editors/",
         "web/app/notes.py"
       ],
-      "status": "review",
+      "status": "done",
       "retries": 0,
       "repairs": 0,
       "handoffs": 0,
-      "startedAt": "2026-10-22T01:31:00+03:00"
+      "startedAt": "2026-10-22T01:31:00+03:00",
+      "finishedAt": "2026-10-22T02:27:00+03:00",
+      "tests": {
+        "passed": 655,
+        "failed": 0
+      },
+      "commit": "144e1b6"
     }
   ],
   "singlePass": null,
   "tests": {
-    "passed": 796,
+    "passed": 814,
     "failed": 0
   },
   "debt": {
