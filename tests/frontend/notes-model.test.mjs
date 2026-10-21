@@ -637,3 +637,38 @@ test('дуэт: разрыв после последней строки певц
   assert.equal(M.toPayload(M.fromPayload(data(null))).lines[0].break_beat, null);
   assert.equal(M.isDirty(M.fromPayload(data(6)), M.fromPayload(data(6))), false);
 });
+
+// ---------- «Строки как в тексте» (POST /api/songs/{id}/notes/lines) ----------
+
+test('lineStartsRequest: тексты нот соло по порядку и индексы начал строк', () => {
+  const st = M.fromPayload(payload());
+  assert.deepEqual(M.lineStartsRequest(st), { texts: ['Hel', 'lo', ' world', 'Sec', 'ond', 'Last'], starts: [0, 3, 5] });
+  const out = M.startLine(st, byText(st, ' world').id);
+  assert.deepEqual(M.lineStartsRequest(out).starts, [0, 2, 3, 5]);
+  assert.throws(() => M.lineStartsRequest(M.fromPayload(duetPayload())), /дуэт/);
+});
+
+test('setLineStarts: строки с указанных нот, новые разрывы — конец предыдущей ноты, прежние — сохраняются', () => {
+  const st = M.fromPayload(payload());
+  const out = M.setLineStarts(st, [0, 2, 5]);
+  assert.deepEqual(texts(out), [['Hel', 'lo'], [' world', 'Sec', 'ond'], ['Last']]);
+  assert.deepEqual(M.toPayload(out).lines.map((l) => l.break_beat), [5, 22, null]);
+  assert.deepEqual(texts(st), [['Hel', 'lo', ' world'], ['Sec', 'ond'], ['Last']], 'исходное состояние не меняется');
+  assert.deepEqual(out.created, []);
+  // первая нота — всегда начало строки, даже без 0 в списке
+  assert.deepEqual(texts(M.setLineStarts(st, [3])), [['Hel', 'lo', ' world'], ['Sec', 'ond', 'Last']]);
+  assert.deepEqual(texts(M.setLineStarts(st, [])), [['Hel', 'lo', ' world', 'Sec', 'ond', 'Last']]);
+  // ничего не меняется — то же состояние (правкой не считается)
+  assert.equal(M.setLineStarts(st, [0, 3, 5]), st);
+  // после отмены разрыва и возврата границы бит разрыва пересчитан, а не взят из чужой строки
+  const back = M.setLineStarts(M.setLineStarts(st, [0, 2, 5]), [0, 3, 5]);
+  assert.deepEqual(M.toPayload(back).lines.map((l) => l.break_beat), [8, 22, null]);
+});
+
+test('setLineStarts: неверные индексы и дуэт — ошибка', () => {
+  const st = M.fromPayload(payload());
+  for (const bad of [[6], [-1], [1.5], ['2'], [3, 2], [2, 2], null]) {
+    assert.throws(() => M.setLineStarts(st, bad), /Неверн/, JSON.stringify(bad));
+  }
+  assert.throws(() => M.setLineStarts(M.fromPayload(duetPayload()), [0]), /дуэт/);
+});

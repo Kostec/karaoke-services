@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import naming, ultrastar
 
-__all__ = ["finalize", "FinalizedSong", "FinalizeError", "format_videogap"]
+__all__ = ["finalize", "FinalizedSong", "FinalizeError", "format_videogap", "find_song_txt"]
 
 # Заголовки, которые приходят от MusicBrainz и удаляются при несовпадении исполнителя.
 MB_HEADERS = ("COVER", "COVERURL", "YEAR", "GENRE")
@@ -63,6 +63,11 @@ def _find_song_folder(out_dir: Path) -> tuple[Path, Path]:
                 return folder, t
         return folder, txts[0]
     raise FinalizeError("UltraSinger не создал файл песни (.txt)")
+
+
+def find_song_txt(out_dir: Path) -> Path:
+    """Файл песни (.txt) в выходе UltraSinger — тот же, что возьмёт :func:`finalize`."""
+    return _find_song_folder(Path(out_dir))[1]
 
 
 def _referenced(folder: Path, song: ultrastar.Song, key: str) -> Path | None:

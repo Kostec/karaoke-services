@@ -188,3 +188,46 @@ def test_set_singer_names_updates_existing_duetsinger_and_removes_empty():
     plain = ultrastar.parse(b"#TITLE:x\n#BPM:100\n: 0 1 0 a\nE\n")
     ultrastar.set_singer_names(plain, "A", "B")
     assert ultrastar.render(plain) == b"#TITLE:x\n#BPM:100\n#P1:A\n#P2:B\n: 0 1 0 a\nE\n"
+
+
+# --------------------------------------------------------------------------- set_line_starts
+
+def test_set_line_starts_same_starts_is_byte_exact():
+    for name in ("ultrasinger_utf8.txt", "bom_crlf.txt", "usdb_cp1251.txt"):
+        raw = (FIX / name).read_bytes()
+        song = ultrastar.parse(raw)
+        starts, i = [], 0
+        for line in song.lines():
+            if line["notes"]:
+                starts.append(i)
+                i += len(line["notes"])
+        ultrastar.set_line_starts(song, starts)
+        assert ultrastar.render(song) == raw, name
+
+
+def test_set_line_starts_cp1251_crlf_changes_only_breaks():
+    raw = (FIX / "usdb_cp1251.txt").read_bytes()
+    song = ultrastar.parse(raw)
+    ultrastar.set_line_starts(song, [0, 3, 7])
+    out = ultrastar.render(song)
+    expected = raw.replace(b"- 27 30\r\n", b"")  # «- 36» перед нотой 7 остаётся как был
+    expected = expected.replace(b"* 11 4 64", b"- 10\r\n* 11 4 64", 1)
+    assert raw.count(b"* 11 4 64") == 1
+    assert out == expected
+
+
+def test_set_line_starts_ignores_zero_and_keeps_breaks_outside_notes():
+    raw = "#BPM:300\n#GAP:0\n: 0 2 5 а \n# комментарий\n: 2 2 5 б \n- 4\n: 6 2 5 в \nE\nхвост".encode()
+    song = ultrastar.parse(raw)
+    ultrastar.set_line_starts(song, [1, 0])
+    assert ultrastar.render(song) == (
+        "#BPM:300\n#GAP:0\n: 0 2 5 а \n# комментарий\n- 2\n: 2 2 5 б \n: 6 2 5 в \nE\nхвост").encode()
+
+
+def test_set_line_starts_rejects_duet_and_bad_index():
+    duet = ultrastar.parse((FIX / "duet.txt").read_bytes())
+    with pytest.raises(ValueError, match="дуэт"):
+        ultrastar.set_line_starts(duet, [0])
+    solo = ultrastar.parse((FIX / "ultrasinger_utf8.txt").read_bytes())
+    with pytest.raises(ValueError):
+        ultrastar.set_line_starts(solo, [0, 99])

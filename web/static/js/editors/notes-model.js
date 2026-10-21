@@ -635,6 +635,44 @@ export function mergeLineAt(state, id, voice = null) {
   return { ...state, notes: state.notes.map((y) => (y.id === head ? { ...y, ls: false, brk: null, brk2: null } : y)), created: [] };
 }
 
+// ---------- «Строки как в тексте» (POST /api/songs/{id}/notes/lines) ----------
+
+export const LINES_DUET_ERROR = 'У дуэта строки по тексту не расставляются — только у соло';
+export const LINE_STARTS_ERROR = 'Неверные номера нот начал строк';
+
+/** Тело запроса «Строки как в тексте»: тексты нот соло по порядку и индексы нот — начал строк. */
+export function lineStartsRequest(state) {
+  if (state.duet) throw new Error(LINES_DUET_ERROR);
+  return {
+    texts: state.notes.map((x) => x.text),
+    starts: state.notes.flatMap((x, i) => (i === 0 || x.ls ? [i] : [])),
+  };
+}
+
+/**
+ * Строки соло начинаются с нот с индексами `indices` (в `state.notes`, по возрастанию); первая нота — всегда
+ * начало строки. У ноты, которая уже начинала строку, прежний разрыв сохраняется; у новых начал разрыв
+ * сбрасывается (станет концом предыдущей ноты). Без изменений — то же состояние.
+ */
+export function setLineStarts(state, indices) {
+  if (state.duet) throw new Error(LINES_DUET_ERROR);
+  const n = state.notes.length;
+  if (!Array.isArray(indices)) throw new Error(LINE_STARTS_ERROR);
+  indices.forEach((k, j) => {
+    if (!Number.isInteger(k) || k < 0 || k >= n || (j > 0 && k <= indices[j - 1])) throw new Error(LINE_STARTS_ERROR);
+  });
+  const heads = new Set(indices);
+  let changed = false;
+  const notes = state.notes.map((x, i) => {
+    const want = i === 0 || heads.has(i);
+    const was = i === 0 || x.ls;
+    if (want === was && x.ls === want) return x;
+    changed = true;
+    return { ...x, ls: want, brk: want && was ? x.brk : null, brk2: null };
+  });
+  return changed ? { ...state, notes, created: [] } : state;
+}
+
 /** Золотые (`G`, ★): если не все выбранные «:»/«*» золотые — все «*», иначе все «:». */
 export function toggleGold(state, ids) {
   checkIds(state, ids);

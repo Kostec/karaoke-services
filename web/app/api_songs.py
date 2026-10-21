@@ -7,8 +7,9 @@ import re
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
-from karaoke_core import ultrastar
+from karaoke_core import linealign, ultrastar
 from karaoke_core.paths import INPUT_LYRICS
 from karaoke_core.storage import StorageError, StorageNotFound
 from karaoke_core.trash import TrashError
@@ -148,6 +149,27 @@ def put_notes(song_id: str, body: NotesIn, request: Request):
         _storage_call(ctx, storage.write_atomic, rel, data)
         item = ctx.refresh_song(item.rel_dir) or item
     return ctx.song_dict(item)
+
+
+NO_LYRICS_TO_ALIGN = "У песни нет исходного текста — строки выровнять не по чему"
+
+
+class LinesIn(BaseModel):
+    texts: list[str]  # тексты нот соло в порядке редактора
+    starts: list[int] = []  # текущие начала строк в редакторе (индексы нот)
+
+
+@router.post("/songs/{song_id}/notes/lines", summary="Границы строк по исходному тексту (ничего не пишет)")
+def align_notes_lines(song_id: str, body: LinesIn, request: Request):
+    ctx = ctx_of(request)
+    item = ctx.find_song(song_id)
+    if not body.texts:
+        raise ApiError(400, "Нет нот — строки выровнять не по чему", field="texts")
+    lyrics = _own_lyrics(ctx, item)
+    if lyrics is None or not lyrics.strip():
+        raise ApiError(409, NO_LYRICS_TO_ALIGN)
+    r = linealign.align_line_starts(body.texts, lyrics, body.starts)
+    return {"starts": r.starts, "unmatched": r.unmatched, "total": r.total}
 
 
 _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")

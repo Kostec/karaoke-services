@@ -16,6 +16,7 @@ __all__ = [
     "Song", "Header", "Note", "LineBreak", "PlayerMark", "End", "RawLine",
     "parse", "render", "set_header_line", "fix_zero_length", "beat_to_ms",
     "extract_lyrics", "NOTE_TYPES", "decode", "number", "singer_names", "set_singer_names",
+    "set_line_starts",
 ]
 
 NOTE_TYPES = (":", "*", "F", "R", "G")
@@ -451,6 +452,59 @@ def set_singer_names(song: Song, p1: str, p2: str) -> None:
         song.set_header(f"P{i}", name)
         if song.header(f"DUETSINGERP{i}") is not None:
             song.set_header(f"DUETSINGERP{i}", name)
+
+
+def set_line_starts(song: Song, starts) -> None:
+    """Границы строк соло: перед нотой с индексом из ``starts`` (кроме 0) — разрыв, прочие убраны.
+
+    Разрыв, уже стоящий перед такой нотой, остаётся как был (байт в байт); новый пишется
+    ``- <конец предыдущей ноты>``. Разрывы до первой и после последней ноты не трогаются.
+    Дуэт, ``#RELATIVE`` или индекс вне нот — ``ValueError``.
+    """
+    if song.is_duet:
+        raise ValueError("Границы строк по тексту меняются только у соло, не у дуэта")
+    if song.relative:
+        raise ValueError("Границы строк не меняются в песне с #RELATIVE")
+    count = len(song.notes())
+    wanted = set()
+    for s in starts:
+        s = int(s)
+        if s < 0 or s >= count:
+            raise ValueError(f"Начало строки {s} вне нот песни (нот {count})")
+        if s:
+            wanted.add(s)
+    body: list = []
+    index = 0  # индекс очередной ноты
+    pending: list = []  # разрывы и прочие строки после предыдущей ноты
+    prev: Note | None = None
+    ended = False
+    for item in song.body:
+        if ended or isinstance(item, End):
+            ended = True
+            body.extend(pending)
+            pending = []
+            body.append(item)
+        elif isinstance(item, Note):
+            if prev is not None:
+                has_break = any(isinstance(x, LineBreak) for x in pending)
+                if index in wanted:
+                    body.extend(pending)
+                    if not has_break:
+                        body.append(LineBreak(beat=prev.end, eol=song.newline))
+                else:
+                    body.extend(x for x in pending if not isinstance(x, LineBreak))
+            else:
+                body.extend(pending)
+            pending = []
+            body.append(item)
+            prev = item
+            index += 1
+        elif prev is None:
+            body.append(item)
+        else:
+            pending.append(item)
+    body.extend(pending)
+    song.body = body
 
 
 def extract_lyrics(song: Song) -> str:

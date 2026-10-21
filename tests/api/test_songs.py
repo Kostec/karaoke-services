@@ -445,3 +445,46 @@ def test_notes_put_duet_singer_names_and_reused_marks(env, client):
     notes["singers"] = {"p1": "", "p2": "Боря"}
     assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
     assert "P1:" not in path.read_text("utf-8") and "#P2:Боря\n" in path.read_text("utf-8")
+
+
+# --------------------------------------------------------------------------- строки по тексту
+
+def _own_song(env, client, lyrics: str | None) -> str:
+    env.put_song("Artist/Artist - Song", env.SONG_TXT, "Artist - Song")
+    Songs(connect(env.data / "karaoke.sqlite")).upsert(
+        artist="Artist", title="Song", rel_dir="Artist/Artist - Song", params={"language": "ru"})
+    if lyrics is not None:
+        src = env.data / "songs" / "Artist" / "Artist - Song" / "source"
+        src.mkdir(parents=True)
+        (src / "lyrics.txt").write_text(lyrics, "utf-8")
+    client.post("/api/songs/rescan")
+    return client.get("/api/songs").json()["items"][0]["song_id"]
+
+
+def test_notes_lines_align_to_own_lyrics_without_writing(env, client):
+    sid = _own_song(env, client, "Тяни лотерейный билет\nЧто б тамбур прокуренным был\n\n[Эта строка не спета]")
+    txt = env.out / "Artist" / "Artist - Song" / "Artist - Song.txt"
+    before = txt.read_bytes()
+    texts = ["Тя", "ни ", "ло", "те", "рей", "ный ", "би", "лет ", "Что ", "б ", "там", "бур ",
+             "про", "ку", "рен", "ным ", "был "]
+    r = client.post(f"/api/songs/{sid}/notes/lines", json={"texts": texts, "starts": [0, 8, 9, 16]})
+    assert r.status_code == 200
+    assert r.json() == {"starts": [0, 8], "unmatched": 1, "total": 3}
+    assert client.post(f"/api/songs/{sid}/notes/lines", json={"texts": texts}).json()["starts"] == [0, 8]
+    assert txt.read_bytes() == before
+
+
+def test_notes_lines_without_own_lyrics_is_409(env, client, song):
+    r = client.post(f"/api/songs/{song['song_id']}/notes/lines", json={"texts": ["При", "вет "]})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "У песни нет исходного текста — строки выровнять не по чему"
+    sid = _own_song(env, client, None)
+    assert client.post(f"/api/songs/{sid}/notes/lines", json={"texts": ["При"]}).status_code == 409
+
+
+def test_notes_lines_empty_texts_is_400(env, client):
+    sid = _own_song(env, client, "При вет")
+    r = client.post(f"/api/songs/{sid}/notes/lines", json={"texts": []})
+    assert r.status_code == 400 and r.json()["field"] == "texts"
+    assert client.post(f"/api/songs/{sid}/notes/lines", json={}).status_code == 400
+    assert client.post("/api/songs/nope/notes/lines", json={"texts": ["a"]}).status_code == 404

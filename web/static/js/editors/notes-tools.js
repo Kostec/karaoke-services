@@ -1,9 +1,11 @@
 // Инструменты редактора нот (таск 04; спека: истории 16, 24–26, 32; решение §10):
 // «⇠ текст / текст ⇢» с областью сдвига и перетаскиванием слога (G03), «Разрезать», «Слить», «↵ Строка»,
 // склейка строк кликом по ↵,
+// «Строки как в тексте» (строки по исходному тексту песни, сервер сопоставляет слоги),
 // режим «Отстукивание» (T, держать J или «Держать») и справка по всем сочетаниям (? и кнопка).
 
 import { h, confirmDialog } from '../ui.js';
+import { api, errorText } from '../api.js';
 import { tapTiming, tapQueue, plural } from './notes-panel-logic.js';
 
 const SCOPE_KEY = 'notesEditor.shiftScope';
@@ -51,6 +53,7 @@ const HELP = [
   [['+', '−', 'Ctrl+колесо'], 'масштаб таймлайна'],
   [['T'], 'режим отстукивания, затем держи J на каждом слоге (у дуэта — до конца партии)'],
   [['Esc'], 'выйти из отстукивания / снять выделение / закрыть'],
+  [['Строки как в тексте'], 'кнопка: расставить границы строк по исходному тексту песни (только соло); Ctrl+Z отменит'],
   [['?'], 'эта справка'],
 ];
 
@@ -174,6 +177,57 @@ export function toolsPlugin(ctx) {
   }
   ctx.onRender(updateTools);
   ctx.onSelect(updateTools);
+
+  // ---------------------------------------------------------------- строки как в тексте
+  // Сервер сопоставляет слоги нот с исходным текстом песни и отдаёт индексы нот — начал строк;
+  // правка — обычный шаг отмены, сохраняется общей кнопкой «Сохранить».
+
+  const byText = btn('Строки как в тексте', 'Расставить границы строк как в исходном тексте песни');
+  byText.hidden = true;
+  els.slotTools.append(byText);
+  let aligning = false;
+  byText.addEventListener('click', async () => {
+    if (aligning || !ctx.editable() || ctx.state.duet) return;
+    const before = ctx.state;
+    let req;
+    try { req = M.lineStartsRequest(before); } catch (e) { ctx.toast(e.message, 'err'); return; }
+    aligning = true;
+    updateByText();
+    let res;
+    try {
+      res = await api.alignLines(ctx.song.song_id, req.texts, req.starts);
+    } catch (e) {
+      const text = e?.status === 0 ? 'Нет связи с сервером — строки не расставлены, попробуй ещё раз'
+        : errorText(e, 'Не удалось расставить строки по тексту');
+      ctx.toast(text, 'err');
+      return;
+    } finally {
+      aligning = false;
+      updateByText();
+    }
+    if (ctx.state !== before) {
+      ctx.toast('Ноты изменились, пока шёл запрос — нажми «Строки как в тексте» ещё раз', 'err');
+      return;
+    }
+    const unmatched = Number(res?.unmatched) || 0;
+    const total = Number(res?.total) || 0;
+    const okText = unmatched > 0
+      ? `Строки расставлены по тексту; ${unmatched} из ${total} строк не нашлось в нотах — там оставлены прежние границы`
+      : 'Строки расставлены по тексту';
+    const ok = ctx.apply((s) => M.setLineStarts(s, res?.starts), okText);
+    // apply молчит, если строки и так совпадают с текстом; ошибку модели он показал сам
+    if (!ok && ctx.state === before) {
+      try { M.setLineStarts(before, res?.starts); ctx.toast(unmatched > 0 ? okText : 'Строки уже как в тексте'); } catch { /* показано */ }
+    }
+    els.scroll.focus({ preventScroll: true });
+  });
+  function updateByText() {
+    const st = ctx.state;
+    byText.hidden = !st || !ctx.editable() || !!st.duet;
+    byText.disabled = aligning;
+    byText.title = aligning ? 'Сопоставляю ноты с текстом…' : byText.getAttribute('aria-label');
+  }
+  ctx.onRender(updateByText);
 
   // ---------------------------------------------------------------- дуэт: сделать дуэтом / соло, отдать певцу
 

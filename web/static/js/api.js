@@ -93,6 +93,9 @@ export const api = {
   lyrics: (id) => request('GET', `/api/songs/${encodeURIComponent(id)}/lyrics`),
   notes: (id) => request('GET', `/api/songs/${encodeURIComponent(id)}/notes`),
   saveNotes: (id, body) => request('PUT', `/api/songs/${encodeURIComponent(id)}/notes`, body),
+  /** «Строки как в тексте»: тексты нот соло и индексы начал строк → {starts, unmatched, total}. */
+  alignLines: (id, texts, starts) =>
+    request('POST', `/api/songs/${encodeURIComponent(id)}/notes/lines`, { texts, starts }),
   coverUrl: (id) => `/api/songs/${encodeURIComponent(id)}/cover`,
   audioUrl: (id) => `/api/songs/${encodeURIComponent(id)}/audio`,
   deleteSong: (id) => request('DELETE', `/api/songs/${encodeURIComponent(id)}`),

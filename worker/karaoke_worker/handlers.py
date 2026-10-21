@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
-from karaoke_core import musiclink, naming, postprocess, ultrastar
+from karaoke_core import linealign, musiclink, naming, postprocess, ultrastar
 from karaoke_core.db import Job, instrumental_params, now, song_id_for
 from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_PARAMS, INPUT_VIDEO_STEM
 from karaoke_core.storage import Storage, StorageError
@@ -21,7 +21,7 @@ from .progress import (IMPORT_PREPARE, PUBLISH, STAGE_DOWNLOAD, STAGE_POSTPROCES
 
 __all__ = ["Handler", "GenerateHandler", "InstrumentalHandler", "ImportHandler", "PublishHandler",
            "VideoHandler", "download_video", "publish_video", "INPUT_VIDEO_STEM",
-           "HANDLERS", "prepare_lyrics", "ultrasinger_args", "parse_lrc", "lyrics_lines", "lrc_matches", "audio_only_copy", "to_mp3",
+           "HANDLERS", "prepare_lyrics", "align_lines", "ultrasinger_args", "parse_lrc", "lyrics_lines", "lrc_matches", "audio_only_copy", "to_mp3",
            "download_youtube", "download_link", "download_song_youtube", "search_youtube",
            "rank_search_results", "song_end_ms"]
 
@@ -331,6 +331,33 @@ def publish_song(ctx: JobContext, job: Job, src: Job) -> None:
     _done(ctx, job)
 
 
+def align_lines(ctx: JobContext, job_id: int, out_dir: Path, lyrics: str) -> None:
+    """Границы строк выхода UltraSinger — по строкам текста пользователя (на месте).
+
+    UltraSinger режет строки по паузам; здесь они ставятся по тексту (``linealign``).
+    Сбой не валит задание: строка в лог, песня остаётся как есть.
+    """
+    try:
+        txt = postprocess.find_song_txt(out_dir)
+        raw = txt.read_bytes()
+        song = ultrastar.parse(raw)
+        result = linealign.align_song(song, lyrics)
+        if result.total and result.unmatched < result.total:
+            data = ultrastar.render(song)
+            if data != raw:
+                txt.write_bytes(data)
+    except Exception as e:  # noqa: BLE001 — выравнивание необязательно, задание не валим
+        ctx.log(job_id, f"Строки не выровнены по тексту: {e}" if isinstance(e, (postprocess.FinalizeError, ValueError))
+                else f"Строки не выровнены по тексту: {type(e).__name__}: {e}")
+        return
+    if not result.total:
+        ctx.log(job_id, "Строки не выровнены по тексту: в тексте нет слов")
+    elif result.unmatched == result.total:
+        ctx.log(job_id, "Строки не выровнены по тексту: ни одна строка текста не найдена в нотах")
+    else:
+        ctx.log(job_id, f"Строки выровнены по тексту: {result.total - result.unmatched} из {result.total}")
+
+
 class GenerateHandler:
     needs_gpu = True
 
@@ -397,6 +424,8 @@ class GenerateHandler:
         ctx.check_cancel(job.id, force=True)
 
         ctx.progress(job.id, tracker.set(*STAGE_POSTPROCESS))
+        if lyrics is not None and timing is None:  # с LRC строки уже заданы его метками
+            align_lines(ctx, job.id, folders[0], text)
         try:
             fin = postprocess.finalize(folders[0], job.artist, job.title, cover, dest_dir=job_dir / "result",
                                        **chosen_video(ctx, job, in_dir))
