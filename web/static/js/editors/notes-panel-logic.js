@@ -1,15 +1,17 @@
 // Чистая логика панели текста и отстукивания редактора нот (таск 04; спека: истории 16, 21, 23) — без DOM.
 
-import { msToBeat } from './notes-model.js';
+import { msToBeat, inVoice } from './notes-model.js';
 
-/** Индекс строки, звучащей на бите beat (от начала первой ноты до конца последней), иначе −1. */
-export function lineAt(lines, beat) {
+/**
+ * Индекс строки, звучащей на бите beat (от начала первой ноты до конца последней), иначе −1.
+ * voice (1 | 2) — только строки партии этого певца (со строками «оба»); порядок строк любой.
+ */
+export function lineAt(lines, beat, voice) {
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
-    if (!line.length) continue;
+    if (!line.length || (voice != null && !inVoice(line[0], voice))) continue;
     const last = line[line.length - 1];
     if (beat >= line[0].start && beat < last.start + last.length) return i;
-    if (beat < line[0].start) return -1;
   }
   return -1;
 }
@@ -53,9 +55,14 @@ export function tapTiming(downMs, upMs, gap, bpm) {
   return { start, length: Math.max(1, Math.round(msToBeat(upMs, gap, bpm)) - start) };
 }
 
-/** Порядок отстукивания: id нот с ноты fromId (нет такой — с первой) до конца песни. */
+/**
+ * Порядок отстукивания: id нот с ноты fromId (нет такой — с первой) до конца песни —
+ * у дуэта до конца партии этой ноты (певец 2 — его ноты и «оба», иначе — певца 1 и «оба»).
+ */
 export function tapQueue(notes, fromId) {
-  const i = notes.findIndex((x) => x.id === fromId);
-  return notes.slice(Math.max(0, i)).map((x) => x.id);
+  const from = notes.find((x) => x.id === fromId);
+  const sub = notes.filter((x) => inVoice(x, from?.voice === 2 ? 2 : 1));
+  const i = sub.indexOf(from);
+  return sub.slice(Math.max(0, i)).map((x) => x.id);
 }
 

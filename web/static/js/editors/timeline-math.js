@@ -43,15 +43,14 @@ export function peaks(channels, sampleRate, binMs = 10) {
   return out;
 }
 
-/** Индекс ноты, звучащей на бите beat (ноты по возрастанию start), или −1 в паузе. */
+/** Индекс ноты, звучащей на бите beat (порядок нот любой; при перекрытии — начавшаяся позже), или −1 в паузе. */
 export function noteAt(notes, beat) {
-  let lo = 0, hi = notes.length - 1, at = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (notes[mid].start <= beat) { at = mid; lo = mid + 1; } else hi = mid - 1;
-  }
-  if (at < 0) return -1;
-  return beat < notes[at].start + notes[at].length ? at : -1;
+  // список партии дуэта не обязан быть отсортирован по времени — проход целиком
+  let at = -1;
+  notes.forEach((x, i) => {
+    if (beat >= x.start && beat < x.start + x.length && (at < 0 || x.start >= notes[at].start)) at = i;
+  });
+  return at;
 }
 
 const RULER_STEPS = [1000, 2000, 5000, 10000, 15000, 30000, 60000];

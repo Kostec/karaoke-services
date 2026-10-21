@@ -60,3 +60,25 @@ test('очередь отстукивания — с выбранной ноты
   assert.deepEqual(tapQueue(notes, 42), [7, 3, 9]);
 });
 
+
+// дуэт: строки в порядке списка, партии перекрываются по времени
+const v = (start, length, voice, id) => ({ id, start, length, voice });
+const DUET = [[v(0, 4, 1, 0), v(4, 2, 1, 1)], [v(0, 3, 2, 2)], [v(8, 4, 'both', 3)], [v(14, 2, 2, 4)], [v(13, 2, 1, 5)]];
+
+test('дуэт: звучащая строка — в партии певца (с «оба»), порядок строк по времени не обязателен', () => {
+  assert.equal(lineAt(DUET, 1, 1), 0);
+  assert.equal(lineAt(DUET, 1, 2), 1);
+  assert.equal(lineAt(DUET, 9, 2), 2, '«оба» — в обеих партиях');
+  assert.equal(lineAt(DUET, 9, 1), 2);
+  assert.equal(lineAt(DUET, 13.5, 1), 4);
+  assert.equal(lineAt(DUET, 14.5, 2), 3);
+  assert.equal(lineAt(DUET, 5, 2), -1);
+  assert.equal(lineAt(DUET, 13.5), 4, 'без певца — любая звучащая строка');
+});
+
+test('дуэт: отстукивание идёт до конца партии ноты', () => {
+  const notes = DUET.flat();
+  assert.deepEqual(tapQueue(notes, 2), [2, 3, 4]);
+  assert.deepEqual(tapQueue(notes, 1), [1, 3, 5]);
+  assert.deepEqual(tapQueue(notes, 99), [0, 1, 3, 5], 'нет такой — с первой ноты партии певца 1');
+});

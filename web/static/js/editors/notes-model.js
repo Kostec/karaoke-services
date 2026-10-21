@@ -2,13 +2,16 @@
 
 import { toSyllables } from './syllables.js';
 //
-// State: {editable, reason, bpm, gap, headers, notes, nextId, created}.
-// notes — плоский список нот в порядке песни:
-//   {id, src, type, start, length, pitch, text, ls, brk}
+// State: {editable, reason, bpm, gap, headers, notes, nextId, created, duet, singers: {p1, p2}}.
+// notes — плоский список нот; порядок важен внутри партии (подпоследовательности нот одного певца):
+//   {id, src, type, start, length, pitch, text, ls, brk, voice, src2, brk2}
 //   id   — ключ ноты в редакторе (уникален, не меняется при правках);
 //   src  — номер ноты в файле (`id` из GET /notes), у новых нот null;
 //   ls   — нота начинает строку (у первой ноты песни всегда true);
-//   brk  — прежний бит разрыва перед этой строкой (только у нот с ls, иначе null).
+//   brk  — прежний бит разрыва перед этой строкой (только у нот с ls, иначе null);
+//   voice — певец строки: 1 | 2 | 'both' (одинаков у всех нот строки; у соло всегда 1);
+//   src2, brk2 — у нот «оба»: номер копии в блоке P2 и разрыв перед строкой в P2.
+// Партия певца v — ноты с voice v и 'both': соседи, перекрытия и строки считаются внутри партии.
 // created — id нот, созданных последней операцией (addNote, splitNote, addNotesToLine).
 // Все операции возвращают новое состояние и не меняют входное; ошибка — Error с русским текстом.
 
@@ -39,67 +42,176 @@ export function isFree(text) {
   return t === '' || t === '~';
 }
 
-/** Ответ GET /api/songs/{id}/notes → состояние редактора. */
-export function fromPayload(data) {
-  const notes = [];
-  // ключи нот без номера в файле (старый ответ сервера) — после самого большого номера
-  let next = data.lines.reduce((m, line) => line.notes.reduce((k, x) => (Number.isInteger(x.id) ? Math.max(k, x.id + 1) : k), m), 0);
-  data.lines.forEach((line, li) => {
-    line.notes.forEach((x, ni) => {
-      const src = Number.isInteger(x.id) ? x.id : null;
-      const id = src ?? next++;
-      notes.push({
-        id, src, type: x.type, start: x.start, length: x.length, pitch: x.pitch, text: x.text ?? '',
-        ls: ni === 0, brk: ni === 0 && li > 0 ? data.lines[li - 1].break_beat ?? null : null,
-      });
-    });
-  });
-  return {
-    editable: data.editable !== false, reason: data.reason ?? null, bpm: data.bpm, gap: data.gap ?? null,
-    headers: data.headers ?? [], notes: withFirstLine(notes), nextId: next, created: [],
-  };
+// ---------- голоса и партии ----------
+
+export const VOICES = [1, 2, 'both'];
+export const NOT_DUET_ERROR = 'Песня не дуэт — сначала «Сделать дуэтом»';
+export const VOICE_ERROR = 'Певец строки — 1, 2 или «оба»';
+export const OTHER_VOICE_ERROR = 'Строки разных певцов — склеивать нельзя';
+
+const voiceOf = (x) => x.voice ?? 1;
+
+/** Нота входит в партию певца v (1 | 2): своя нота певца или «оба». */
+export function inVoice(x, v) {
+  const w = voiceOf(x);
+  return w === 'both' || w === v;
 }
 
-/** Строки песни: ноты, сгруппированные по началам строк (`ls`). */
-export function lines(state) {
+/** Партия, в которой правится нота: у певца 2 — вторая, у певца 1 и «оба» — первая. */
+const partOf = (x) => (voiceOf(x) === 2 ? 2 : 1);
+
+/** Ноты партии певца v (1 | 2) в её порядке, вместе с нотами «оба». */
+export function voiceNotes(state, v) {
+  return state.notes.filter((x) => inVoice(x, v));
+}
+
+/** Нота j подпоследовательности партии начинает строку: первая, флаг `ls` или смена певца. */
+function startsLine(sub, j) {
+  return j === 0 || sub[j].ls || voiceOf(sub[j]) !== voiceOf(sub[j - 1]);
+}
+
+/** Строки одной партии (подпоследовательности нот). */
+function partLines(sub) {
   const out = [];
-  for (const x of state.notes) {
-    if (x.ls || !out.length) out.push([]);
+  sub.forEach((x, j) => {
+    if (startsLine(sub, j)) out.push([]);
     out[out.length - 1].push(x);
-  }
+  });
   return out;
 }
 
-/** Бит разрыва между строками (§4): прежний, если он ещё между нотами, иначе конец предыдущей ноты. */
-function breakBeat(prev, next) {
-  const end = prev.start + prev.length;
-  return next.brk != null && next.brk >= end && next.brk <= next.start ? next.brk : end;
+/** Слить две последовательности по `start`, сохраняя порядок внутри каждой (при равенстве — первая). */
+function mergeByStart(a, b) {
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) out.push(b[j].start < a[i].start ? b[j++] : a[i++]);
+  return out.concat(a.slice(i), b.slice(j));
 }
 
-/** Состояние → тело PUT /api/songs/{id}/notes. */
-export function toPayload(state) {
-  const ls = lines(state);
+/** Каждое начало строки в каждой партии помечено `ls` (первая нота, смена певца). */
+function markLineStarts(notes) {
+  const heads = new Set();
+  for (const v of [1, 2]) {
+    const sub = notes.filter((x) => inVoice(x, v));
+    sub.forEach((x, j) => { if (!x.ls && startsLine(sub, j)) heads.add(x.id); });
+  }
+  return heads.size ? notes.map((x) => (heads.has(x.id) ? { ...x, ls: true, brk: null, brk2: null } : x)) : notes;
+}
+
+// ---------- загрузка и выгрузка ----------
+
+const sameNote = (x, y) => x.type === y.type && x.start === y.start && x.length === y.length
+  && x.pitch === y.pitch && (x.text ?? '') === (y.text ?? '');
+const sameLine = (a, b) => a.notes.length === b.notes.length && a.notes.every((x, i) => sameNote(x, b.notes[i]));
+const srcOf = (x) => (Number.isInteger(x.id) ? x.id : null);
+
+/**
+ * Ответ GET /api/songs/{id}/notes → состояние редактора. У дуэта строка P1 и строка P2 с одинаковыми
+ * нотами (тип, начало, длина, высота, текст) склеиваются в одну строку «оба» (`src` — P1, `src2` — P2).
+ */
+export function fromPayload(data) {
+  const all = data.lines;
+  const duet = data.duet === true || all.some((l) => l.player === 2);
+  // ключи нот без номера в файле (старый ответ сервера) — после самого большого номера
+  let next = all.reduce((m, line) => line.notes.reduce((k, x) => (Number.isInteger(x.id) ? Math.max(k, x.id + 1) : k), m), 0);
+  const mk = (x, extra) => {
+    const src = srcOf(x);
+    return {
+      id: src ?? next++, src, type: x.type, start: x.start, length: x.length, pitch: x.pitch, text: x.text ?? '',
+      ls: false, brk: null, voice: 1, src2: null, brk2: null, ...extra,
+    };
+  };
+  const prevBrk = (block, i) => (i > 0 ? block[i - 1].break_beat ?? null : null);
+  const b1 = duet ? all.filter((l) => l.player !== 2) : all;
+  const b2 = duet ? all.filter((l) => l.player === 2) : [];
+  const pair = new Map(); // строка P1 → её копия в P2
+  const used = new Set();
+  b1.forEach((l, i) => {
+    const j = b2.findIndex((m, k) => !used.has(k) && sameLine(l, m));
+    if (j >= 0) { used.add(j); pair.set(i, j); }
+  });
+  const n1 = [];
+  b1.forEach((l, i) => {
+    const j = pair.get(i);
+    l.notes.forEach((x, k) => n1.push(mk(x, {
+      ls: k === 0, brk: k === 0 ? prevBrk(b1, i) : null,
+      ...(j === undefined ? {} : { voice: 'both', src2: srcOf(b2[j].notes[k]), brk2: k === 0 ? prevBrk(b2, j) : null }),
+    })));
+  });
+  const n2 = [];
+  b2.forEach((l, j) => {
+    if (used.has(j)) return;
+    l.notes.forEach((x, k) => n2.push(mk(x, { voice: 2, ls: k === 0, brk: k === 0 ? prevBrk(b2, j) : null })));
+  });
+  const s = data.singers ?? {};
   return {
-    gap: state.gap,
-    lines: ls.map((line, li) => ({
-      break_beat: li < ls.length - 1 ? breakBeat(line[line.length - 1], ls[li + 1][0]) : null,
-      notes: line.map((x) => ({ id: x.src, type: x.type, start: x.start, length: x.length, pitch: x.pitch, text: x.text })),
-    })),
+    editable: data.editable !== false, reason: data.reason ?? null, bpm: data.bpm, gap: data.gap ?? null,
+    headers: data.headers ?? [], notes: markLineStarts(mergeByStart(n1, n2)), nextId: next, created: [],
+    duet, singers: { p1: s.p1 ?? '', p2: s.p2 ?? '' },
   };
 }
 
-/** Есть ли несохранённые правки относительно исходного состояния. */
+/**
+ * Строки песни: ноты, сгруппированные по началам строк (`ls`, смена певца) внутри партии.
+ * У дуэта — строки обеих партий (строка «оба» — один раз) в порядке списка нот.
+ */
+export function lines(state) {
+  if (!state.duet) return partLines(state.notes);
+  const pos = new Map(state.notes.map((x, i) => [x.id, i]));
+  const own2 = partLines(voiceNotes(state, 2)).filter((l) => voiceOf(l[0]) !== 'both');
+  return [...partLines(voiceNotes(state, 1)), ...own2].sort((a, b) => pos.get(a[0].id) - pos.get(b[0].id));
+}
+
+/** Строки партии певца v (1 | 2) по порядку, со строками «оба» — как в блоке P1/P2 файла. */
+export function voiceLines(state, v) {
+  return partLines(voiceNotes(state, v));
+}
+
+/** Бит разрыва между строками (§4): прежний, если он ещё между нотами, иначе конец предыдущей ноты. */
+function breakBeat(prev, next, brk = next.brk) {
+  const end = prev.start + prev.length;
+  return brk != null && brk >= end && brk <= next.start ? brk : end;
+}
+
+const noteOut = (x, id) => ({ id, type: x.type, start: x.start, length: x.length, pitch: x.pitch, text: x.text });
+
+/**
+ * Состояние → тело PUT /api/songs/{id}/notes. У дуэта: строки певца 1 (и «оба»), затем певца 2
+ * (и копии «оба» с `id: src2`), `player` у каждой строки, разрывы внутри партии, `singers`.
+ */
+export function toPayload(state) {
+  if (!state.duet) {
+    const ls = lines(state);
+    return {
+      gap: state.gap,
+      lines: ls.map((line, li) => ({
+        break_beat: li < ls.length - 1 ? breakBeat(line[line.length - 1], ls[li + 1][0]) : null,
+        notes: line.map((x) => noteOut(x, x.src)),
+      })),
+    };
+  }
+  const block = (v) => {
+    const ls = voiceLines(state, v);
+    const copy = (x) => v === 2 && voiceOf(x) === 'both';
+    return ls.map((line, li) => {
+      const nx = ls[li + 1];
+      return {
+        break_beat: nx ? breakBeat(line[line.length - 1], nx[0], copy(nx[0]) ? nx[0].brk2 : nx[0].brk) : null,
+        player: v,
+        notes: line.map((x) => noteOut(x, copy(x) ? x.src2 ?? null : x.src)),
+      };
+    });
+  };
+  return { gap: state.gap, singers: { p1: state.singers?.p1 ?? '', p2: state.singers?.p2 ?? '' }, lines: [...block(1), ...block(2)] };
+}
+
+/** Есть ли несохранённые правки относительно исходного состояния (ноты, певцы строк, имена). */
 export function isDirty(state, original) {
   return JSON.stringify(toPayload(state)) !== JSON.stringify(toPayload(original));
 }
 
 // ---------- внутренние помощники ----------
-
-/** Первая нота песни всегда начинает строку. */
-function withFirstLine(notes) {
-  if (notes.length && !notes[0].ls) notes[0] = { ...notes[0], ls: true, brk: null };
-  return notes;
-}
 
 function msPerBeat(state) {
   if (!(Number(state.bpm) > 0)) throw new Error('В песне нет #BPM — редактор только для просмотра');
@@ -112,10 +224,11 @@ function indexOf(state, id) {
   return i;
 }
 
-function lineIndexOf(state, id) {
-  const li = lines(state).findIndex((line) => line.some((x) => x.id === id));
-  if (li < 0) throw new Error(NO_NOTE_ERROR);
-  return li;
+/** Нота id в своей партии: {x, sub — ноты партии, i — номер в ней}. */
+function inPart(state, id) {
+  const x = state.notes[indexOf(state, id)];
+  const sub = voiceNotes(state, partOf(x));
+  return { x, sub, i: sub.indexOf(x) };
 }
 
 /** Все ли id есть в песне — иначе ошибка «Нет такой ноты». */
@@ -124,23 +237,27 @@ function checkIds(state, ids) {
   for (const id of ids) if (!known.has(id)) throw new Error(NO_NOTE_ERROR);
 }
 
+const shiftBeat = (b, d) => (b != null ? b + d : null);
+
 /**
- * Новое состояние из списка нот: ноты `moved` (их id) переставляются по `start` среди остальных
- * (обгон соседей, §3), остальные сохраняют порядок; ноты левее бита 0 сдвигают всю песню
- * вправо, а `gap` уменьшается на столько же мс (§5).
+ * Новое состояние из списка нот: ноты `moved` (их id) переставляются по `start` среди остальных нот
+ * своей партии (обгон соседей, §3), остальные сохраняют порядок; ноты левее бита 0 сдвигают всю песню
+ * (обе партии) вправо, а `gap` уменьшается на столько же мс (§5).
  */
 function settle(state, notes, moved = [], extra = {}) {
   const movedSet = new Set(moved);
   let list = notes;
-  if (movedSet.size) {
-    const rest = notes.filter((x) => !movedSet.has(x.id));
-    const mv = notes.filter((x) => movedSet.has(x.id)).sort((a, b) => a.start - b.start);
+  for (const p of [1, 2]) {
+    const mv = list.filter((x) => movedSet.has(x.id) && partOf(x) === p).sort((a, b) => a.start - b.start);
+    if (!mv.length) continue;
+    const mvSet = new Set(mv.map((x) => x.id));
+    const rest = list.filter((x) => inVoice(x, p) && !mvSet.has(x.id));
     for (const x of mv) {
       let at = rest.length;
       while (at > 0 && rest[at - 1].start > x.start) at -= 1;
       rest.splice(at, 0, x);
     }
-    list = rest;
+    list = mergeByStart(rest, list.filter((x) => !inVoice(x, p)));
   }
   let gap = state.gap;
   const min = Math.min(...list.map((x) => x.start));
@@ -148,9 +265,32 @@ function settle(state, notes, moved = [], extra = {}) {
     const g = (Number(gap) || 0) + min * msPerBeat(state);
     if (g < -1e-6) throw new Error(GAP_ERROR);
     gap = Math.max(0, g);
-    list = list.map((x) => ({ ...x, start: x.start - min, brk: x.brk != null ? x.brk - min : null }));
+    list = list.map((x) => ({ ...x, start: x.start - min, brk: shiftBeat(x.brk, -min), brk2: shiftBeat(x.brk2, -min) }));
   }
-  return { ...state, gap, notes: withFirstLine(list.slice()), created: [], ...extra };
+  return { ...state, gap, notes: markLineStarts(list.slice()), created: [], ...extra };
+}
+
+/**
+ * Строки `moved` (массивы id, целиком сменившие певца) встают по времени начала среди строк своей
+ * новой партии, не разрезая чужие строки (при равном начале — после прежних); дальше — как settle.
+ */
+function settleLines(state, notes, moved, extra = {}) {
+  let list = notes;
+  const byId = new Map(list.map((x) => [x.id, x]));
+  for (const p of [1, 2]) {
+    const mv = moved.map((ids) => ids.map((id) => byId.get(id))).filter((l) => partOf(l[0]) === p)
+      .sort((a, b) => a[0].start - b[0].start);
+    if (!mv.length) continue;
+    const mvSet = new Set(mv.flat().map((x) => x.id));
+    const rest = partLines(list.filter((x) => inVoice(x, p) && !mvSet.has(x.id)));
+    for (const line of mv) {
+      let at = rest.length;
+      while (at > 0 && rest[at - 1][0].start > line[0].start) at -= 1;
+      rest.splice(at, 0, line);
+    }
+    list = mergeByStart(rest.flat(), list.filter((x) => !inVoice(x, p)));
+  }
+  return settle(state, list, [], extra);
 }
 
 function checkPitch(pitch) {
@@ -168,7 +308,7 @@ export function move(state, ids, dBeat, dPitch = 0) {
   const notes = state.notes.map((x) => {
     if (!set.has(x.id)) return x;
     checkPitch(x.pitch + dp);
-    return { ...x, start: x.start + db, pitch: x.pitch + dp, brk: x.brk != null ? x.brk + db : null };
+    return { ...x, start: x.start + db, pitch: x.pitch + dp, brk: shiftBeat(x.brk, db), brk2: shiftBeat(x.brk2, db) };
   });
   return settle(state, notes, db ? [...set] : []);
 }
@@ -192,32 +332,44 @@ export function resize(state, id, edge, dBeat) {
   return settle(state, notes, edge === 'left' ? [id] : []);
 }
 
-/** Добавить ноту (двойной клик, `N`): по умолчанию 4 бита, без текста, обычная. */
-export function addNote(state, { start, pitch, length = 4, text = '', type = ':' }) {
+function checkVoice(state, voice) {
+  if (!VOICES.includes(voice)) throw new Error(VOICE_ERROR);
+  if (voice !== 1 && !state.duet) throw new Error(NOT_DUET_ERROR);
+}
+
+/** Добавить ноту (двойной клик, `N`): по умолчанию 4 бита, без текста, обычная, певца `voice` (1). */
+export function addNote(state, { start, pitch, length = 4, text = '', type = ':', voice = 1 }) {
   checkPitch(pitch);
+  checkVoice(state, voice);
   const id = state.nextId;
   const note = {
-    id, src: null, type, start: Math.round(start), length: Math.max(1, Math.round(length)), pitch, text, ls: false, brk: null,
+    id, src: null, type, start: Math.round(start), length: Math.max(1, Math.round(length)), pitch, text,
+    ls: false, brk: null, voice, src2: null, brk2: null,
   };
   return settle({ ...state, nextId: id + 1 }, [...state.notes, note], [id], { created: [id] });
 }
 
-/** Удалить ноты; начало строки переходит к следующей уцелевшей ноте. Последнюю ноту не удалить. */
+/**
+ * Удалить ноты; начало строки переходит к следующей уцелевшей ноте той же строки (в партии ноты).
+ * Последнюю ноту песни не удалить; партию певца 2 можно опустошить целиком.
+ */
 export function deleteNotes(state, ids) {
   checkIds(state, ids);
   const set = new Set(ids);
   if (state.notes.every((x) => set.has(x.id))) throw new Error(LAST_NOTE_ERROR);
-  const out = [];
-  let carry = null; // начало строки удалённой ноты: {brk}
-  for (const x of state.notes) {
-    if (set.has(x.id)) {
-      if (x.ls && !carry) carry = { brk: x.brk };
-      continue;
+  const heads = new Map(); // id уцелевшей ноты → унаследованные разрывы
+  for (const p of [1, 2]) {
+    let carry = null; // начало строки удалённой ноты: {voice, brk, brk2}
+    for (const x of voiceNotes(state, p)) {
+      if (set.has(x.id)) {
+        if (x.ls && !carry && partOf(x) === p) carry = { voice: voiceOf(x), brk: x.brk, brk2: x.brk2 ?? null };
+        continue;
+      }
+      if (carry && !x.ls && voiceOf(x) === carry.voice) heads.set(x.id, { ls: true, brk: carry.brk, brk2: carry.brk2 });
+      carry = null;
     }
-    if (carry && !x.ls) out.push({ ...x, ls: true, brk: carry.brk });
-    else out.push(x);
-    carry = null;
   }
+  const out = state.notes.filter((x) => !set.has(x.id)).map((x) => (heads.has(x.id) ? { ...x, ...heads.get(x.id) } : x));
   return settle(state, out);
 }
 
@@ -240,8 +392,8 @@ export function lineText(line) {
 }
 
 /**
- * Строка li целиком из текста панели: слоги (toSyllables) по нотам строки по порядку;
- * лишние ноты получают «~», лишние слоги склеиваются в последней ноте.
+ * Строка li (номер в lines(state)) целиком из текста панели: слоги (toSyllables) по нотам строки
+ * по порядку; лишние ноты получают «~», лишние слоги склеиваются в последней ноте.
  */
 export function setLineText(state, li, text) {
   const line = lines(state)[li];
@@ -256,7 +408,7 @@ export function setLineText(state, li, text) {
   return { ...state, notes, created: [] };
 }
 
-/** «+ K нот»: k нот по 3 бита подряд за последней нотой строки li, с её высотой (остаются в строке). */
+/** «+ K нот»: k нот по 3 бита подряд за последней нотой строки li, с её высотой и певцом (остаются в строке). */
 export function addNotesToLine(state, li, k) {
   const line = lines(state)[li];
   if (!line) throw new Error('Нет такой строки');
@@ -265,7 +417,10 @@ export function addNotesToLine(state, li, k) {
   let start = last.start + last.length;
   let id = state.nextId;
   for (let j = 0; j < k; j += 1) {
-    added.push({ id, src: null, type: ':', start, length: 3, pitch: last.pitch, text: '', ls: false, brk: null });
+    added.push({
+      id, src: null, type: ':', start, length: 3, pitch: last.pitch, text: '', ls: false, brk: null,
+      voice: voiceOf(last), src2: null, brk2: null,
+    });
     start += 3;
     id += 1;
   }
@@ -274,16 +429,22 @@ export function addNotesToLine(state, li, k) {
   return settle({ ...state, nextId: id }, notes, [], { created: added.map((x) => x.id) });
 }
 
-/** Ноты, перекрывающие предыдущую по порядку песни (и сама предыдущая) — для красной подсветки. */
+/**
+ * Ноты, перекрывающие предыдущую в своей партии (и сама предыдущая) — для красной подсветки.
+ * Ноты «оба» проверяются в обеих партиях; ноты разных певцов друг другу не мешают.
+ */
 export function overlaps(state) {
   const out = new Set();
-  state.notes.forEach((x, i) => {
-    const prev = state.notes[i - 1];
-    if (prev && x.start < prev.start + prev.length) {
-      out.add(prev.id);
-      out.add(x.id);
-    }
-  });
+  for (const v of [1, 2]) {
+    const sub = voiceNotes(state, v);
+    sub.forEach((x, i) => {
+      const prev = sub[i - 1];
+      if (prev && x.start < prev.start + prev.length) {
+        out.add(prev.id);
+        out.add(x.id);
+      }
+    });
+  }
   return out;
 }
 
@@ -297,13 +458,13 @@ const RIGHT_NONE = { word: 'Правее в этом слове нот нет', 
  * предыдущий слог (через «~»-ноты — до последнего слога с текстом).
  */
 function wordStart(notes, j) {
-  if (j === 0 || notes[j].ls) return true;
+  if (startsLine(notes, j)) return true;
   if (isFree(notes[j].text)) return false;
   if (/^\s/.test(String(notes[j].text))) return true;
   for (let k = j - 1; k >= 0; k -= 1) {
     const t = String(notes[k].text);
     if (/\s$/.test(t)) return true;
-    if (!isFree(t) || notes[k].ls) return false;
+    if (!isFree(t) || startsLine(notes, k)) return false;
   }
   return false;
 }
@@ -314,13 +475,15 @@ function glue(texts) {
   return texts.map((t) => (isFree(t) ? String(t).replace('~', '') : String(t))).join('');
 }
 
-/** Область сдвига текста для ноты id: номера первой и последней ноты (в state.notes) её слова/строки/песни. */
+/**
+ * Область сдвига текста для ноты id: номера первой и последней ноты её слова/строки/партии —
+ * в списке нот партии ноты (voiceNotes; у соло — это state.notes).
+ */
 export function shiftRange(state, id, scope = 'line') {
   if (!SHIFT_SCOPES.includes(scope)) throw new Error('Неизвестная область сдвига текста');
-  const ns = state.notes;
-  const i = indexOf(state, id);
+  const { sub: ns, i } = inPart(state, id);
   if (scope === 'song') return { first: 0, last: ns.length - 1 };
-  const isStart = scope === 'word' ? (j) => wordStart(ns, j) : (j) => j === 0 || ns[j].ls;
+  const isStart = scope === 'word' ? (j) => wordStart(ns, j) : (j) => startsLine(ns, j);
   let s = i;
   let e = i;
   while (!isStart(s)) s -= 1;
@@ -334,7 +497,7 @@ export function shiftRange(state, id, scope = 'line') {
  */
 export function shiftAmount(state, id, k, scope = 'line') {
   const { first, last } = shiftRange(state, id, scope);
-  const i = indexOf(state, id);
+  const { i } = inPart(state, id);
   if (k > 0) {
     if (i === last) throw new Error(RIGHT_NONE[scope]);
     return Math.min(k, last - i);
@@ -348,15 +511,14 @@ export function shiftAmount(state, id, k, scope = 'line') {
 
 /**
  * Сдвиг текста по нотам (G03): слог ноты id и все следующие в пределах области `scope`
- * ('word' — слово, 'line' — строка, 'song' — до конца песни) уезжают на |k| нот (k > 0 — вправо).
+ * ('word' — слово, 'line' — строка, 'song' — до конца партии ноты) уезжают на |k| нот (k > 0 — вправо).
  * Вправо: освободившиеся ноты получают «~», слоги, которым не хватило нот, приклеиваются к последней
  * ноте области. Влево: слог приклеивается к ноте на k левее (вместе со слогами между ними; «~»
  * заменяется), хвост области получает «~»; дальше начала области не уходит. Ноты и строки не двигаются.
  */
 export function shiftTextBy(state, id, k, scope = 'line') {
   const { last: e } = shiftRange(state, id, scope);
-  const ns = state.notes;
-  const i = indexOf(state, id);
+  const { sub: ns, i } = inPart(state, id);
   const t = ns.map((x) => x.text);
   const next = t.slice();
   const amount = shiftAmount(state, id, k, scope);
@@ -371,7 +533,8 @@ export function shiftTextBy(state, id, k, scope = 'line') {
     for (let j = i - d + 1; j <= e; j += 1) next[j] = j + d <= e ? t[j + d] : '~';
   }
   if (next.every((v, j) => v === t[j])) return state; // текст не изменился — шага отмены нет
-  return { ...state, notes: ns.map((x, j) => (next[j] === x.text ? x : { ...x, text: next[j] })), created: [] };
+  const byId = new Map(ns.map((x, j) => [x.id, next[j]]));
+  return { ...state, notes: state.notes.map((x) => (byId.has(x.id) && byId.get(x.id) !== x.text ? { ...x, text: byId.get(x.id) } : x)), created: [] };
 }
 
 /** «⇠ текст / текст ⇢» в пределах строки: shiftTextBy(state, id, dir, 'line'). */
@@ -379,48 +542,52 @@ export function shiftText(state, id, dir) {
   return shiftTextBy(state, id, dir, 'line');
 }
 
-/** Разрезать ноту пополам (`S`): вторая половина — новая нота с «~». */
+/** Разрезать ноту пополам (`S`): вторая половина — новая нота с «~» (того же певца). */
 export function splitNote(state, id) {
   const i = indexOf(state, id);
   const x = state.notes[i];
   if (x.length < 2) throw new Error('Нота в 1 бит — резать нечего');
   const a = Math.ceil(x.length / 2);
   const nid = state.nextId;
-  const tail = { ...x, id: nid, src: null, start: x.start + a, length: x.length - a, text: '~', ls: false, brk: null };
+  const tail = {
+    ...x, id: nid, src: null, src2: null, start: x.start + a, length: x.length - a, text: '~', ls: false, brk: null, brk2: null,
+  };
   const notes = [...state.notes.slice(0, i), { ...x, length: a }, tail, ...state.notes.slice(i + 1)];
   return { ...state, notes, nextId: nid + 1, created: [nid] };
 }
 
-/** Слить ноту со следующей (`Shift+J`): длина — до конца следующей, текст склеен; не через строку. */
+/** Слить ноту со следующей в её партии (`Shift+J`): длина — до конца следующей, текст склеен; не через строку. */
 export function joinNext(state, id) {
-  const i = indexOf(state, id);
-  const x = state.notes[i];
-  const nx = state.notes[i + 1];
+  const { x, sub, i } = inPart(state, id);
+  const nx = sub[i + 1];
   if (!nx) throw new Error('Это последняя нота — сливать не с чем');
-  if (nx.ls) throw new Error('Следующая нота в другой строке — сливать нельзя');
+  if (startsLine(sub, i + 1)) throw new Error('Следующая нота в другой строке — сливать нельзя');
   // «~» (с любыми пробелами) при слиянии отбрасывается с любой стороны, пробелы-границы слов остаются
   const drop = (t) => (String(t).trim() === '~' ? String(t).replace('~', '') : String(t));
   const both = drop(x.text) + drop(nx.text);
   const text = both.trim() ? both : x.text;
-  const notes = [...state.notes.slice(0, i), { ...x, length: nx.start + nx.length - x.start, text }, ...state.notes.slice(i + 2)];
+  const notes = state.notes
+    .filter((y) => y.id !== nx.id)
+    .map((y) => (y.id === x.id ? { ...x, length: nx.start + nx.length - x.start, text } : y));
   return { ...state, notes, created: [] };
 }
 
-/** «↵ Строка»: начать новую строку с ноты id. */
+/** «↵ Строка»: начать новую строку с ноты id (в её партии). */
 export function startLine(state, id) {
-  const i = indexOf(state, id);
-  if (state.notes[i].ls) throw new Error('Эта нота уже начинает строку');
-  const notes = state.notes.slice();
-  notes[i] = { ...notes[i], ls: true, brk: null };
-  return { ...state, notes, created: [] };
+  const { x, sub, i } = inPart(state, id);
+  if (startsLine(sub, i)) throw new Error('Эта нота уже начинает строку');
+  return { ...state, notes: state.notes.map((y) => (y.id === x.id ? { ...y, ls: true, brk: null, brk2: null } : y)), created: [] };
 }
 
-/** Склеить строку ноты id с предыдущей (значок ↵ на границе строк). */
+/** Склеить строку ноты id с предыдущей строкой её партии (значок ↵ на границе строк). */
 export function mergeLineAt(state, id) {
-  const li = lineIndexOf(state, id);
+  const { x } = inPart(state, id);
+  const pl = voiceLines(state, partOf(x));
+  const li = pl.findIndex((line) => line.some((y) => y.id === id));
   if (li <= 0) throw new Error('Это первая строка — склеивать не с чем');
-  const head = lines(state)[li][0].id;
-  return { ...state, notes: state.notes.map((x) => (x.id === head ? { ...x, ls: false, brk: null } : x)), created: [] };
+  if (voiceOf(pl[li][0]) !== voiceOf(pl[li - 1][0])) throw new Error(OTHER_VOICE_ERROR);
+  const head = pl[li][0].id;
+  return { ...state, notes: state.notes.map((y) => (y.id === head ? { ...y, ls: false, brk: null, brk2: null } : y)), created: [] };
 }
 
 /** Золотые (`G`, ★): если не все выбранные «:»/«*» золотые — все «*», иначе все «:». */
@@ -440,35 +607,114 @@ export function retime(state, id, start, length) {
   const x = state.notes[i];
   const s = Math.round(start);
   const notes = state.notes.slice();
-  notes[i] = { ...x, start: s, length: Math.max(1, Math.round(length)), brk: x.brk != null ? x.brk + s - x.start : null };
+  notes[i] = { ...x, start: s, length: Math.max(1, Math.round(length)), brk: shiftBeat(x.brk, s - x.start), brk2: shiftBeat(x.brk2, s - x.start) };
   return settle(state, notes, [id]);
 }
 
+// ---------- дуэт ----------
+
 /**
- * Проверка перед сохранением — то же, что PUT на сервере (§14).
+ * Отдать строки выбранных нот певцу voice (1 | 2 | 'both'): переводятся строки целиком и встают
+ * по времени в партию нового певца. «оба» → один певец: остаётся копия этого певца.
+ */
+export function setVoice(state, ids, voice) {
+  if (!state.duet) throw new Error(NOT_DUET_ERROR);
+  checkVoice(state, voice);
+  checkIds(state, ids);
+  const set = new Set(ids);
+  const hit = new Set();
+  const heads = new Set();
+  const moved = [];
+  for (const line of lines(state)) {
+    if (!line.some((x) => set.has(x.id)) || voiceOf(line[0]) === voice) continue;
+    line.forEach((x) => hit.add(x.id));
+    heads.add(line[0].id);
+    moved.push(line.map((x) => x.id));
+  }
+  if (!hit.size) return state; // певец уже тот — шага отмены нет
+  const notes = state.notes.map((x) => {
+    if (!hit.has(x.id)) return x;
+    const from = voiceOf(x);
+    let { src, brk } = x;
+    let src2 = null;
+    let brk2 = null;
+    if (from === 'both' && voice === 2) { src = x.src2 ?? null; brk = x.brk2 ?? null; }
+    if (from === 2 && voice === 'both') { src2 = src; brk2 = brk; src = null; brk = null; }
+    if (from === 1 && voice === 'both') brk2 = null;
+    if ((from === 1 && voice === 2) || (from === 2 && voice === 1)) brk = null;
+    return { ...x, voice, src, src2, brk, brk2, ...(heads.has(x.id) ? { ls: true } : {}) };
+  });
+  return settleLines(state, notes, moved);
+}
+
+/** «Сделать дуэтом»: все строки — певца 1, появляются певцы и имена. */
+export function makeDuet(state) {
+  if (state.duet) throw new Error('Песня уже дуэт');
+  return {
+    ...state, duet: true, singers: { p1: state.singers?.p1 ?? '', p2: state.singers?.p2 ?? '' },
+    notes: state.notes.map((x) => (x.voice === 1 ? x : { ...x, voice: 1, src2: null, brk2: null })),
+    created: [],
+  };
+}
+
+/** «Сделать соло»: всё — певцу 1, строки «оба» — одна копия (P1), строки певца 2 встают по времени. */
+export function makeSolo(state) {
+  if (!state.duet) throw new Error('Песня и так не дуэт');
+  const ls = lines(state);
+  const heads = new Set(ls.map((line) => line[0].id));
+  const moved = ls.filter((line) => voiceOf(line[0]) === 2).map((line) => line.map((x) => x.id));
+  const notes = state.notes.map((x) => ({
+    ...x, voice: 1, src2: null, brk2: null, ...(heads.has(x.id) ? { ls: true } : {}),
+  }));
+  return settleLines(state, notes, moved, { duet: false });
+}
+
+/** Имена певцов дуэта (пустое — заголовок имени удаляется при сохранении). */
+export function setSingers(state, p1, p2) {
+  if (!state.duet) throw new Error(NOT_DUET_ERROR);
+  const name = (v) => {
+    const t = String(v ?? '');
+    if (/[\r\n]/.test(t)) throw new Error('В имени певца не может быть перевода строки');
+    return t.trim();
+  };
+  return { ...state, singers: { p1: name(p1), p2: name(p2) }, created: [] };
+}
+
+/**
+ * Проверка перед сохранением — то же, что PUT на сервере (§14), по партиям.
  * null — всё в порядке, иначе {message, id} первой ноты с ошибкой (id null — ошибка не ноты).
+ * У дуэта место называет певца: «Певец 2, строка 3: ноты перекрываются».
  */
 export function validate(state) {
   if (!state.notes.length) return { message: LAST_NOTE_ERROR, id: null };
-  const ls = lines(state);
-  for (let li = 0; li < ls.length; li += 1) {
-    for (const x of ls[li]) {
-      // тексты — дословно как 400 сервера (web/app/notes.py)
-      const where = `строка ${li + 1}, слог «${String(x.text).trim()}»`;
-      const fail = (message, at = where) => ({ message: `${message}: ${at}`, id: x.id });
-      if (!TYPES.includes(x.type)) return fail(`Неизвестный тип ноты «${x.type}»`);
-      if (!Number.isInteger(x.start) || x.start < 0) return fail(START_ERROR);
-      if (!Number.isInteger(x.length) || x.length < 1) return fail(LENGTH_ERROR);
-      if (!Number.isInteger(x.pitch) || x.pitch < PITCH_MIN || x.pitch > PITCH_MAX) return fail(PITCH_ERROR);
-      if (/[\r\n]/.test(String(x.text))) return fail(NEWLINE_ERROR, `строка ${li + 1}`);
+  const blocks = state.duet ? [1, 2].map((v) => ({ v, ls: voiceLines(state, v) })) : [{ v: null, ls: lines(state) }];
+  const at = (v, li) => (v ? `Певец ${v}, строка ${li + 1}` : `строка ${li + 1}`);
+  for (const { v, ls } of blocks) {
+    for (let li = 0; li < ls.length; li += 1) {
+      for (const x of ls[li]) {
+        // тексты — дословно как 400 сервера (web/app/notes.py)
+        const where = `${at(v, li)}, слог «${String(x.text).trim()}»`;
+        const fail = (message, place = where) => ({ message: `${message}: ${place}`, id: x.id });
+        if (!TYPES.includes(x.type)) return fail(`Неизвестный тип ноты «${x.type}»`);
+        if (!Number.isInteger(x.start) || x.start < 0) return fail(START_ERROR);
+        if (!Number.isInteger(x.length) || x.length < 1) return fail(LENGTH_ERROR);
+        if (!Number.isInteger(x.pitch) || x.pitch < PITCH_MIN || x.pitch > PITCH_MAX) return fail(PITCH_ERROR);
+        if (/[\r\n]/.test(String(x.text))) return fail(NEWLINE_ERROR, at(v, li));
+      }
     }
   }
-  const prevOf = new Map(state.notes.map((x, i) => [x.id, state.notes[i - 1]]));
-  for (let li = 0; li < ls.length; li += 1) {
-    for (const x of ls[li]) {
-      const prev = prevOf.get(x.id);
-      if (prev && x.start < prev.start + prev.length) {
-        return { message: `Ноты перекрываются: строка ${li + 1}, слог «${String(x.text).trim()}»`, id: x.id };
+  for (const { v, ls } of blocks) {
+    const flat = ls.flat();
+    for (let li = 0, k = 0; li < ls.length; li += 1) {
+      for (const x of ls[li]) {
+        const prev = flat[k - 1];
+        k += 1;
+        if (prev && x.start < prev.start + prev.length) {
+          const message = v
+            ? `${at(v, li)}: ноты перекрываются`
+            : `Ноты перекрываются: строка ${li + 1}, слог «${String(x.text).trim()}»`;
+          return { message, id: x.id };
+        }
       }
     }
   }

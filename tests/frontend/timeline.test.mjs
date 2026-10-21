@@ -82,3 +82,11 @@ test('бит после сдвига #GAP: то же время звучания
   assert.equal(rebaseBeat(0, 900, 1000, 300), -2);
   assert.equal(rebaseBeat(10, 1000, 1000, 300), 10);
 });
+
+test('звучащая нота в списке, не отсортированном по времени (партия дуэта)', () => {
+  const ns = [{ start: 10, length: 5 }, { start: 0, length: 4 }, { start: 6, length: 2 }];
+  assert.equal(noteAt(ns, 1), 1);
+  assert.equal(noteAt(ns, 7), 2);
+  assert.equal(noteAt(ns, 12), 0);
+  assert.equal(noteAt(ns, 5), -1);
+});
