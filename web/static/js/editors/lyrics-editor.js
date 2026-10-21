@@ -1,10 +1,14 @@
 // Редактор исходного текста (G05, история 48): моноширинный текст с номерами строк,
 // подсветка строк-меток «[...]» («будет удалена»), «Сохранить и перегенерировать».
+// У дуэта перед перегенерацией — подтверждение: UltraSinger делает песню на один голос (R01.7).
 
 import { api, getDefaults, generateForm, errorText } from '../api.js';
-import { h, clear, toast, songName } from '../ui.js';
+import { h, clear, toast, songName, confirmDialog } from '../ui.js';
 import { openShell } from './shell.js';
 import { analyzeLyrics, regenFields } from './lyrics-text.js';
+
+export const DUET_REGEN_WARNING = 'UltraSinger делает песню на один голос — дуэт пропадёт, '
+  + 'партии потом можно раздать в «Редакторе нот». Перегенерировать?';
 
 export function lyricsEnabled(song) {
   return song.own || song.audio ? true : 'У песни нет аудиофайла — перегенерация невозможна';
@@ -55,6 +59,10 @@ export async function openLyricsEditor(song) {
   saveBtn.addEventListener('click', async () => {
     saveBtn.disabled = true;
     shell.message('');
+    if (song.is_duet && !(await confirmDialog(DUET_REGEN_WARNING, 'Перегенерировать', { danger: true }))) {
+      render();
+      return;
+    }
     let defaults = {};
     try { defaults = (await getDefaults()).defaults || {}; } catch { /* сервер подставит свои */ }
     try {

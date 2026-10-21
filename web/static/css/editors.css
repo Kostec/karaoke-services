@@ -70,11 +70,14 @@ dialog.editor {
   --ne-playhead: #e03131;
   --ne-break: #7a8394;
   --ne-wave: #9aa6bd;
+  --ne-p2: #ae3ec9;
+  --ne-both: #2b8a3e;
 }
 @media (prefers-color-scheme: dark) {
   dialog.editor {
     --ne-sel: #ffa94d; --ne-gold: #ffd43b; --ne-grid: rgba(255, 255, 255, .05); --ne-grid-strong: rgba(255, 255, 255, .12);
     --ne-playhead: #ff6b6b; --ne-break: #8d95a5; --ne-wave: #4a5468;
+    --ne-p2: #e599f7; --ne-both: #69db7c;
   }
 }
 dialog.editor.wide { width: calc(100vw - 24px); height: calc(100dvh - 24px); max-height: none; }
@@ -158,6 +161,33 @@ dialog.editor.wide > .banner { margin: 6px 14px 0; }
   background: var(--text); color: var(--surface); box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
 .ne-dragtip[hidden] { display: none; }
 .ne-dragtip.err { background: var(--err); color: #fff; }
+/* ---------- дуэт: цвет певца, две полосы слогов, легенда ---------- */
+.ne-note.p2 { --ne-note: var(--ne-p2); }
+.ne-note.both { --ne-note: var(--ne-both); }
+/* золотая нота дуэта: цвет певца — полоской снизу (выделение рисует свою рамку поверх) */
+.ne-note.gold.p1 { box-shadow: inset 0 -3px 0 var(--accent); }
+.ne-note.gold.p2 { box-shadow: inset 0 -3px 0 var(--ne-p2); }
+.ne-note.gold.both { box-shadow: inset 0 -3px 0 var(--ne-both); }
+.ne-note.sel.gold { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ne-sel); }
+.ne-lane.duet { height: 68px;
+  background: linear-gradient(180deg, transparent 0 33px, var(--border) 33px 34px, transparent 34px), var(--surface-2); }
+.ne-lane.duet .ne-chip { height: 26px; }
+.ne-lane.duet .ne-chip.p1 { top: 4px; border-left-color: var(--accent); }
+.ne-lane.duet .ne-chip.p2 { top: 38px; border-left-color: var(--ne-p2); }
+.ne-lane.duet .ne-chip.both { top: 4px; height: 60px; border-left: 2px solid var(--ne-both);
+  background: color-mix(in srgb, var(--ne-both) 10%, transparent); }
+.ne-lane.duet .ne-chip.sel { background: color-mix(in srgb, var(--ne-sel) 25%, transparent); }
+.ne-chip.p2.live { color: var(--ne-p2); }
+.ne-chip.both.live { color: var(--ne-both); }
+.ne-brk.p1 b { bottom: 38px; background: var(--accent); }
+.ne-brk.p2 b { background: var(--ne-p2); }
+.ne-brk.p1 b.click:hover, .ne-brk.p2 b.click:hover { background: var(--ne-sel); }
+.ne-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 14px; border-bottom: 1px solid var(--border); color: var(--muted); }
+.ne-legend[hidden] { display: none; }
+.ne-lg { display: inline-flex; align-items: center; gap: 5px; }
+.ne-lg i { width: 14px; height: 9px; border-radius: 3px; background: var(--accent); }
+.ne-lg.p2 i { background: var(--ne-p2); }
+.ne-lg.both i { background: var(--ne-both); }
 .ne-chip input { width: 100%; min-width: 70px; font: inherit; padding: 2px 4px; border: 2px solid var(--accent); border-radius: 4px; background: var(--surface); color: var(--text); }
 .ne-brks { position: absolute; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 1; }
 .ne-brk { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--ne-break); }
@@ -169,7 +199,7 @@ dialog.editor.wide > .banner { margin: 6px 14px 0; }
 .ne-hint { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 6px 14px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
 .ne kbd { font: 12px ui-monospace, Consolas, monospace; background: var(--surface-2); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
 .ne-panel { width: 320px; border-left: 1px solid var(--border); min-height: 0; background: var(--surface);
-  display: grid; grid-template-rows: auto 1fr auto; transition: width .15s; }
+  display: flex; flex-direction: column; transition: width .15s; }
 .ne-panel[hidden] { display: none; }
 .ne-panel.closed { width: 40px; }
 .ne-ph { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
@@ -178,7 +208,7 @@ dialog.editor.wide > .banner { margin: 6px 14px 0; }
 .ne-panel.closed .ne-ph { flex-direction: column; padding: 6px 2px; border: 0; }
 .ne-vlabel { display: none; writing-mode: vertical-rl; font-size: 13px; color: var(--muted); background: none; border: 0; padding: 6px 0; min-height: 0; cursor: pointer; }
 .ne-panel.closed .ne-vlabel { display: block; }
-.ne-plist { overflow: auto; padding: 6px 8px; margin: 0; list-style: none; min-height: 0; }
+.ne-plist { flex: 1; overflow: auto; padding: 6px 8px; margin: 0; list-style: none; min-height: 0; }
 .ne-plist .pl { display: grid; grid-template-columns: 22px 1fr; gap: 2px 6px; padding: 5px 6px; border-radius: 8px; align-items: start; cursor: pointer; }
 .ne-plist .pl.cur { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .ne-plist .pl.live { box-shadow: inset 3px 0 0 var(--ne-playhead); }
@@ -230,3 +260,23 @@ dialog.ne-help h3 { margin-top: 0; }
   dialog.editor.wide .ed-titles h3, dialog.editor.wide .ed-titles .small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   dialog.editor.wide .ed-head .ne-status { display: none; }
 }
+
+/* ---------- панель «Текст» у дуэта: имена, группы партий, переключатель певца строки ---------- */
+.ne-singers { display: grid; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.ne-singers[hidden], .ne-panel.closed .ne-singers { display: none; }
+.ne-singers label { display: flex; align-items: center; gap: 6px; margin: 0; }
+.ne-singers input { flex: 1; margin: 0; min-height: 30px; padding: 3px 6px; }
+.ne-pgroup { font-size: 12px; font-weight: 700; color: var(--muted); padding: 8px 6px 2px; text-transform: none; }
+.ne-pgroup + .pl { margin-top: 0; }
+.ne-pgroup:not(:first-child) { margin-top: 6px; border-top: 1px solid var(--border); }
+.ne-plist .pl.duet { grid-template-columns: 22px 1fr auto; }
+.ne-plist .pl.duet .st { grid-column: 2 / -1; }
+.ne-pv { display: none; }
+.ne-plist .pl.duet .ne-pv { display: inline-flex; gap: 2px; padding-top: 2px; }
+.ne-pv button { min-height: 26px; min-width: 28px; padding: 1px 5px; font-size: 12px; }
+.ne-plist .pl[data-voice="1"] .n { color: var(--accent); }
+.ne-plist .pl[data-voice="2"] .n { color: var(--ne-p2); }
+.ne-plist .pl[data-voice="both"] .n { color: var(--ne-both); }
+.ne-vgroup { display: inline-flex; align-items: center; gap: 3px; }
+.ne-vgroup[hidden] { display: none; }
+.ne-vbtn { min-width: 34px; }

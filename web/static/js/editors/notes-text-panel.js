@@ -2,6 +2,8 @@
 // строки песни как обычный текст — правка раскладывает слоги по нотам строки (модель setLineText),
 // счётчик слогов/нот и «+ K нот», клик по строке — переход к её первой ноте, подсветка выбранной
 // и звучащей строки, сворачивание в узкую полоску (запоминается; на телефоне — свёрнута по умолчанию).
+// Дуэт (таск 03 «дуэты»): строки по группам «Певец 1» / «Певец 2» (строка «оба» — в обеих),
+// у строки переключатель «1 / 2 / оба», над строками — имена певцов; звучащая строка — в каждой партии.
 
 import { h } from '../ui.js';
 import { toSyllables } from './syllables.js';
@@ -25,14 +27,19 @@ function saveClosed(v) {
 const sylCount = (text) => toSyllables(String(text).replace(/~/g, '')).length;
 /** Отпечаток строки: ноты и их слоги — набранный текст помнится, пока строка не изменилась иначе. */
 const sigOf = (line) => line.map((x) => `${x.id}:${x.text}`).join('\u0001');
+const voiceOfLine = (line) => line?.[0]?.voice ?? 1;
+const VOICE_LABEL = { 1: '1', 2: '2', both: 'оба' };
+const VOICE_TITLE = { 1: 'певцу 1', 2: 'певцу 2', both: 'обоим' };
 
 export function textPanelPlugin(ctx) {
   const { M, els } = ctx;
   const panel = els.panel;
   let closed = loadClosed();
   let lines = [];
-  let rows = []; // {li, item, inp, st}
-  let liveLi = -1;
+  let rows = []; // строки в порядке на экране: {key, li, g, item, num, inp, st, vbtns}
+  const byKey = new Map(); // `${группа}:${li}` → строка панели (у дуэта строка «оба» — в обеих группах)
+  let orderKey = '';
+  let liveLis = new Set();
   let editLi = -1; // строка, которую сейчас правят в поле
   let editBase = null; // состояние до правки строки (первая буква — шаг отмены, дальше — дописываем)
   const TYPE_DELAY = 250;
@@ -51,11 +58,33 @@ export function textPanelPlugin(ctx) {
   const toggle = h('button', { type: 'button', class: 'icon ne-ptoggle' });
   const vlabel = h('button', { type: 'button', class: 'ne-vlabel', title: 'Развернуть текст песни' }, 'Текст песни');
   const list = h('ol', { class: 'ne-plist', 'aria-label': 'Строки песни' });
+  const groupHead = [1, 2].map(() => h('li', { class: 'ne-pgroup' }));
+  // имена певцов дуэта: пусто — подсказка «Певец 1/2», при сохранении пустое имя удаляет заголовок
+  const nameInp = [1, 2].map((v) => h('input', {
+    type: 'text', spellcheck: 'false', autocomplete: 'off', placeholder: `Певец ${v}`,
+    'aria-label': `Имя певца ${v}`, title: `Имя певца ${v} (#P${v}); пусто — без имени`,
+  }));
+  const names = h('div', { class: 'ne-singers', hidden: true },
+    h('label', {}, h('span', { class: 'ne-lg p1' }, h('i', {})), nameInp[0]),
+    h('label', {}, h('span', { class: 'ne-lg p2' }, h('i', {})), nameInp[1]));
   const foot = h('div', { class: 'ne-pfoot' },
     'Правь строку как обычный текст — слоги сами разложатся по нотам строки. Принудительный перенос слога — ',
     h('kbd', {}, '|'), '. Клик по строке — переход к её первой ноте.');
-  panel.append(h('div', { class: 'ne-ph' }, h('h4', {}, 'Текст'), toggle, vlabel), list, foot);
+  panel.append(h('div', { class: 'ne-ph' }, h('h4', {}, 'Текст'), toggle, vlabel), names, list, foot);
   panel.hidden = false;
+
+  for (const inp of nameInp) {
+    inp.addEventListener('change', () => {
+      const st = ctx.state;
+      if (!st?.duet) return;
+      if (nameInp[0].value.trim() === (st.singers?.p1 ?? '') && nameInp[1].value.trim() === (st.singers?.p2 ?? '')) return;
+      ctx.apply((s) => M.setSingers(s, nameInp[0].value, nameInp[1].value), 'Имена певцов изменены');
+    });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); inp.blur(); els.scroll.focus({ preventScroll: true }); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); refreshNames(true); inp.blur(); }
+    });
+  }
 
   function setClosed(v, remember = true) {
     closed = v;
@@ -81,15 +110,28 @@ export function textPanelPlugin(ctx) {
     ctx.seekMs(ctx.msOf(first.start) - 300, true);
   }
 
-  function makeRow(li) {
-    const num = h('span', { class: 'n', title: 'Перейти к строке' }, String(li + 1));
-    const inp = h('input', {
-      type: 'text', spellcheck: 'false', autocomplete: 'off', 'aria-label': `Строка ${li + 1}`,
-    });
+  function setVoice(row, v) {
+    const line = lines[row.li];
+    if (!line) return;
+    flush();
+    if (voiceOfLine(line) === v) return;
+    ctx.apply((s) => M.setVoice(s, line.map((x) => x.id), v), `Строка — ${VOICE_TITLE[v]}`);
+  }
+
+  function makeRow(key, li, g) {
+    const num = h('span', { class: 'n', title: 'Перейти к строке' });
+    const inp = h('input', { type: 'text', spellcheck: 'false', autocomplete: 'off' });
     const st = h('div', { class: 'st', 'aria-live': 'polite' });
-    const item = h('li', { class: 'pl' }, num, inp, st);
-    const row = { li, item, inp, st };
-    item.addEventListener('click', (e) => {
+    const row = { key, li, g, item: null, num, inp, st, vbtns: [] };
+    row.vbtns = M.VOICES.map((v) => {
+      const b = h('button', { type: 'button', title: `Отдать строку ${VOICE_TITLE[v]}`, 'aria-pressed': 'false' }, VOICE_LABEL[v]);
+      b.addEventListener('mousedown', (e) => e.preventDefault()); // фокус не уходит из поля строки
+      b.addEventListener('click', () => setVoice(row, v));
+      return b;
+    });
+    const vsw = h('span', { class: 'ne-pv', role: 'group', 'aria-label': 'Певец строки' }, ...row.vbtns);
+    row.item = h('li', { class: 'pl' }, num, inp, vsw, st);
+    row.item.addEventListener('click', (e) => {
       if (e.target.closest('button')) return;
       goLine(row.li);
     });
@@ -109,7 +151,7 @@ export function textPanelPlugin(ctx) {
       if (e.key === 'Enter') {
         e.preventDefault();
         flush();
-        (rows[row.li + 1]?.inp || inp).focus();
+        (rows[rows.indexOf(row) + 1]?.inp || inp).focus();
       } else if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
@@ -192,37 +234,105 @@ export function textPanelPlugin(ctx) {
 
   function markLive(force = false) {
     const st = ctx.state;
-    const li = st && ctx.playing ? lineAt(lines, ctx.beatOf(ctx.posMs)) : -1;
-    if (li === liveLi && !force) return;
-    rows[liveLi]?.item.classList.remove('live');
-    liveLi = li;
-    const r = rows[li];
-    if (!r) return;
-    r.item.classList.add('live');
-    if (!closed && editLi < 0) r.item.scrollIntoView({ block: 'nearest' });
+    const now = new Set();
+    if (st && ctx.playing) {
+      const beat = ctx.beatOf(ctx.posMs);
+      for (const v of st.duet ? [1, 2] : [null]) {
+        const li = lineAt(lines, beat, v ?? undefined);
+        if (li >= 0) now.add(li);
+      }
+    }
+    if (!force && now.size === liveLis.size && [...now].every((li) => liveLis.has(li))) return;
+    const fresh = [...now].filter((li) => !liveLis.has(li));
+    liveLis = now;
+    let scrolled = false;
+    for (const r of rows) {
+      const on = now.has(r.li);
+      r.item.classList.toggle('live', on);
+      // прокрутка — к первой новой звучащей строке (у дуэта их может быть две)
+      if (on && !scrolled && (force || fresh.includes(r.li)) && !closed && editLi < 0) {
+        r.item.scrollIntoView({ block: 'nearest' });
+        scrolled = true;
+      }
+    }
+  }
+
+  function refreshNames(force = false) {
+    const st = ctx.state;
+    names.hidden = !st?.duet;
+    if (!st?.duet) return;
+    const ro = !ctx.editable();
+    ['p1', 'p2'].forEach((k, i) => {
+      nameInp[i].readOnly = ro;
+      if (force || document.activeElement !== nameInp[i]) nameInp[i].value = st.singers?.[k] ?? '';
+    });
+  }
+
+  /** Порядок строк на экране: соло — по времени; дуэт — группа певца 1 (с «оба»), потом певца 2 (с «оба»). */
+  function layout(st) {
+    if (!st.duet) return lines.map((_, li) => ({ key: `0:${li}`, li, g: 0 }));
+    const out = [];
+    for (const g of [1, 2]) {
+      lines.forEach((line, li) => {
+        const v = voiceOfLine(line);
+        if (v === 'both' || v === g) out.push({ key: `${g}:${li}`, li, g });
+      });
+    }
+    return out;
   }
 
   function refresh() {
     const st = ctx.state;
     if (!st || gone) return;
     lines = M.lines(st);
-    while (rows.length > lines.length) rows.pop().item.remove();
-    while (rows.length < lines.length) {
-      const r = makeRow(rows.length);
-      rows.push(r);
-      list.append(r.item);
+    refreshNames();
+    const want = layout(st);
+    const keys = new Set(want.map((w) => w.key));
+    for (const [k, r] of byKey) {
+      if (!keys.has(k)) { r.item.remove(); byKey.delete(k); }
     }
+    rows = want.map((w) => {
+      let r = byKey.get(w.key);
+      if (!r) { r = makeRow(w.key, w.li, w.g); byKey.set(w.key, r); }
+      return r;
+    });
+    // переставлять узлы — только когда порядок изменился (перенос узла снимает фокус с поля)
+    const key = `${st.duet ? 1 : 0}|${want.map((w) => w.key).join(',')}`;
+    if (key !== orderKey) {
+      orderKey = key;
+      const nodes = [];
+      for (const g of st.duet ? [1, 2] : [0]) {
+        if (g) nodes.push(groupHead[g - 1]);
+        nodes.push(...rows.filter((r) => r.g === g).map((r) => r.item));
+      }
+      list.replaceChildren(...nodes);
+    }
+    for (const [i, gh] of groupHead.entries()) gh.textContent = ctx.singerLabel(i + 1);
     for (const t of [...typed.keys()]) if (t >= lines.length) typed.delete(t);
     const ro = !ctx.editable();
+    const counter = { 0: 0, 1: 0, 2: 0 };
     for (const r of rows) {
+      // номер строки — внутри партии (как в сообщениях об ошибках «Певец 2, строка 3»)
+      counter[r.g] += 1;
+      r.num.textContent = String(counter[r.g]);
+      const v = voiceOfLine(lines[r.li]);
+      const label = st.duet ? `${ctx.singerLabel(r.g)}, строка ${counter[r.g]}` : `Строка ${counter[r.g]}`;
+      r.inp.setAttribute('aria-label', label);
+      r.item.dataset.voice = st.duet ? String(v) : '';
+      r.item.classList.toggle('duet', !!st.duet);
+      for (const [i, b] of r.vbtns.entries()) {
+        const on = M.VOICES[i] === v;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', String(on));
+        b.disabled = ro;
+      }
       r.inp.readOnly = ro;
       r.inp.title = ro ? 'Только просмотр' : 'Правь строку как текст: слоги разложатся по нотам, | — граница слога';
       if (r.li !== editLi || document.activeElement !== r.inp) r.inp.value = lineValue(r.li);
       paintStatus(r);
     }
     markCur();
-    for (const r of rows) r.item.classList.remove('live');
-    liveLi = -2;
+    liveLis = new Set([-2]);
     markLive();
   }
 

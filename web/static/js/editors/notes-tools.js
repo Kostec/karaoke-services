@@ -3,7 +3,7 @@
 // склейка строк кликом по ↵,
 // режим «Отстукивание» (T, держать J или «Держать») и справка по всем сочетаниям (? и кнопка).
 
-import { h } from '../ui.js';
+import { h, confirmDialog } from '../ui.js';
 import { tapTiming, tapQueue, plural } from './notes-panel-logic.js';
 
 const SCOPE_KEY = 'notesEditor.shiftScope';
@@ -37,9 +37,9 @@ const HELP = [
   [['Ctrl+←', 'Ctrl+→'], 'короче / длиннее'],
   [['Alt+←', 'Alt+→'], 'сдвинуть текст по нотам с выбранной ноты; докуда — по списку рядом с «⇠ текст»: в слове, в строке или до конца песни'],
   [['Перетащить слог'], 'по дорожке слогов на другую ноту — текст той же области сдвигается на столько же нот'],
-  [['Tab', 'Shift+Tab'], 'к следующей / предыдущей ноте'],
+  [['Tab', 'Shift+Tab'], 'к следующей / предыдущей ноте (у дуэта — в партии выбранной ноты)'],
   [['F2', 'Enter'], 'править слог выбранной ноты'],
-  [['N'], 'новая нота после выбранной'],
+  [['N'], 'новая нота после выбранной (того же певца)'],
   [['S'], 'разрезать ноту пополам'],
   [['Shift+J'], 'слить со следующей нотой'],
   [['G'], 'золотая нота'],
@@ -49,9 +49,19 @@ const HELP = [
   [['Ctrl+Shift+Z', 'Ctrl+Y'], 'повторить'],
   [['Ctrl+S'], 'сохранить'],
   [['+', '−', 'Ctrl+колесо'], 'масштаб таймлайна'],
-  [['T'], 'режим отстукивания, затем держи J на каждом слоге'],
+  [['T'], 'режим отстукивания, затем держи J на каждом слоге (у дуэта — до конца партии)'],
   [['Esc'], 'выйти из отстукивания / снять выделение / закрыть'],
   [['?'], 'эта справка'],
+];
+
+// дуэт: что делают кнопки и как работают инструменты внутри партии
+const DUET_HELP = [
+  ['«Сделать дуэтом»', 'все строки — певцу 1; дальше строки раздаются певцу 2 или обоим'],
+  ['«Певцу: 1 / 2 / оба»', 'отдать строки выбранных нот (строка переходит целиком); то же — переключатель у строки в панели «Текст»'],
+  ['«Сделать соло»', 'всё — певцу 1, строки «оба» остаются одной копией'],
+  ['Цвета', 'певец 1 — синий, певец 2 — фиолетовый, «оба» — зелёный; слоги певца 1 — на верхней полосе, певца 2 — на нижней'],
+  ['Внутри партии', 'Tab, отстукивание, сдвиг текста ⇠/⇢, перетаскивание слога, Разрезать, Слить и ↵ Строка работают в партии выбранной ноты'],
+  ['Новая нота', 'получает певца выбранной ноты'],
 ];
 
 export function toolsPlugin(ctx) {
@@ -161,6 +171,55 @@ export function toolsPlugin(ctx) {
   ctx.onRender(updateTools);
   ctx.onSelect(updateTools);
 
+  // ---------------------------------------------------------------- дуэт: сделать дуэтом / соло, отдать певцу
+
+  const duetBtn = btn('Сделать дуэтом', 'Сделать дуэтом: все строки — певцу 1, потом раздай строки певцу 2 или обоим');
+  const soloBtn = btn('Сделать соло', 'Сделать соло: всё — певцу 1, строки «оба» — одной копией');
+  const voiceBtns = M.VOICES.map((v) => {
+    const word = v === 'both' ? 'обоим' : `певцу ${v}`;
+    const b = btn(v === 'both' ? 'оба' : String(v), `Отдать строки выбранных нот ${word}`, { class: 'ne-vbtn' });
+    b.addEventListener('click', () => {
+      const ids = [...ctx.selection];
+      if (!ids.length) return;
+      const ok = ctx.apply((s) => M.setVoice(s, ids, v), `Строки выбранных нот — ${word}`);
+      if (!ok && ctx.state.duet) ctx.toast(`Строки уже у ${v === 'both' ? 'обоих' : `певца ${v}`}`);
+    });
+    return b;
+  });
+  const voiceGroup = h('span', { class: 'ne-vgroup', role: 'group', 'aria-label': 'Отдать строки выбранных нот певцу' },
+    h('span', { class: 'small muted' }, 'Певцу:'), ...voiceBtns);
+  els.slotEnd.append(duetBtn, soloBtn, voiceGroup);
+
+  duetBtn.addEventListener('click', () => {
+    if (ctx.apply((s) => M.makeDuet(s), 'Теперь это дуэт: все строки у певца 1 — раздай строки певцу 2 или обоим')) {
+      els.scroll.focus({ preventScroll: true });
+    }
+  });
+  soloBtn.addEventListener('click', async () => {
+    const ok = await confirmDialog('Сделать песню соло? Все строки перейдут певцу 1, строки «оба» останутся одной копией, '
+      + 'имена певцов при сохранении удалятся. Ctrl+Z вернёт дуэт.', 'Сделать соло');
+    if (ok) ctx.apply((s) => M.makeSolo(s), 'Песня теперь соло');
+    els.scroll.focus({ preventScroll: true });
+  });
+
+  function updateDuet() {
+    const st = ctx.state;
+    const ed = ctx.editable();
+    duetBtn.hidden = !st || !ed || !!st.duet;
+    soloBtn.hidden = !st || !ed || !st.duet;
+    voiceGroup.hidden = !st || !ed || !st.duet;
+    const sel = ctx.selection;
+    for (const [i, b] of voiceBtns.entries()) {
+      b.disabled = !sel.size;
+      const v = M.VOICES[i];
+      const all = sel.size > 0 && [...sel].every((id) => st.notes.find((x) => x.id === id)?.voice === v);
+      b.classList.toggle('on', all);
+      b.setAttribute('aria-pressed', String(all));
+    }
+  }
+  ctx.onRender(updateDuet);
+  ctx.onSelect(updateDuet);
+
   // ---------------------------------------------------------------- перетаскивание слога (G03, история 40)
   // Слог тащат по дорожке слогов на другую ноту: текст области сдвигается на K нот (K — разница
   // номеров нот). Пока указатель не ушёл дальше DRAG_PX — это обычный клик или двойной клик.
@@ -171,12 +230,12 @@ export function toolsPlugin(ctx) {
   let suppressClick = false;
   const chipOf = (id) => (id == null ? null : els.lane.querySelector(`.ne-chip[data-id="${id}"]`));
 
-  /** Нота под точкой дорожки: та, в которую попали, иначе ближайшая серединой. */
-  function noteAtX(clientX) {
+  /** Нота под точкой дорожки среди нот notes (партии слога): та, в которую попали, иначе ближайшая серединой. */
+  function noteAtX(clientX, notes) {
     const beat = ctx.xBeat(clientX - els.lane.getBoundingClientRect().left);
     let best = null;
     let bestD = Infinity;
-    for (const x of ctx.state.notes) {
+    for (const x of notes) {
       const d = beat >= x.start && beat < x.start + x.length ? -1 : Math.abs(x.start + x.length / 2 - beat);
       if (d < bestD) { best = x; bestD = d; }
       if (d < 0) break;
@@ -185,8 +244,9 @@ export function toolsPlugin(ctx) {
   }
 
   function dragMove(e) {
-    const notes = ctx.state.notes;
-    const target = noteAtX(e.clientX);
+    // у дуэта номера нот — в партии перетаскиваемого слога (как считает сдвиг в модели)
+    const notes = ctx.partNotes(drag.id);
+    const target = noteAtX(e.clientX, notes);
     const from = notes.findIndex((x) => x.id === drag.id);
     const want = target ? notes.indexOf(target) - from : 0;
     // за пределы области текст не уезжает — подсказка называет фактический сдвиг из модели
@@ -394,6 +454,8 @@ export function toolsPlugin(ctx) {
   const closeHelp = btn('Понятно', 'Закрыть справку');
   const help = h('dialog', { class: 'ne-help', 'aria-label': 'Сочетания клавиш' },
     h('h3', {}, 'Сочетания клавиш'), table,
+    h('h4', {}, 'Дуэт'),
+    h('table', { class: 'ne-help-table' }, ...DUET_HELP.map(([what, text]) => h('tr', {}, h('td', {}, h('b', {}, what)), h('td', {}, text)))),
     h('p', { class: 'small muted' }, 'Клавиши работают и в русской раскладке. Пока курсор в поле ввода, сочетания редактора не срабатывают.'),
     h('p', {}, closeHelp));
   ctx.dlg.append(help);

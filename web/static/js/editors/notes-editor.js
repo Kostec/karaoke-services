@@ -2,6 +2,9 @@
 // таймлайн (линейка, волна, ноты по высоте, дорожка слогов, границы строк, курсор), звук из /audio,
 // правка мышью и клавишами через notes-model.js, сохранение PUT /notes.
 //
+// Дуэт (таск 03 «дуэты»): цвет нот по певцу (1 / 2 / «оба»), две полосы слогов, живые ноты каждой партии,
+// Tab, новая нота и границы строк — внутри партии выбранной ноты.
+//
 // Точки расширения (панель текста, отстукивание, перенос текста, справка — таск 04):
 // addNotesEditorPlugin(fn) — fn(ctx) вызывается при каждом открытии редактора, ctx описан у makeContext().
 
@@ -41,6 +44,10 @@ function saveZoom(v) {
 }
 
 const isRap = (t) => t === 'R' || t === 'G';
+/** Партия ноты: певец 2 — 2, певец 1 и «оба» — 1 (как в модели). */
+const partOf = (x) => (x?.voice === 2 ? 2 : 1);
+const VOICE_CLASS = { 1: 'p1', 2: 'p2', both: 'both' };
+const voiceWord = (v) => (v === 'both' ? 'оба' : `певец ${v === 2 ? 2 : 1}`);
 
 export async function openNotesEditor(song, { reload } = {}) {
   let state = null;
@@ -60,7 +67,7 @@ export async function openNotesEditor(song, { reload } = {}) {
   let playing = false;
   let stopAt = null;
   let raf = 0;
-  let liveId = null;
+  let liveIds = new Set();
   let drag = null;
   let dirtyMemo = { s: null, v: false };
   const els = new Map(); // id → {note, chip}
@@ -114,7 +121,8 @@ export async function openNotesEditor(song, { reload } = {}) {
   const playhead = h('div', { class: 'ne-playhead' });
   const inner = h('div', { class: 'ne-inner' }, ruler, waveBox, roll, lane, brkLayer, playhead);
   const scroll = h('div', { class: 'ne-scroll', tabindex: '0', 'aria-label': 'Таймлайн нот' }, inner);
-  const centerTop = h('div', { class: 'ne-center-top' });
+  const legend = h('div', { class: 'ne-legend small', hidden: true, 'aria-label': 'Цвета певцов' });
+  const centerTop = h('div', { class: 'ne-center-top' }, legend);
   const hint = h('div', { class: 'ne-hint' },
     h('span', {}, h('b', {}, 'Двойной клик'), ' по пустому месту — новая нота'),
     h('span', {}, h('b', {}, 'Тяни ноту'), ' — время и высота'),
@@ -178,7 +186,23 @@ export async function openNotesEditor(song, { reload } = {}) {
 
   function noteTitle(x, bad) {
     const t = String(x.text).trim() || '∅';
-    return `«${t}» · ${fmtTime(msOf(x.start))} · ${x.length} бит${bad ? ' · перекрывается с соседней!' : ''}`;
+    const who = state.duet ? ` · ${voiceWord(x.voice)}` : '';
+    return `«${t}» · ${fmtTime(msOf(x.start))} · ${x.length} бит${who}${bad ? ' · перекрывается с соседней!' : ''}`;
+  }
+
+  /** Подпись певца: «Певец 2 (Анна)». */
+  const singerLabel = (v) => {
+    const name = state?.singers?.[`p${v}`];
+    return `Певец ${v}${name ? ` (${name})` : ''}`;
+  };
+
+  function renderLegend() {
+    legend.hidden = !state.duet;
+    legend.textContent = '';
+    if (!state.duet) return;
+    for (const [cls, label] of [['p1', singerLabel(1)], ['p2', singerLabel(2)], ['both', 'Оба']]) {
+      legend.append(h('span', { class: `ne-lg ${cls}` }, h('i', { 'aria-hidden': 'true' }), label));
+    }
   }
 
   function place(e, x) {
@@ -230,20 +254,23 @@ export async function openNotesEditor(song, { reload } = {}) {
     lane.textContent = '';
     brkLayer.textContent = '';
     els.clear();
-    liveId = null;
+    liveIds = new Set();
     const bad = M.overlaps(state);
+    const duet = !!state.duet;
+    lane.classList.toggle('duet', duet);
     const fn = document.createDocumentFragment();
     const fc = document.createDocumentFragment();
     const fb = document.createDocumentFragment();
     state.notes.forEach((x, i) => {
       const note = document.createElement('div');
-      note.className = `ne-note${x.type === '*' || x.type === 'G' ? ' gold' : ''}${x.type === 'F' ? ' free' : ''}`
+      const vc = duet ? ` ${VOICE_CLASS[x.voice] || 'p1'}` : '';
+      note.className = `ne-note${vc}${x.type === '*' || x.type === 'G' ? ' gold' : ''}${x.type === 'F' ? ' free' : ''}`
         + `${isRap(x.type) ? ' rap' : ''}${bad.has(x.id) ? ' bad' : ''}${sel.has(x.id) ? ' sel' : ''}`;
       note.dataset.id = x.id;
       note.title = noteTitle(x, bad.has(x.id));
       const chip = document.createElement('div');
       const empty = !String(x.text).trim();
-      chip.className = `ne-chip${empty ? ' empty' : ''}${isRap(x.type) ? ' rap' : ''}${sel.has(x.id) ? ' sel' : ''}`;
+      chip.className = `ne-chip${vc}${empty ? ' empty' : ''}${isRap(x.type) ? ' rap' : ''}${sel.has(x.id) ? ' sel' : ''}`;
       chip.dataset.id = x.id;
       chip.textContent = empty ? '∅' : String(x.text).trim();
       chip.title = editable() ? 'Двойной клик — править слог' : String(x.text);
@@ -252,19 +279,24 @@ export async function openNotesEditor(song, { reload } = {}) {
       els.set(x.id, e);
       fn.append(note);
       fc.append(chip);
-      if (x.ls && i > 0) {
-        const pv = state.notes[i - 1];
+    });
+    // границы строк — внутри каждой партии (у дуэта ↵ певца 1 — на верхней полосе слогов, певца 2 — на нижней)
+    for (const v of duet ? [1, 2] : [1]) {
+      const ls = M.voiceLines(state, v);
+      for (let j = 1; j < ls.length; j += 1) {
+        const pv = ls[j - 1][ls[j - 1].length - 1];
+        const x = ls[j][0];
         const b = document.createElement('div');
-        b.className = 'ne-brk';
+        b.className = `ne-brk${duet ? ` p${v}` : ''}`;
         b.style.left = `${bx((pv.start + pv.length + x.start) / 2)}px`;
         const k = document.createElement('b');
         k.textContent = '↵';
         k.dataset.id = x.id;
-        k.title = 'Граница строки';
+        k.title = duet ? `Граница строки (певец ${v})` : 'Граница строки';
         b.append(k);
         fb.append(b);
       }
-    });
+    }
     roll.append(fn);
     lane.append(fc);
     brkLayer.append(fb);
@@ -289,6 +321,7 @@ export async function openNotesEditor(song, { reload } = {}) {
     roll.style.setProperty('--beat16', `${ppb * 16}px`);
     roll.style.backgroundPosition = `${bx(0)}px 0`;
     brkLayer.style.top = `${RULER_H + waveH()}px`;
+    renderLegend();
     renderKeys();
     renderRuler();
     renderNotes();
@@ -332,6 +365,7 @@ export async function openNotesEditor(song, { reload } = {}) {
     selInfo.textContent = n === 0 ? 'Ничего не выбрано'
       : n === total && n > 1 ? `Выбраны все ноты (${n})`
         : one ? `«${String(one.text).trim() || '∅'}» · ${one.length} бит · ${fmtTime(msOf(one.start))}`
+            + `${state.duet ? ` · ${voiceWord(one.voice)}` : ''}`
           : `Выбрано нот: ${n}`;
     const ro = !editable();
     textBtn.disabled = ro || n !== 1;
@@ -437,14 +471,25 @@ export async function openNotesEditor(song, { reload } = {}) {
     const beat = beatOf(posMs);
     playhead.style.transform = `translateX(${bx(beat)}px)`;
     timeEl.textContent = `${fmtTime(posMs)} / ${endLabel}`;
-    const i = playing ? noteAt(state.notes, beat) : -1;
-    const id = i >= 0 ? state.notes[i].id : null;
-    if (id !== liveId) {
-      const was = els.get(liveId);
-      if (was) { was.note.classList.remove('live'); was.chip.classList.remove('live'); }
-      const now = els.get(id);
-      if (now) { now.note.classList.add('live'); now.chip.classList.add('live'); }
-      liveId = id;
+    // живая нота — в каждой партии своя (у соло партия одна — все ноты)
+    const now = new Set();
+    if (playing) {
+      for (const v of state.duet ? [1, 2] : [1]) {
+        const part = state.duet ? M.voiceNotes(state, v) : state.notes;
+        const i = noteAt(part, beat);
+        if (i >= 0) now.add(part[i].id);
+      }
+    }
+    if (now.size !== liveIds.size || [...now].some((id) => !liveIds.has(id))) {
+      for (const id of liveIds) {
+        const was = els.get(id);
+        if (was && !now.has(id)) { was.note.classList.remove('live'); was.chip.classList.remove('live'); }
+      }
+      for (const id of now) {
+        const e = els.get(id);
+        if (e) { e.note.classList.add('live'); e.chip.classList.add('live'); }
+      }
+      liveIds = now;
     }
     hooks.tick.forEach((f) => f(posMs, playing));
   }
@@ -542,19 +587,28 @@ export async function openNotesEditor(song, { reload } = {}) {
     toast('Выделены все ноты: ←/→ сдвигают песню по времени, ↑/↓ меняют тональность');
   }
 
-  /** Tab по нотам; на крайней ноте — false: фокус уходит дальше по обычному порядку. */
+  /** Ноты партии ноты id (у соло — все ноты): по ним ходят Tab и правка слогов. */
+  function partNotes(id) {
+    return state.duet ? M.voiceNotes(state, partOf(byId(id))) : state.notes;
+  }
+
+  /** Певец новой ноты: певец выбранной ноты (у соло — 1). */
+  const newVoice = () => (state.duet && sel.has(lastSel) ? (byId(lastSel)?.voice ?? 1) : 1);
+
+  /** Tab по нотам (у дуэта — по партии выбранной ноты); на крайней ноте — false: фокус уходит дальше. */
   function stepSel(dir) {
-    const i = state.notes.findIndex((x) => x.id === lastSel);
-    if (i >= 0 && (i + dir < 0 || i + dir >= state.notes.length)) return false;
-    const j = Math.max(0, Math.min(state.notes.length - 1, i < 0 ? 0 : i + dir));
-    select([state.notes[j].id], { reveal: true });
+    const list = partNotes(lastSel);
+    const i = list.findIndex((x) => x.id === lastSel);
+    if (i >= 0 && (i + dir < 0 || i + dir >= list.length)) return false;
+    const j = Math.max(0, Math.min(list.length - 1, i < 0 ? 0 : i + dir));
+    select([list[j].id], { reveal: true });
     return true;
   }
 
   function newAfter() {
     const one = sel.size === 1 ? byId(lastSel) : null;
     if (!one) return;
-    if (apply((s) => M.addNote(s, { start: one.start + one.length, pitch: one.pitch, length: 3 }))) editChip(lastSel);
+    if (apply((s) => M.addNote(s, { start: one.start + one.length, pitch: one.pitch, length: 3, voice: one.voice ?? 1 }))) editChip(lastSel);
   }
 
   /** Поле ввода слога на дорожке: Tab/Shift+Tab — к соседней ноте, Enter — готово, Esc — отмена. */
@@ -577,8 +631,9 @@ export async function openNotesEditor(song, { reload } = {}) {
       const changed = !cancel && inp.value !== x.text;
       if (!changed || !apply((s) => M.setText(s, id, inp.value))) render();
       if (move) {
-        const i = state.notes.findIndex((n) => n.id === id) + move;
-        if (state.notes[i]) editChip(state.notes[i].id);
+        const list = partNotes(id);
+        const i = list.findIndex((n) => n.id === id) + move;
+        if (list[i]) editChip(list[i].id);
       } else {
         scroll.focus({ preventScroll: true });
       }
@@ -732,7 +787,8 @@ export async function openNotesEditor(song, { reload } = {}) {
     const r = roll.getBoundingClientRect();
     const start = Math.floor(xBeat(e.clientX - r.left));
     const pitch = pr.max - Math.floor((e.clientY - r.top) / row);
-    if (apply((s) => M.addNote(s, { start, pitch, length: 4 }))) editChip(lastSel);
+    const voice = newVoice();
+    if (apply((s) => M.addNote(s, { start, pitch, length: 4, voice }))) editChip(lastSel);
   });
 
   lane.addEventListener('click', (e) => {
@@ -918,6 +974,8 @@ export async function openNotesEditor(song, { reload } = {}) {
     playReason,
     editable, apply, select, revealNote, editChip, render, renderSel, toast, play, stopPlay, seekMs, playLine,
     msOf, beatOf, bx, xBeat, py,
+    /** Ноты партии ноты id (у соло — все); подпись певца v: «Певец 2 (имя)». */
+    partNotes, singerLabel,
     onRender: (f) => hooks.render.push(f),
     onSelect: (f) => hooks.select.push(f),
     onTick: (f) => hooks.tick.push(f),
