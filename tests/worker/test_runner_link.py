@@ -29,12 +29,12 @@ def _fakes(monkeypatch, tmp_path):
         monkeypatch.delenv(key, raising=False)
 
 
-def enqueue_link(world, url: str, *, cover: bool = False):
+def enqueue_link(world, url: str, *, cover: bool = False, **extra):
     rel_dir = naming.song_dir(ARTIST, TITLE)
     params = {"whisper_model": "large-v2", "language": "ru", "compute_type": "int8", "batch_size": 4,
               "align_model": "jonatasgrosman/wav2vec2-large-xlsr-53-russian", "vad_onset": None, "vad_offset": None, "demucs_model": "htdemucs",
               "keep_debug": False, "rel_dir": rel_dir, "replace": False, "replace_rel_dir": None,
-              "target_id": world.storage.target_id, "source": "link"}
+              "target_id": world.storage.target_id, "source": "link", **extra}
 
     def make(job_id: int) -> dict:
         d = world.paths.job_in(rel_dir, job_id)
@@ -207,3 +207,15 @@ def test_cancel_during_yandex_download_kills_it_and_keeps_input(world, monkeypat
     t.join(15)
     assert sorted(p.name for p in world.paths.job(DIR, job.id).iterdir()) == ["in"]
     assert _wait(lambda: not _alive(b"fake_musiclink.py"), timeout=2), "загрузчик жив после отмены"
+
+
+
+def test_generate_by_link_downloads_video_after_audio(world):
+    job = enqueue_link(world, YT, video={"mode": "source", "url": YT, "height": 720, "gap": 0.5})
+    world.run()
+    done = world.jobs.get(job.id)
+    assert (done.state, done.error) == ("done", None)
+    rel, base = naming.song_dir(ARTIST, TITLE), naming.base_name(ARTIST, TITLE)
+    assert (world.out / rel / f"{base}.mp4").read_bytes().startswith(b"FAKE-MP4 " + YT.encode())
+    txt = (world.out / rel / f"{base}.txt").read_text("utf-8")
+    assert f"#VIDEO:{base}.mp4" in txt and "#VIDEOGAP:0.5" in txt

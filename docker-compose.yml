@@ -45,6 +45,7 @@ services:
       WEB_PASSWORD: ${WEB_PASSWORD:-}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
       MAX_IMPORT_MB: ${MAX_IMPORT_MB:-500}
+      MAX_VIDEO_MB: ${MAX_VIDEO_MB:-2000}
     volumes:
       - data:/data
       - ${LOCAL_OUTPUT_ROOT:-./output}:/output

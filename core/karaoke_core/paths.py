@@ -21,13 +21,15 @@ from typing import Mapping
 
 from . import naming
 
-__all__ = ["DataPaths", "INPUT_AUDIO", "INPUT_LYRICS", "INPUT_LRC", "INPUT_COVER_STEM", "INPUT_PARAMS"]
+__all__ = ["DataPaths", "INPUT_AUDIO", "INPUT_LYRICS", "INPUT_LRC", "INPUT_COVER_STEM", "INPUT_VIDEO_STEM",
+           "INPUT_PARAMS"]
 
 # Имена файлов входа задания и исходников (одинаковые в in/ и source/).
 INPUT_AUDIO = "input.mp3"
 INPUT_LYRICS = "lyrics.txt"
 INPUT_LRC = "lyrics.lrc"  # LRC с метками строк рядом с lyrics.txt (UTF-8, его читает --lyrics_timing)
 INPUT_COVER_STEM = "cover"  # cover.<jpg|png|webp>
+INPUT_VIDEO_STEM = "video"  # video.<ext>: видеофайл пользователя, из архива или скачанный yt-dlp
 INPUT_PARAMS = "params.json"
 
 _IMPORT_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")

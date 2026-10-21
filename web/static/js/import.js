@@ -5,6 +5,16 @@
 // Яндекс Музыка…) — /api/link/inspect и та же группа генерации, только звук — audio_url.
 
 import { api, getDefaults, inspectForm, importForm, generateForm, errorText } from './api.js';
+import { createVideoBlock, videoChoices, isVideoLink } from './video-block.js';
+
+let videoDefaults = {}; // max_video_mb, video_heights, default_video_height из /api/defaults
+
+/** Блок «Видео» карточки: source — ссылка для «из ссылки…» ('' — варианта нет), pack — видео в архиве. */
+function videoBlock({ source = '', pack = false, label, gap, onChange }) {
+  return createVideoBlock({ ...videoChoices({ source: !!source, pack }), sourceUrl: source,
+    labels: label ? { source: label } : undefined, gap: gap ?? '', maxMb: videoDefaults.max_video_mb,
+    heights: videoDefaults.video_heights, defaultHeight: videoDefaults.default_video_height, onChange });
+}
 import { h, clear, toast, field, debounce, songName } from './ui.js';
 import { readId3 } from './id3.js';
 import { usableHits, fmtSeconds, LRC_TIMING_LABEL } from './lyrics-search.js';
@@ -40,6 +50,7 @@ export function show() {
   if (!built) build();
   checkUsdbAccount();
   getDefaults().then((d) => {
+    videoDefaults = d;
     if (d.max_import_mb) view.filesHint.textContent = `zip-архив или файлы песни (.txt, аудио, обложка), до ${d.max_import_mb} МБ`;
   }).catch(() => {});
   shown = true;
@@ -312,6 +323,14 @@ function buildCard(item) {
     song.has_instrumental ? 'есть своя минусовка' : null].filter(Boolean);
   card.youtubeBox = field('Ссылка на YouTube', card.youtube, song.youtube?.length ? 'найдена в песне, можно заменить' : 'звук скачается оттуда');
   card.youtubeBox.hidden = !!song.audio; // аудио из архива важнее ссылки
+  // видео (истории 25, 26): «из ссылки» — v= из #VIDEO, иначе ссылка звука; «из архива» — файл по #VIDEO
+  const vlinks = song.video_links || [];
+  const videoSource = () => vlinks[0] || state.youtube.trim() || song.youtube?.[0] || '';
+  card.video = videoBlock({ source: videoSource(), pack: !!song.video_file,
+    label: vlinks.length && pack?.source === 'usdb' ? 'Из ссылки usdb' : null,
+    gap: song.videogap ?? '', onChange: () => { state.video = card.video.fields(); } });
+  if (song.video_file) card.video.el.prepend(h('div', { class: 'small muted' }, `Видео в архиве: ${song.video_file}`));
+  state.video = card.video.fields();
 
   card.el = h('article', { class: 'card import-song' },
     h('label', { class: 'check import-song-head' }, card.select,
@@ -321,6 +340,7 @@ function buildCard(item) {
     card.audioInfo,
     card.youtubeBox,
     field('Свой mp3', card.file, 'необязательно — важнее архива и ссылки'),
+    card.video.el,
     h('label', { class: 'check' }, card.instrumental, 'Сделать минусовку'),
     song.has_instrumental ? h('div', { class: 'small muted' }, 'В архиве уже есть своя минусовка — новая её заменит.') : null,
     card.dup, card.warnings, card.status);
@@ -329,7 +349,16 @@ function buildCard(item) {
   card.select.addEventListener('change', () => { state.selected = card.select.checked; refreshCard(item); });
   card.artist.addEventListener('input', () => { state.artist = card.artist.value; refreshCard(item); recheck(); });
   card.title.addEventListener('input', () => { state.title = card.title.value; refreshCard(item); recheck(); });
-  card.youtube.addEventListener('input', () => { state.youtube = card.youtube.value; refreshCard(item); });
+  card.youtube.addEventListener('input', () => {
+    state.youtube = card.youtube.value;
+    if (!vlinks.length) {
+      const src = isVideoLink(videoSource()) ? videoSource() : '';
+      card.video.setModes(videoChoices({ source: !!src, pack: !!song.video_file }).modes);
+      card.video.setSource(src);
+      state.video = card.video.fields();
+    }
+    refreshCard(item);
+  });
   card.file.addEventListener('change', () => { state.file = card.file.files[0] || null; refreshCard(item); });
   card.instrumental.addEventListener('change', () => { state.instrumental = card.instrumental.checked; });
   card.replace.addEventListener('change', () => { state.replace = card.replace.checked; });
@@ -414,7 +443,7 @@ async function runImport() {
           card.status.className = 'small err-text';
           card.status.textContent = out.text;
           const el = { artist: card.artist, title: card.title, audio: card.file, youtube_url: card.youtube }[out.field];
-          markInvalid(el);
+          if (!card.video.showApiError(e)) markInvalid(el);
         }
       }
     }
@@ -644,13 +673,18 @@ function buildTrack(g, row) {
   card.lrcHint = h('div', { class: 'small muted' });
   card.lrcBox = h('div', { hidden: true }, h('label', { class: 'check' }, card.lrc, LRC_TIMING_LABEL), card.lrcHint);
   card.status = h('div', { class: 'small', role: 'status' });
+  if (!row.file) { // трек по ссылке; mp3 из папки видео не выбирает (история 31)
+    const src = isVideoLink(state.url) ? state.url : '';
+    card.video = videoBlock({ source: src, onChange: () => { state.video = card.video.fields(); } });
+    state.video = card.video.fields();
+  }
   const [name, sub] = trackHead(row);
   card.el = h('article', { class: 'card import-song folder-track' },
     h('label', { class: 'check import-song-head' }, card.select, h('span', { class: 'song-title' }, name)),
     sub,
     h('div', { class: 'row2' }, field('Исполнитель', card.artist), field('Название', card.title)),
     h('div', { class: 'folder-lyrics small' }, card.lyrics, card.pick),
-    card.lrcBox, card.big, card.dup, card.status);
+    card.lrcBox, card.video?.el || null, card.big, card.dup, card.status);
 
   const changed = debounce(() => {
     if (!state.lyricsManual) { Object.assign(state, { lyrics: 'queued', hit: null, hits: [] }); runLyricsQueue(g); }
@@ -802,6 +836,7 @@ async function runGenerate(g) {
         } else {
           card.status.className = 'small err-text';
           showError(card.status, errorText(e), e); // нет токена Яндекс Музыки — со ссылкой на «Настройки»
+          card.video?.showApiError(e);
         }
       }
       refreshTrack(g, row);

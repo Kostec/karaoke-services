@@ -477,3 +477,100 @@ def test_import_job_youtube_alternatives_are_limited(env, ic):
     meta_path.write_text(json.dumps(meta), "utf-8")
     p = import_job(ic, body["token"], 0, "Много", "Ссылок").json()["params"]
     assert p["youtube_url"] == links[0] and p["youtube_alternatives"] == links[1:6]
+
+
+# --------------------------------------------------------------------------- видео (истории 25, 26, 29)
+
+VIDEO_PACK = {
+    "p/song.txt": txt("Ария", "Штиль", audio="a.mp3", video="Clip.MP4\n#VIDEOGAP:1,5"),
+    "p/a.mp3": MP3,
+    "p/Clip.MP4": b"MP4-DATA",
+}
+
+
+def _video_pack(ic):
+    r = inspect_files(ic, [("p.zip", make_zip(VIDEO_PACK))])
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_inspect_and_import_video_from_pack(env, ic):
+    body = _video_pack(ic)
+    (s,) = body["songs"]
+    assert (s["video_file"], s["video_links"], s["videogap"]) == ("Clip.MP4", [], 1.5)
+    r = import_job(ic, body["token"], 0, "Ария", "Штиль", video_mode="pack", videogap="1.5")
+    assert r.status_code == 201, r.text
+    p = r.json()["params"]
+    assert p["video"] == {"mode": "pack", "height": 720, "gap": 1.5}
+    assert p["inputs"]["video"].endswith("/in/video.mp4")
+    assert (env.data / p["inputs"]["video"]).read_bytes() == b"MP4-DATA"
+    # «без видео» — как раньше: ни params.video, ни файла
+    r = import_job(ic, _video_pack(ic)["token"], 0, "Ария", "Штиль 2", video_mode="none")
+    p = r.json()["params"]
+    assert "video" not in p and "video" not in p["inputs"]
+
+
+def test_import_video_url_and_file_and_errors(env, ic):
+    token = _video_pack(ic)["token"]
+    r = import_job(ic, token, 0, "Ария", "Штиль", video_mode="url",
+                   video_url="https://vk.com/video-1_2", video_height="1080")
+    assert r.status_code == 201, r.text
+    assert r.json()["params"]["video"] == {"mode": "url", "url": "https://vk.com/video-1_2", "height": 1080}
+
+    def err(**form):
+        files = form.pop("files", None)
+        data = {"token": _video_pack(ic)["token"], "index": "0", "artist": "Ария", "title": "Ш", **form}
+        r = ic.post("/api/jobs/import", data=data, files=files)
+        return r.status_code, r.json().get("field")
+
+    assert err(video_mode="url", video_url="https://music.yandex.ru/album/1/track/2") == (400, "video_url")
+    assert err(video_mode="url") == (400, "video_url")
+    assert err(video_mode="file") == (400, "video_file")
+    assert err(video_mode="file", files={"video_file": ("x.exe", b"1")}) == (400, "video_file")
+    assert err(video_mode="source") == (400, "video_mode")  # у пакета нет ссылки на видео
+    assert err(video_mode="кино") == (400, "video_mode")
+    assert err(video_mode="url", video_url="https://vk.com/video-1_2", video_height="5") == (400, "video_height")
+    assert err(video_mode="pack", videogap="x") == (400, "videogap")
+    r = import_job(ic, _video_pack(ic)["token"], 0, "Ария", "Штиль 3", video_mode="file")
+    assert r.status_code == 400
+    r = ic.post("/api/jobs/import", data={"token": _video_pack(ic)["token"], "index": "0", "artist": "Ария",
+                                          "title": "Штиль 4", "video_mode": "file"},
+                files={"video_file": ("my.webm", b"WEBM")})
+    assert r.status_code == 201, r.text
+    p = r.json()["params"]
+    assert p["video"] == {"mode": "file", "height": 720}
+    assert (env.data / p["inputs"]["video"]).read_bytes() == b"WEBM" and p["inputs"]["video"].endswith("video.webm")
+
+
+def test_import_video_file_over_limit_413(env, http):
+    with env.client(extra_env={"MAX_VIDEO_MB": "1"}, http=http) as c:
+        token = _video_pack(c)["token"]
+        r = c.post("/api/jobs/import", data={"token": token, "index": "0", "artist": "Ария", "title": "Ш",
+                                             "video_mode": "file"},
+                   files={"video_file": ("my.mp4", b"0" * (1024 * 1024 + 1))})
+        assert (r.status_code, r.json().get("field")) == (413, "video_file")
+
+
+def test_usdb_video_link_is_source(env, ic, http):
+    http.route("POST", USDB, usdb_page("login_ok.html"))
+    http.route("POST", USDB + "index.php?link=gettxt", usdb_page("gettxt.html"))
+    http.route("GET", USDB + "index.php?link=detail", usdb_page("detail.html"))
+    http.route("GET", "https://usdb.animux.de/data/cover/10101.jpg", body=JPG)
+    assert ic.put("/api/settings/usdb", json={"user": "karaoke", "password": "pw-test"}).status_code == 200
+    body = ic.post("/api/import/inspect", data={"source": "usdb", "usdb_id": "10101"}).json()
+    (s,) = body["songs"]
+    assert s["video_links"] == ["https://www.youtube.com/watch?v=AbCdEfGhIj0"] and s["video_file"] is None
+    r = import_job(ic, body["token"], 0, "Кино", "Звезда по имени Солнце", video_mode="source",
+                   youtube_url="https://www.youtube.com/watch?v=Qq_-1234567", video_height="0")
+    assert r.status_code == 201, r.text
+    # v= из #VIDEO важнее ссылки звука
+    assert r.json()["params"]["video"] == {"mode": "source", "url": "https://www.youtube.com/watch?v=AbCdEfGhIj0",
+                                           "height": 0}
+
+
+def test_source_video_falls_back_to_chosen_audio_link(env, ic):
+    body = inspect_files(ic, [("s.txt", txt("Ария", "Ангел", video="a=AbCdEfGhIj0"))]).json()
+    assert body["songs"][0]["video_links"] == []
+    r = import_job(ic, body["token"], 0, "Ария", "Ангел", video_mode="source")
+    assert r.status_code == 201, r.text
+    assert r.json()["params"]["video"]["url"] == "https://www.youtube.com/watch?v=AbCdEfGhIj0"

@@ -23,9 +23,10 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 
 from karaoke_core import naming, songpack, ultrastar
 from karaoke_core.http import HttpError
-from karaoke_core.paths import DataPaths, INPUT_AUDIO, INPUT_COVER_STEM
+from karaoke_core.paths import DataPaths, INPUT_AUDIO, INPUT_COVER_STEM, INPUT_VIDEO_STEM
 
-from .api_jobs import CHUNK, MB, Staging, copy_limited, ctx_of, download_cover, is_mp3, queue_duplicate
+from .api_jobs import (CHUNK, MB, Staging, copy_limited, ctx_of, download_cover, is_mp3, queue_duplicate,
+                       stage_video_file, video_choice)
 from .api_usdb import usdb_api_error
 from .context import ApiError, AppContext, song_key
 from .params import max_import_mb
@@ -275,6 +276,9 @@ def _public(ctx: AppContext, s: dict) -> dict:
             "audio": PurePosixPath(s["audio_rel"]).name if s["audio_rel"] else None,
             "cover": bool(s["cover_rel"] or s["cover_url"]), "youtube": s["youtube"],
             "has_instrumental": s["has_instrumental"],
+            "video_links": s.get("video_links") or [],
+            "video_file": PurePosixPath(s["video_rel"]).name if s.get("video_rel") else None,
+            "videogap": s.get("videogap"),
             "existing_song_id": ctx.existing_song_id(s["artist"], s["title"]),
             "warnings": _warnings(s)}
 
@@ -309,6 +313,8 @@ def inspect(request: Request, source: str = Form(...), usdb_id: int | None = For
                   "audio_rel": prefix + s.audio_rel if s.audio_rel else None,
                   "cover_rel": prefix + s.cover_rel if s.cover_rel else None,
                   "youtube": list(s.youtube), "cover_url": s.cover_url,
+                  "video_links": list(s.video_links), "videogap": s.videogap,
+                  "video_rel": prefix + s.video_file if s.video_file else None,
                   "has_instrumental": _has_instrumental(work / prefix / s.txt_rel)}
                  for i, s in enumerate(found)]
         meta = {"token": import_id, "source": source, "created": time.time(), "songs": songs}
@@ -355,7 +361,10 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
                artist: str = Form(""), title: str = Form(""),
                audio: UploadFile | None = File(None), youtube_url: str | None = Form(None),
                instrumental: bool = Form(False), replace: bool = Form(False),
-               song_id: str | None = Form(None)):
+               song_id: str | None = Form(None),
+               video_mode: str | None = Form(None), video_url: str | None = Form(None),
+               video_file: UploadFile | None = File(None), video_height: str | None = Form(None),
+               videogap: str | None = Form(None)):
     ctx = ctx_of(request)
     work, meta = _load_meta(ctx, token)
     songs = meta.get("songs") or []
@@ -393,6 +402,14 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
             alternatives = [u for u in song_links if u != link][:MAX_YOUTUBE_ALTERNATIVES]
     else:
         link = None
+    # видео «из ссылки песни»: сначала v= из #VIDEO, иначе выбранная (или первая) ссылка звука
+    links = s.get("video_links") or []
+    song_links = _unique_links(s["youtube"])
+    source_video = (links[0] if links else
+                    link or (youtube_url or "").strip() or (song_links[0] if song_links else None))
+    video_params, video_ext = video_choice(video_mode, video_url, video_file, video_height, videogap,
+                                           source_url=source_video, pack=bool(s.get("video_rel")),
+                                           default_gap=s.get("videogap"))
 
     rel_dir = naming.song_dir(artist, title)
     storage = ctx.storage()
@@ -412,6 +429,11 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
             name = download_cover(ctx, s["cover_url"], staging.dir)  # не скачалась — без обложки
             if name:
                 staging.path("cover", name)
+        if video_ext:
+            stage_video_file(ctx, staging, video_file, video_ext)
+        elif video_params and video_params["mode"] == "pack":
+            ext = PurePosixPath(s["video_rel"]).suffix.lower()
+            shutil.copyfile(_inside(work, s["video_rel"]), staging.path("video", f"{INPUT_VIDEO_STEM}{ext}"))
     except BaseException:
         staging.discard()
         raise
@@ -420,6 +442,8 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
     params: dict = {"source": meta["source"]}
     if meta["source"] == "usdb":
         params["usdb_id"] = meta.get("usdb_id")
+    if video_params:
+        params["video"] = video_params
     if link:
         params.update(youtube_url=link, youtube_alternatives=alternatives, youtube_from_user=from_user)
     params.update(instrumental=bool(instrumental), rel_dir=rel_dir, replace=bool(replace_dir),

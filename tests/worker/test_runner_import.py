@@ -40,7 +40,7 @@ def read_json(path):
 
 def enqueue_import(world, *, source="files", audio: tuple[str, bytes] | None = ("input.mp3", MP3),
                    cover: bool = True, youtube_url=None, instrumental=False, txt: bytes = SONG_TXT,
-                   **extra):
+                   video_file: tuple[str, bytes] | None = None, **extra):
     params = {"source": source, "youtube_url": youtube_url, "instrumental": instrumental,
               "rel_dir": REL_DIR, "replace": False, "replace_rel_dir": None,
               "target_id": world.storage.target_id, **extra}
@@ -56,6 +56,9 @@ def enqueue_import(world, *, source="files", audio: tuple[str, bytes] | None = (
         if cover:
             (d / "cover.jpg").write_bytes(JPG)
             inputs["cover"] = world.paths.rel(d / "cover.jpg")
+        if video_file is not None:
+            (d / video_file[0]).write_bytes(video_file[1])
+            inputs["video"] = world.paths.rel(d / video_file[0])
         return {**params, "inputs": inputs}
 
     return world.jobs.enqueue_with("import", {"artist": ARTIST, "title": TITLE}, make)
@@ -381,3 +384,41 @@ def test_rank_search_results_and_song_end():
     assert ids == ["tiefirst001", "tiesecond01", "long0000001"]
     assert [e["id"] for e in rank_search_results(CANDIDATES, None)][0] == "short000001"
     assert rank_search_results([{"id": "x", "duration": True}, "мусор"], None) == []
+
+
+# --------------------------------------------------------------------------- видео (истории 24–27)
+
+def test_import_video_from_pack_replaces_old_video_headers(world):
+    job = enqueue_import(world, video={"mode": "pack", "height": 720, "gap": -1.25},
+                         video_file=("video.mkv", b"MKV-DATA"))
+    world.run(gpu=GPU_OFF)
+    done = world.jobs.get(job.id)
+    assert (done.state, done.error) == ("done", None)
+    assert song_files(world) == {f"{BASE}.txt", f"{BASE}.mp3", f"{BASE} [CO].jpg", f"{BASE}.mkv"}
+    assert (world.out / REL_DIR / f"{BASE}.mkv").read_bytes() == b"MKV-DATA"
+    h = headers((world.out / REL_DIR / f"{BASE}.txt").read_bytes())
+    assert (h["VIDEO"], h["VIDEOGAP"]) == (f"{BASE}.mkv", "-1.25") and "BACKGROUND" not in h
+    assert not list(world.paths.source(REL_DIR).glob("video.*"))  # в source/ видео не копируется
+
+
+def test_import_video_by_link_after_audio(world):
+    job = enqueue_import(world, video={"mode": "source", "url": YT, "height": 480})
+    world.run(gpu=GPU_OFF)
+    done = world.jobs.get(job.id)
+    assert (done.state, done.error) == ("done", None)
+    assert (world.out / REL_DIR / f"{BASE}.mp4").read_bytes().startswith(b"FAKE-MP4 " + YT.encode())
+    h = headers((world.out / REL_DIR / f"{BASE}.txt").read_bytes())
+    assert h["VIDEO"] == f"{BASE}.mp4" and "VIDEOGAP" not in h
+    assert read_json(world.paths.source(REL_DIR) / "params.json")["video_url"] == YT
+
+
+def test_import_video_failure_publishes_song_without_video(world, monkeypatch):
+    monkeypatch.setenv("FAKE_YTDLP_MODE", "novideo")
+    job = enqueue_import(world, video={"mode": "url", "url": YT, "height": 720})
+    world.run(gpu=GPU_OFF)
+    done = world.jobs.get(job.id)
+    assert (done.state, done.error) == ("done", None)
+    assert song_files(world) == {f"{BASE}.txt", f"{BASE}.mp3", f"{BASE} [CO].jpg"}
+    assert "VIDEO" not in headers((world.out / REL_DIR / f"{BASE}.txt").read_bytes())
+    log = world.log(job.id)
+    assert "Видео не скачалось: " in log and ", песня выложена без видео" in log

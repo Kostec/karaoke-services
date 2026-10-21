@@ -214,6 +214,7 @@ export function trackFields(state, file, params) {
     replace: !!state.replace,
     song_id: undefined,
     lyrics_lrc: lrcFormPart(held),
+    ...(file ? {} : state.video || {}), // видео — только у трека по ссылке, не у mp3 из папки (история 31)
   };
 }
 

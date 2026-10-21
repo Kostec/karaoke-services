@@ -143,8 +143,18 @@ export function pickParams(src = {}) {
  * audio_url — ссылка на трек вместо файла (звук скачает воркер); при файле не уходит.
  * lyrics_lrc — LRC файловой частью: строка — взять её ('' — сбросить сохранённый), нет — не трогать.
  */
+/** Поля блока «Видео» (video-block.js::videoFields) в multipart generate/import; без video_mode — ничего. */
+function appendVideo(fd, { video_mode: mode, video_url: url, video_file: file, video_height: height, videogap } = {}) {
+  if (!mode) return;
+  fd.append('video_mode', mode);
+  if (typeof url === 'string' && url.trim()) fd.append('video_url', url.trim());
+  if (file) fd.append('video_file', file, file.name || 'video');
+  if (height !== undefined && height !== null && height !== '') fd.append('video_height', String(height));
+  if (videogap !== undefined && videogap !== null && videogap !== '') fd.append('videogap', String(videogap));
+}
+
 export function generateForm({ artist, title, lyrics = '', params = {}, audio, audio_url: audioUrl, cover,
-  cover_url: coverUrl, song_id: songId, replace = false, lyrics_lrc: lrc }) {
+  cover_url: coverUrl, song_id: songId, replace = false, lyrics_lrc: lrc, ...video }) {
   const fd = new FormData();
   fd.append('artist', artist);
   fd.append('title', title);
@@ -157,6 +167,7 @@ export function generateForm({ artist, title, lyrics = '', params = {}, audio, a
   fd.append('params', JSON.stringify(pickParams(params)));
   if (songId) fd.append('song_id', songId);
   fd.append('replace', replace ? 'true' : 'false');
+  appendVideo(fd, video);
   return fd;
 }
 
@@ -174,7 +185,7 @@ export function inspectForm({ source, usdb_id: usdbId, url, files = [] }) {
 }
 
 /** multipart для POST /api/jobs/import — поля из import-logic.js::importFields. */
-export function importForm({ token, index, artist, title, audio, youtube_url: youtubeUrl, instrumental, replace }) {
+export function importForm({ token, index, artist, title, audio, youtube_url: youtubeUrl, instrumental, replace, ...video }) {
   const fd = new FormData();
   fd.append('token', token);
   fd.append('index', String(index));
@@ -184,6 +195,7 @@ export function importForm({ token, index, artist, title, audio, youtube_url: yo
   if (youtubeUrl) fd.append('youtube_url', youtubeUrl);
   fd.append('instrumental', instrumental ? 'true' : 'false');
   fd.append('replace', replace ? 'true' : 'false');
+  appendVideo(fd, video);
   return fd;
 }
 

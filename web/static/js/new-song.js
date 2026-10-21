@@ -2,6 +2,7 @@
 // Звук — mp3-файл или ссылка на трек (audio_url, скачает воркер); одно сбрасывает другое.
 
 import { api, PARAM_KEYS, generateForm, errorText } from './api.js';
+import { createVideoBlock, videoChoices, isVideoLink } from './video-block.js';
 import { h, clear, toast, debounce, songName, field, confirmDialog } from './ui.js';
 import { readId3, planAutofill } from './id3.js';
 import {
@@ -79,6 +80,9 @@ async function build() {
       h('button', { type: 'button', onclick: () => chooseReplace(false) }, 'Отмена')));
 
   f.audio = h('input', { type: 'file', name: 'audio', accept: '.mp3,audio/mpeg' });
+  // блок «Видео» (истории 24, 29): «из ссылки песни» — только при yt-dlp-ссылке на звук
+  f.video = createVideoBlock({ ...videoChoices({}), maxMb: d.max_video_mb, heights: d.video_heights,
+    defaultHeight: d.default_video_height });
   f.audioHint = h('div', { class: 'small muted' });
   f.audioErr = h('div', { class: 'field-error', hidden: true });
   f.audioUrl = h('input', { type: 'text', name: 'audio_url', inputmode: 'url', autocomplete: 'off',
@@ -132,6 +136,7 @@ async function build() {
       h('span', {}, 'или ссылка на трек', h('span', { class: 'hint' }, ` (${LINK_SERVICES})`)),
       h('div', { class: 'inline-file' }, f.audioUrl, f.linkBtn),
       f.linkInfo, f.linkErr),
+    f.video.el,
     h('div', { class: 'field' },
       h('span', {}, 'Текст песни', h('span', { class: 'hint' }, ' (можно оставить пустым)')),
       f.lyrics,
@@ -173,6 +178,7 @@ async function build() {
   f.lyricsFile.addEventListener('change', onLyricsFile);
   f.audio.addEventListener('change', async () => {
     if (f.audio.files[0]) clearLink(true); // файл важнее ссылки — ссылка сбрасывается
+    refreshVideo();
     readAudioDuration(f.audio.files[0]);
     if (await checkAudio()) autofillFromTags(f.audio.files[0]);
   });
@@ -204,6 +210,7 @@ function setParams(p) {
 
 function resetForm() {
   form.reset();
+  f.video.reset('none');
   regen = null;
   replace = false;
   dupId = null;
@@ -359,6 +366,15 @@ function clearLink(input) {
   if (hadLink && !f.audio.files[0]) { audioDuration = null; durationSeq++; applyLrcDefault(); }
 }
 
+/** Варианты блока «Видео» по звуку: ссылка yt-dlp (не Яндекс) — есть «из ссылки песни». */
+function refreshVideo() {
+  if (!f.video) return;
+  const url = f.audio.files[0] ? '' : audioUrlValue();
+  const source = isVideoLink(url);
+  f.video.setModes(videoChoices({ source }).modes);
+  f.video.setSource(source ? url : '');
+}
+
 /** Ввод ссылки: файл сбрасывается (вместе с обложкой из его тегов); прежний «Получить» устарел. */
 function onLinkInput() {
   if (f.audioUrl.value.trim() && f.audio.files[0]) {
@@ -375,6 +391,7 @@ function onLinkInput() {
   if (link && f.audioUrl.value.trim() !== link.input) clearLink(false);
   f.linkErr.hidden = true;
   f.audioErr.hidden = true;
+  refreshVideo();
 }
 
 function showLinkError(text, e) {
@@ -454,6 +471,7 @@ function updateLyricsState() {
 }
 
 function updateSubmit() {
+  refreshVideo(); // «Получить» могло заменить ссылку на трек
   const foreignEmpty = regen && !regen.own && !f.lyrics.value.trim();
   const dupBlock = dupId && !replace;
   f.submit.disabled = submitting || !!foreignEmpty || !!dupBlock;
@@ -693,6 +711,8 @@ async function onSubmit(ev) {
     ok = false;
   }
   if (!(await checkCover())) ok = false;
+  refreshVideo();
+  if (!f.video.validate()) ok = false;
   if (!ok) return;
 
   const fd = generateForm({
@@ -701,6 +721,7 @@ async function onSubmit(ev) {
     cover_url: currentLinkCover() || undefined,
     song_id: regen?.song_id, replace,
     lyrics_lrc: lrcFormPart(lrcHeld), // передать / сбросить сохранённый / не трогать
+    ...f.video.fields(),
   });
 
   submitting = true;
@@ -720,7 +741,7 @@ async function onSubmit(ev) {
       f.error.textContent = errorText(e);
       if (isYandexNoToken(e)) f.error.append(' ', h('a', { href: '#settings' }, SETTINGS_LINK_TEXT));
       f.error.hidden = false;
-      markField(e.data?.field, errorText(e));
+      if (!f.video.showApiError(e)) markField(e.data?.field, errorText(e));
     }
   } finally {
     submitting = false;

@@ -10,16 +10,17 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from . import ultrastar
+from . import naming, ultrastar
 from .storage.base import is_song_txt_name
 
 __all__ = ["PackError", "FoundSong", "safe_extract", "find_songs", "youtube_links",
-           "AUDIO_EXTS", "IMAGE_EXTS", "ALLOWED_EXTS"]
+           "video_links", "AUDIO_EXTS", "IMAGE_EXTS", "VIDEO_EXTS", "ALLOWED_EXTS"]
 
 AUDIO_EXTS = frozenset({".mp3", ".ogg", ".m4a", ".opus", ".wav", ".flac"})
 IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
-# Белый список распаковки: всё прочее в архиве молча пропускается.
-ALLOWED_EXTS = frozenset({".txt"}) | AUDIO_EXTS | IMAGE_EXTS
+VIDEO_EXTS = naming.VIDEO_EXTS
+# Белый список распаковки: всё прочее в архиве молча пропускается (лимит MAX_IMPORT_MB — общий).
+ALLOWED_EXTS = frozenset({".txt"}) | AUDIO_EXTS | IMAGE_EXTS | VIDEO_EXTS
 
 _CHUNK = 1 << 20
 _WATCH = "https://www.youtube.com/watch?v="
@@ -47,6 +48,9 @@ class FoundSong:
     cover_rel: str | None
     youtube: list[str] = field(default_factory=list)
     cover_url: str | None = None
+    video_links: list[str] = field(default_factory=list)  # v= или URL из #VIDEO — для видео, не звука
+    video_file: str | None = None  # видеофайл пакета по #VIDEO, путь от корня поиска
+    videogap: float | None = None  # v-gap= формы usdb, иначе #VIDEOGAP
 
 
 def _too_big(max_total_bytes: int) -> PackError:
@@ -184,8 +188,49 @@ def find_songs(directory: str | Path) -> list[FoundSong]:
         out.append(FoundSong(
             txt_rel=rel.as_posix(), artist=_header(song, "ARTIST"), title=title,
             language=_header(song, "LANGUAGE") or None, duet=song.is_duet,
-            audio_rel=audio, cover_rel=cover, youtube=youtube, cover_url=cover_url))
+            audio_rel=audio, cover_rel=cover, youtube=youtube, cover_url=cover_url,
+            video_links=video_links(song.header("VIDEO")),
+            video_file=_resolve(root, base, song.header("VIDEO"), VIDEO_EXTS),
+            videogap=_videogap(song)))
     return out
+
+
+def _usdb_tags(text: str) -> dict[str, str] | None:
+    """Поля формы usdb ``a=…,v=…`` (ключи в нижнем регистре, первое значение); не форма — ``None``."""
+    if not _USDB_FORM_RE.match(text):
+        return None
+    tags: dict[str, str] = {}
+    for part in text.split(","):
+        key, sep, value = part.partition("=")
+        if sep:
+            tags.setdefault(key.strip().lower(), value.strip())
+    return tags
+
+
+def _gap_number(value: str | None) -> float | None:
+    try:
+        gap = ultrastar.number(value, None)
+    except ValueError:
+        return None
+    return round(gap, 3) if gap is not None and gap == gap and abs(gap) != float("inf") else None
+
+
+def _videogap(song: ultrastar.Song) -> float | None:
+    """Смещение видео: ``v-gap=`` формы usdb важнее ``#VIDEOGAP``."""
+    tags = _usdb_tags((song.header("VIDEO") or "").strip()) or {}
+    gap = _gap_number(tags.get("v-gap"))
+    return gap if gap is not None else _gap_number(song.header("VIDEOGAP"))
+
+
+def video_links(video_header: str | None) -> list[str]:
+    """Ссылки на видео из ``#VIDEO``: ``v=`` формы usdb (``a=`` — звук, не видео) либо
+    заголовок целиком, если это URL или ID YouTube. Имя видеофайла ссылкой не считается."""
+    text = (video_header or "").strip()
+    if not text:
+        return []
+    tags = _usdb_tags(text)
+    url = _media_url(text if tags is None else tags.get("v", ""))
+    return [url] if url else []
 
 
 def _media_url(value: str) -> str | None:
@@ -217,14 +262,10 @@ def youtube_links(video_header: str | None) -> tuple[list[str], str | None]:
     text = (video_header or "").strip()
     if not text:
         return [], None
-    if not _USDB_FORM_RE.match(text):
+    tags = _usdb_tags(text)
+    if tags is None:
         url = _media_url(text)
         return ([url] if url else []), None
-    tags: dict[str, str] = {}
-    for part in text.split(","):
-        key, sep, value = part.partition("=")
-        if sep:
-            tags.setdefault(key.strip().lower(), value.strip())
     urls: list[str] = []
     for key in ("a", "v"):
         url = _media_url(tags.get(key, ""))

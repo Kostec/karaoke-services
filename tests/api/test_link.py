@@ -393,3 +393,36 @@ def test_link_song_is_not_labelled_import(env, lc):
 def test_imported_song_keeps_import_source(env, lc):
     _own_song(env, lc, params={"source": "usdb", "usdb_id": 5})
     assert lc.get("/api/songs").json()["items"][0]["source"] == "usdb"
+
+
+# --------------------------------------------------------------------------- видео при создании (истории 24, 29)
+
+def test_generate_video_from_song_link(env, lc):
+    r = _gen(lc, YT, lyrics="Текст", video_mode="source", video_height="480", videogap="-0.5")
+    assert r.status_code == 201, r.text
+    assert r.json()["params"]["video"] == {"mode": "source", "url": YT, "height": 480, "gap": -0.5}
+
+
+def test_generate_video_source_needs_video_link(env, lc):
+    r = _gen(lc, audio=MP3, lyrics="Текст", video_mode="source")
+    assert (r.status_code, r.json().get("field")) == (400, "video_mode")
+    _store_key(env, GOOD)
+    r = _gen(lc, "https://music.yandex.ru/album/1/track/2", lyrics="Текст", video_mode="source")
+    assert (r.status_code, r.json().get("field")) == (400, "video_mode"), r.text
+    r = _gen(lc, audio=MP3, lyrics="Текст", video_mode="pack")
+    assert (r.status_code, r.json().get("field")) == (400, "video_mode")
+
+
+def test_generate_video_own_url_and_file(env, lc):
+    r = _gen(lc, audio=MP3, lyrics="Текст", video_mode="url", video_url="https://rutube.ru/video/abc/")
+    assert r.status_code == 201, r.text
+    assert r.json()["params"]["video"] == {"mode": "url", "url": "https://rutube.ru/video/abc/", "height": 720}
+    r = lc.post("/api/jobs/generate", data={"artist": "A", "title": "B", "lyrics": "Текст", "video_mode": "file"},
+                files={"audio": ("s.mp3", MP3, "audio/mpeg"), "video_file": ("Clip.MOV", b"MOV")})
+    assert r.status_code == 201, r.text
+    p = r.json()["params"]
+    assert p["video"] == {"mode": "file", "height": 720}
+    assert p["inputs"]["video"].endswith("/in/video.mov")
+    assert (env.data / p["inputs"]["video"]).read_bytes() == b"MOV"
+    r = _gen(lc, audio=MP3, lyrics="Текст", artist="C", video_mode="none")
+    assert "video" not in r.json()["params"]

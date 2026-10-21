@@ -40,6 +40,22 @@ export function videoFields(state = {}) {
   return out;
 }
 
+/**
+ * Варианты блока при создании песни: source — есть ссылка на видео (звук по yt-dlp-ссылке,
+ * v= usdb), pack — видеофайл из архива. По умолчанию «без видео», а при видео из архива — оно.
+ */
+export function videoChoices({ source = false, pack = false } = {}) {
+  const modes = VIDEO_MODES.filter((m) => (m === 'source' ? source : m === 'pack' ? pack : true));
+  return { modes, mode: pack ? 'pack' : 'none' };
+}
+
+/** Ссылка годится для видео: не Яндекс Музыка и не аудио VK (там только звук). Окончательно решает сервер. */
+export function isVideoLink(url) {
+  const u = String(url ?? '').trim();
+  if (!/^https?:\/\//i.test(u)) return false;
+  return !/^https?:\/\/([\w-]+\.)*(music\.yandex\.[a-z]+|yandex\.[a-z]+\/music)|vk\.(com|ru)\/(audio|music)/i.test(u);
+}
+
 /** Ошибка заполнения до отправки: {field, text} (field — как у API) или null. */
 export function videoError(state = {}) {
   const mode = state.mode || 'none';
@@ -75,7 +91,7 @@ export function rememberHeight(height, ls) {
  * Разметка блока. opts: {modes (какие показать, порядок — как в VIDEO_MODES), mode (начальный),
  * labels ({режим: подпись} поверх MODE_LABELS), sourceUrl (ссылка для режима source),
  * heights, defaultHeight, gap (начальное смещение), maxMb (лимит файла), onChange(state)}.
- * Возвращает {el, state(), fields(), setMode, setModes(modes, mode?), setSource(url), setGap,
+ * Возвращает {el, state() (+ gapTouched), fields(), setMode, setModes(modes, mode?), setSource(url), setGap, reset(mode?, gap?),
  * validate() → bool (ошибка — у поля), showError(field, text), showApiError(e) → bool, clearErrors()}.
  */
 export function createVideoBlock(opts = {}) {
@@ -113,9 +129,11 @@ export function createVideoBlock(opts = {}) {
     h('label', { class: 'field video-mode' }, h('span', {}, 'Видео'), modeSel, errEl('video_mode')),
     sourceEl, rows.url, rows.height, rows.file, rows.gap);
 
+  let gapTouched = false; // пользователь сам правил смещение (диалог не перетирает его текущим у песни)
+
   function state() {
     return { mode: modeSel.value || 'none', url: urlIn.value, file: fileIn.files?.[0] || null,
-      height: Number(heightSel.value), gap: gapIn.value };
+      height: Number(heightSel.value), gap: gapIn.value, gapTouched };
   }
 
   function sync() {
@@ -136,6 +154,7 @@ export function createVideoBlock(opts = {}) {
   }
 
   function showError(key, text) {
+    if (key === 'video_file') key = 'video'; // generate/import называют файл video_file
     const target = errs[key] ? key : 'video_mode';
     errs[target].textContent = text;
     errs[target].hidden = false;
@@ -154,6 +173,7 @@ export function createVideoBlock(opts = {}) {
   const changed = () => { clearErrors(); sync(); onChange(state()); };
   modeSel.addEventListener('change', changed);
   heightSel.addEventListener('change', () => { rememberHeight(Number(heightSel.value)); changed(); });
+  gapIn.addEventListener('input', () => { gapTouched = true; });
   for (const i of [urlIn, fileIn, gapIn]) i.addEventListener('input', changed);
   fileIn.addEventListener('change', changed);
 
@@ -169,6 +189,15 @@ export function createVideoBlock(opts = {}) {
     setModes,
     setSource: (url) => { sourceEl.textContent = url || ''; sync(); },
     setGap: (v) => { gapIn.value = v ?? ''; },
+    /** Сбросить: режим, ссылка, файл, смещение (gap) и флаг правки смещения. */
+    reset(mode, gap = '') {
+      urlIn.value = '';
+      fileIn.value = '';
+      gapIn.value = gap;
+      gapTouched = false;
+      clearErrors();
+      if (mode !== undefined) setModes(modes, mode); else sync();
+    },
     validate() {
       clearErrors();
       const err = videoError(state());
@@ -176,10 +205,10 @@ export function createVideoBlock(opts = {}) {
       return !err;
     },
     showError,
-    /** Ошибка API с полем блока (video, video_url, video_height, videogap) → у поля, true. */
+    /** Ошибка API с полем блока (video_mode, video, video_file, video_url, video_height, videogap) → у поля, true. */
     showApiError(e) {
       const key = e?.data?.field;
-      if (!key || !(key in inputs) || key === 'video_mode') return false;
+      if (!key || !(key in inputs || key === 'video_file')) return false;
       showError(key, e.detail || e.message || 'Ошибка');
       return true;
     },

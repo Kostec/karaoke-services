@@ -170,9 +170,9 @@ async function currentVideoGap(song) {
   try {
     const { headers = [] } = await api.notes(song.song_id);
     const hit = headers.find(([k]) => String(k).toUpperCase() === 'VIDEOGAP');
-    return hit ? String(hit[1]).trim().replace(',', '.') : '';
+    return hit ? String(hit[1]).trim().replace(',', '.') : '0';
   } catch {
-    return '';
+    return null; // не узнали — смещение не отправляется, чтобы не стереть #VIDEOGAP
   }
 }
 
@@ -183,8 +183,7 @@ async function openVideoDialog(song) {
   try { d = await getDefaults(); } catch { /* умолчания блока */ }
   const block = createVideoBlock({ modes: ['url', 'file'], mode: 'url', gap: '0', maxMb: d.max_video_mb,
     heights: d.video_heights, defaultHeight: d.default_video_height });
-  let gapTouched = false;
-  block.el.querySelector('input[name="videogap"]').addEventListener('input', () => { gapTouched = true; }, { once: true });
+  let gapKnown = false; // текущее смещение песни прочитано (иначе без правки videogap не уходит)
   const errEl = h('div', { class: 'banner err', hidden: true, role: 'alert' });
   const submit = h('button', { type: 'button', class: 'primary' }, song.video ? 'Заменить видео' : 'Прикрепить');
   const cancel = h('button', { type: 'button', onclick: () => el.close() }, 'Отмена');
@@ -199,7 +198,11 @@ async function openVideoDialog(song) {
   el.addEventListener('close', () => el.remove());
   document.body.append(el);
   if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
-  currentVideoGap(song).then((gap) => { if (!gapTouched && gap) block.setGap(gap); });
+  currentVideoGap(song).then((gap) => {
+    if (gap === null) return;
+    gapKnown = true;
+    if (!block.state().gapTouched) block.setGap(gap);
+  });
 
   async function send(form, okText) {
     errEl.hidden = true;
@@ -219,7 +222,10 @@ async function openVideoDialog(song) {
   }
 
   submit.addEventListener('click', () => {
-    if (block.validate()) send(block.fields(), 'Видео поставлено в очередь');
+    if (!block.validate()) return;
+    const fields = block.fields();
+    if (!gapKnown && !block.state().gapTouched) delete fields.videogap;
+    send(fields, 'Видео поставлено в очередь');
   });
 
   async function removeVideo() {

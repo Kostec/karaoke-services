@@ -11,7 +11,7 @@ from typing import Protocol
 
 from karaoke_core import musiclink, naming, postprocess, ultrastar
 from karaoke_core.db import Job, instrumental_params, now, song_id_for
-from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_PARAMS
+from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_PARAMS, INPUT_VIDEO_STEM
 from karaoke_core.storage import Storage, StorageError
 from karaoke_core.trash import TrashError
 
@@ -406,7 +406,8 @@ class GenerateHandler:
 
         ctx.progress(job.id, tracker.set(*STAGE_POSTPROCESS))
         try:
-            fin = postprocess.finalize(folders[0], job.artist, job.title, cover, dest_dir=job_dir / "result")
+            fin = postprocess.finalize(folders[0], job.artist, job.title, cover, dest_dir=job_dir / "result",
+                                       **chosen_video(ctx, job, in_dir))
         except postprocess.FinalizeError as e:
             raise JobFailed("postprocess", f"Ошибка постобработки: {e}") from None
         ctx.log(job.id, f"Постобработка: нот нулевой длины исправлено {fin.zero_fixed}"
@@ -836,7 +837,8 @@ class ImportHandler:
         song.set_header("AUDIO", mp3.name)
         (folder / f"{base}.txt").write_bytes(ultrastar.render(song))
         try:
-            fin = postprocess.finalize(folder, job.artist, job.title, cover, dest_dir=job_dir / "result")
+            fin = postprocess.finalize(folder, job.artist, job.title, cover, dest_dir=job_dir / "result",
+                                       **chosen_video(ctx, job, in_dir))
         except postprocess.FinalizeError as e:
             raise JobFailed("postprocess", f"Ошибка подготовки песни: {e}") from None
         except UnicodeEncodeError:
@@ -851,7 +853,6 @@ class ImportHandler:
 
 # ============================================================================ video
 
-INPUT_VIDEO_STEM = "video"  # in/video.<ext>: файл пользователя или скачанное yt-dlp
 VIDEO_FAILED = "Не удалось скачать видео"
 VIDEO_NO_FORMAT = ("По ссылке нет видео (сайт не отдал видеодорожку) — возможно, это ссылка на музыку; "
                    "вставьте ссылку на ролик или загрузите файл")
@@ -910,6 +911,37 @@ def download_video(ctx: JobContext, job_id: int, url: str, dest_dir: Path, heigh
     os.replace(found[0], dest)
     shutil.rmtree(work, ignore_errors=True)
     return dest
+
+
+VIDEO_SKIPPED = "Видео не скачалось: {reason}, песня выложена без видео"
+
+
+def chosen_video(ctx: JobContext, job: Job, in_dir: Path) -> dict:
+    """Видео блока «Видео» generate/import (``params.video``) → kwargs ``finalize``.
+
+    Файл — ``inputs.video`` (форма, архив) или уже скачанный ``in/video.*`` («Перезапустить»
+    не качает заново); иначе ссылка качается после звука. Сбой скачивания — строка лога,
+    песня выкладывается без видео (история 27). Без видео — ``{}``.
+    """
+    video = job.params.get("video") or {}
+    if not video or video.get("mode") in (None, "none"):
+        return {}
+    inputs = job.params.get("inputs") or {}
+    src = ctx.paths.abs(inputs["video"]) if inputs.get("video") else None
+    if src is None or not src.is_file():
+        src = _saved_video(in_dir)
+    if src is None and (video.get("url") or "").strip():
+        in_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            src = download_video(ctx, job.id, video["url"].strip(), in_dir, video.get("height"))
+        except JobFailed as e:
+            ctx.log(job.id, VIDEO_SKIPPED.format(reason=(e.user_message or str(e)).split("\n")[0].rstrip(".")))
+            return {}
+    if src is None or src.suffix.lower() not in naming.VIDEO_EXTS:
+        ctx.log(job.id, VIDEO_SKIPPED.format(reason="видеофайл не найден"))
+        return {}
+    ctx.log(job.id, f"Видео: {src.name}")
+    return {"video_path": src, "videogap": video.get("gap")}
 
 
 def _saved_video(in_dir: Path) -> Path | None:

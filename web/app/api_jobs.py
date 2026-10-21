@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from karaoke_core import musiclink, naming, ultrastar
 from karaoke_core.http import HttpError
 from karaoke_core.db import ACTIVE_STATES, FINAL_STATES, STAGE_PUBLISH, instrumental_params
-from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_LRC, INPUT_LYRICS
+from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_LRC, INPUT_LYRICS, INPUT_VIDEO_STEM
 from karaoke_core.storage import StorageError
 
 from .context import ApiError, AppContext, link_api_error, not_found, song_key
@@ -27,7 +27,6 @@ router = APIRouter(prefix="/api/jobs", tags=["Задания"])
 CHUNK = 1 << 16
 SSE_TAIL_LINES = 500
 MB = 1024 * 1024
-INPUT_VIDEO_STEM = "video"  # in/video.<ext> — как handlers.INPUT_VIDEO_STEM воркера
 
 
 def ctx_of(request: Request) -> AppContext:
@@ -183,7 +182,12 @@ def generate(request: Request,
              lyrics_lrc: UploadFile | None = File(None),
              params: str = Form("{}"),
              song_id: str | None = Form(None),
-             replace: bool = Form(False)):
+             replace: bool = Form(False),
+             video_mode: str | None = Form(None),
+             video_url: str | None = Form(None),
+             video_file: UploadFile | None = File(None),
+             video_height: str | None = Form(None),
+             videogap: str | None = Form(None)):
     ctx = ctx_of(request)
     artist, title = artist.strip(), title.strip()
     if not artist or not title:
@@ -220,6 +224,8 @@ def generate(request: Request,
         raise ApiError(400, "Загрузите mp3-файл", field="audio")
     if has_audio and not is_mp3(audio.file.read(4)):
         raise ApiError(400, "Это не mp3-файл", field="audio")
+    video_params, video_ext = video_choice(video_mode, video_url, video_file, video_height, videogap,
+                                           source_url=link_url or None)
     cover_ext = None
     if cover is not None and cover.filename:
         cover_ext = cover_ext_of(cover.file.read(16))
@@ -269,11 +275,15 @@ def generate(request: Request,
                 if staging.names.get("cover") != name:
                     staging.drop("cover")
                 staging.path("cover", name)
+        if video_ext:
+            stage_video_file(ctx, staging, video_file, video_ext)
     except BaseException:
         staging.discard()
         raise
 
     replace_dir = existing.rel_dir if existing else (source.rel_dir if source else None)
+    if video_params:
+        p["video"] = video_params
     if link_url:
         p["source"] = "link"
     p.update(rel_dir=rel_dir, replace=bool(replace_dir), replace_rel_dir=replace_dir,
@@ -351,6 +361,58 @@ def parse_videogap(raw: str | None, field: str = "videogap") -> float | None:
     if gap != gap or gap in (float("inf"), float("-inf")):
         raise ApiError(400, "Смещение видео — число секунд, например 1.5 или -0.25", field=field)
     return gap
+
+
+VIDEO_MODES = ("none", "source", "url", "file", "pack")
+NO_SOURCE_VIDEO = "У песни нет ссылки на видео — выберите другой вариант"
+NO_PACK_VIDEO = "В архиве нет видеофайла этой песни — выберите другой вариант"
+
+
+def video_choice(mode: str | None, url: str | None, file: UploadFile | None, height: str | None,
+                 gap: str | None, *, source_url: str | None = None, pack: bool = False,
+                 default_gap: float | None = None) -> tuple[dict | None, str | None]:
+    """Блок «Видео» generate/import → ``(params.video | None, расширение файла | None)``.
+
+    ``source`` — ``source_url`` (ссылка звука у generate, ссылка usdb/``#VIDEO`` у импорта),
+    ``pack`` — видеофайл из архива (допустим, если ``pack``); ``default_gap`` — смещение из
+    архива, если поле пустое (только для ``source``/``pack``). Проверки — как у ``/video``.
+    """
+    mode = (mode or "").strip() or "none"
+    if mode not in VIDEO_MODES:
+        raise ApiError(400, "Видео: без видео, из ссылки песни, своя ссылка, файл или из архива",
+                       field="video_mode")
+    if mode == "none":
+        return None, None
+    video: dict = {"mode": mode}
+    ext = None
+    if mode == "url":
+        link = (url or "").strip()
+        if not link:
+            raise ApiError(400, "Вставьте ссылку на видео", field="video_url")
+        video["url"] = video_link(link)
+    elif mode == "source":
+        if not source_url:
+            raise ApiError(400, NO_SOURCE_VIDEO, field="video_mode")
+        video["url"] = video_link(source_url, field="video_mode")
+    elif mode == "file":
+        if file is None or not file.filename:
+            raise ApiError(400, "Выберите видеофайл", field="video_file")
+        ext = video_ext_of(file.filename, "video_file")
+    elif not pack:
+        raise ApiError(400, NO_PACK_VIDEO, field="video_mode")
+    video["height"] = parse_video_height(height)
+    g = parse_videogap(gap)
+    if g is None and mode in ("source", "pack"):
+        g = default_gap
+    if g is not None:
+        video["gap"] = g
+    return video, ext
+
+
+def stage_video_file(ctx: AppContext, staging: Staging, file: UploadFile, ext: str) -> None:
+    """Видеофайл из формы → ``in/video.<ext>`` (лимит ``MAX_VIDEO_MB``, 413 — ``field=video_file``)."""
+    file.file.seek(0)
+    copy_limited(file.file, staging.path("video", f"{INPUT_VIDEO_STEM}{ext}"), max_video_mb(ctx), "video_file")
 
 
 @router.post("/video", status_code=201, summary="Видео к песне из папки: ссылка, файл или убрать",

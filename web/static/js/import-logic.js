@@ -52,7 +52,7 @@ export function initialCardState(song) {
   };
 }
 
-/** Поля POST /api/jobs/import для карточки (state: initialCardState + file?). */
+/** Поля POST /api/jobs/import для карточки (state: initialCardState + file? + video — поля блока «Видео»). */
 export function importFields(token, song, state) {
   const audio = pickAudioSource(song, state);
   const out = { token, index: song.index, artist: (state.artist || '').trim(), title: (state.title || '').trim() };
@@ -60,6 +60,7 @@ export function importFields(token, song, state) {
   if (audio.kind === 'youtube') out.youtube_url = audio.url;
   out.instrumental = !!state.instrumental;
   out.replace = !!state.replace;
+  Object.assign(out, state.video || {});
   return out;
 }
 

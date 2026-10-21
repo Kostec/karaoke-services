@@ -82,7 +82,7 @@ def test_safe_extract_keeps_only_song_files(tmp_path):
     dest = tmp_path / "out"
     songpack.safe_extract(z, dest, 10 * 2**20)
     assert _files(dest) == ["Pack/A - T/A - T [CO].jpg", "Pack/A - T/A - T.MP3",
-                            "Pack/A - T/A - T.txt"]
+                            "Pack/A - T/A - T.mp4", "Pack/A - T/A - T.txt"]  # видео — история 26
     assert (dest / "Pack/A - T/A - T.MP3").read_bytes() == b"mp3"
 
 
@@ -230,3 +230,31 @@ def test_data_paths_import_dir(tmp_path):
     for bad in ("", "..", "a/b", "../x", "a\\b"):
         with pytest.raises(ValueError):
             paths.import_dir(bad)
+
+
+# --------------------------------------------------------------------------- видео (истории 25, 26)
+
+def test_video_links_usdb_form_takes_only_v_and_plain_url():
+    assert songpack.video_links("a=AbCdEfGhIj0,v=ZyXwVuTsRq9,co=x.jpg") == [WATCH + "ZyXwVuTsRq9"]
+    assert songpack.video_links("a=AbCdEfGhIj0,co=x.jpg") == []
+    assert songpack.video_links("https://vk.com/video-1_2") == ["https://vk.com/video-1_2"]
+    assert songpack.video_links("clip.mp4") == [] and songpack.video_links(None) == []
+
+
+def test_video_exts_are_extracted(tmp_path):
+    z = tmp_path / "p.zip"
+    _zip(z, {"s/clip.MKV": b"V", "s/a.exe": b"x"})
+    assert songpack.safe_extract(z, tmp_path / "out", 10**6) == ["s/clip.MKV"]
+
+
+def test_find_songs_video_file_links_and_gap(tmp_path):
+    _put(tmp_path, "a/song.txt", ("#TITLE:Т\n#ARTIST:А\n#VIDEO:Clip.mp4\n#VIDEOGAP:1,5\n#BPM:300\n" + NOTES).encode())
+    _put(tmp_path, "a/clip.mp4", b"V")
+    _put(tmp_path, "b/song.txt", ("#TITLE:Б\n#ARTIST:А\n#VIDEO:a=AbCdEfGhIj0,v=ZyXwVuTsRq9,v-gap=-2.25\n"
+                                  "#VIDEOGAP:7\n#BPM:300\n" + NOTES).encode())
+    _put(tmp_path, "c/song.txt", ("#TITLE:В\n#ARTIST:А\n#VIDEO:none.avi\n#BPM:300\n" + NOTES).encode())
+    a, b, c = songpack.find_songs(tmp_path)
+    assert (a.video_file, a.video_links, a.videogap) == ("a/clip.mp4", [], 1.5)
+    assert (b.video_file, b.video_links, b.videogap) == (None, [WATCH + "ZyXwVuTsRq9"], -2.25)
+    assert b.youtube == [WATCH + "AbCdEfGhIj0", WATCH + "ZyXwVuTsRq9"]  # звук — как раньше
+    assert (c.video_file, c.video_links, c.videogap) == (None, [], None)

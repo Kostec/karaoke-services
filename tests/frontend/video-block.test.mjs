@@ -80,3 +80,48 @@ test('videoForm: поля POST /api/jobs/video', () => {
   assert.equal(rm.get('remove'), 'true');
   assert.deepEqual([...rm.keys()].sort(), ['remove', 'song_id']);
 });
+
+// ---------------------------------------------------------------- таск 06: блок при создании песни
+
+import { videoChoices, isVideoLink } from '../../web/static/js/video-block.js';
+import { generateForm, importForm } from '../../web/static/js/api.js';
+import { importFields } from '../../web/static/js/import-logic.js';
+import { trackFields } from '../../web/static/js/folder-logic.js';
+
+test('videoChoices: варианты по ситуации, по умолчанию «без видео», кроме архива', () => {
+  assert.deepEqual(videoChoices({}), { modes: ['none', 'url', 'file'], mode: 'none' });
+  assert.deepEqual(videoChoices({ source: true }), { modes: ['none', 'source', 'url', 'file'], mode: 'none' });
+  assert.deepEqual(videoChoices({ source: true, pack: true }),
+    { modes: ['none', 'source', 'url', 'file', 'pack'], mode: 'pack' });
+});
+
+test('isVideoLink: Яндекс Музыка и аудио VK — не видео', () => {
+  assert.equal(isVideoLink('https://www.youtube.com/watch?v=abcdefghijk'), true);
+  assert.equal(isVideoLink('https://vk.com/video-1_2'), true);
+  assert.equal(isVideoLink('https://music.yandex.ru/album/1/track/2'), false);
+  assert.equal(isVideoLink('https://vk.com/audio-1_2'), false);
+  assert.equal(isVideoLink(''), false);
+});
+
+test('generateForm и importForm шлют поля блока «Видео»', () => {
+  const v = { video_mode: 'file', video_file: file, videogap: '-0.5' };
+  const g = generateForm({ artist: 'A', title: 'T', audio_url: 'https://youtu.be/x', ...v });
+  assert.equal(g.get('video_mode'), 'file');
+  assert.equal(g.get('videogap'), '-0.5');
+  assert.ok(g.get('video_file') instanceof Blob);
+  assert.equal(g.get('video_url'), null);
+  const i = importForm({ token: 't', index: 0, artist: 'A', title: 'T',
+    video_mode: 'url', video_url: 'https://vk.com/video-1_2', video_height: '480' });
+  assert.deepEqual([i.get('video_mode'), i.get('video_url'), i.get('video_height')], ['url', 'https://vk.com/video-1_2', '480']);
+  assert.equal(generateForm({ artist: 'A', title: 'T' }).get('video_mode'), null); // без блока — как раньше
+});
+
+test('importFields берёт поля блока из state.video; трек папки (mp3) видео не шлёт', () => {
+  const song = { index: 0, audio: 'a.mp3', youtube: [] };
+  const out = importFields('t', song, { artist: 'A', title: 'T', video: { video_mode: 'pack', videogap: '1.5' } });
+  assert.equal(out.video_mode, 'pack');
+  assert.equal(out.videogap, '1.5');
+  const state = { artist: 'A', title: 'T', url: 'https://youtu.be/x', video: { video_mode: 'source', video_height: '720' } };
+  assert.equal(trackFields(state, null, {}).video_mode, 'source');
+  assert.equal(trackFields(state, file, {}).video_mode, undefined);
+});
