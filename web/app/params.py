@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from karaoke_core import naming
+
 from .context import ApiError, AppContext
 
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v1", "large-v2", "large-v3"]
@@ -73,6 +75,7 @@ def defaults_payload(ctx: AppContext) -> dict:
         "max_video_mb": max_video_mb(ctx),
         "video_heights": VIDEO_HEIGHTS,
         "default_video_height": DEFAULT_VIDEO_HEIGHT,
+        "video_exts": list(naming.VIDEO_EXT_ORDER),
         "trash_days": ctx.trash.days,
     }
 

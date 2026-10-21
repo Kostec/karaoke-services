@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import unicodedata
+from pathlib import PurePosixPath
 
 # Символы, недопустимые в именах файлов Windows/Samba (плюс все управляющие, см. ниже).
 _FORBIDDEN = frozenset('/\\:*?"<>|')
@@ -60,7 +61,18 @@ def cover_suffix(ext: str) -> str:
 
 
 # Контейнеры видео, которые кладутся в папку песни как есть (R07).
-VIDEO_EXTS = frozenset({".mp4", ".m4v", ".mkv", ".webm", ".avi", ".mov", ".mpg", ".mpeg"})
+# Порядок — для подсказок и текста ошибки (сначала самые частые); проверять — по VIDEO_EXTS.
+VIDEO_EXT_ORDER = (".mp4", ".m4v", ".mkv", ".webm", ".avi", ".mov", ".mpg", ".mpeg")
+VIDEO_EXTS = frozenset(VIDEO_EXT_ORDER)
+
+
+def video_file_name(value: str | None) -> str | None:
+    """Видеофайл песни из ``#VIDEO``: имя без папок с расширением из ``VIDEO_EXTS``, иначе ``None``
+    (ссылка usdb ``v=…``, путь, не видео). Единое правило для индекса (``SongEntry.video``) и воркера."""
+    value = (value or "").strip()
+    if not value or "/" in value or "\\" in value:
+        return None
+    return value if PurePosixPath(value).suffix.lower() in VIDEO_EXTS else None
 
 
 def video_suffix(ext: str) -> str:

@@ -501,7 +501,7 @@ def test_inspect_and_import_video_from_pack(env, ic):
     r = import_job(ic, body["token"], 0, "Ария", "Штиль", video_mode="pack", videogap="1.5")
     assert r.status_code == 201, r.text
     p = r.json()["params"]
-    assert p["video"] == {"mode": "pack", "height": 720, "gap": 1.5}
+    assert p["video"] == {"mode": "pack", "gap": 1.5}  # качество — только у ссылки
     assert p["inputs"]["video"].endswith("/in/video.mp4")
     assert (env.data / p["inputs"]["video"]).read_bytes() == b"MP4-DATA"
     # «без видео» — как раньше: ни params.video, ни файла
@@ -538,7 +538,7 @@ def test_import_video_url_and_file_and_errors(env, ic):
                 files={"video_file": ("my.webm", b"WEBM")})
     assert r.status_code == 201, r.text
     p = r.json()["params"]
-    assert p["video"] == {"mode": "file", "height": 720}
+    assert p["video"] == {"mode": "file"}
     assert (env.data / p["inputs"]["video"]).read_bytes() == b"WEBM" and p["inputs"]["video"].endswith("video.webm")
 
 

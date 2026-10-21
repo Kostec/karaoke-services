@@ -205,6 +205,28 @@ def test_regenerate_carries_old_video(world):
     assert (song.header("VIDEO"), song.header("VIDEOGAP")) == (f"{base}.mkv", "1.5")
 
 
+def test_regenerate_with_chosen_video_replaces_old_video(world):
+    """История 30: выбранное в блоке «Видео» побеждает перенос старого видео."""
+    artist, title = "Тестовая Группа", "Песня Ёлки"
+    rel_dir, base = naming.song_dir(artist, title), naming.base_name(artist, title)
+    old = world.out / rel_dir
+    old.mkdir(parents=True)
+    (old / "old.txt").write_text(f"#TITLE:{title}\n#ARTIST:{artist}\n#MP3:{base}.mp3\n#VIDEO:clip.mkv\n"
+                                 "#VIDEOGAP:1,5\n#BPM:300\n#GAP:0\n: 0 4 1 Ля\nE\n", "utf-8")
+    (old / f"{base}.mp3").write_bytes(MP3)
+    (old / "clip.mkv").write_bytes(b"OLD-CLIP")
+    job = world.enqueue_generate(artist, title, replace=True, replace_rel_dir=rel_dir,
+                                 video={"mode": "url", "url": YT, "height": 720})
+    world.run()
+
+    assert (world.jobs.get(job.id).state, world.jobs.get(job.id).error) == ("done", None)
+    files = {f.name for f in (world.out / rel_dir).iterdir()}
+    assert f"{base}.mp4" in files and f"{base}.mkv" not in files and "clip.mkv" not in files
+    assert (world.out / rel_dir / f"{base}.mp4").read_bytes().startswith(b"FAKE-MP4 " + YT.encode())
+    song = ultrastar.parse((world.out / rel_dir / f"{base}.txt").read_bytes())
+    assert (song.header("VIDEO"), song.header("VIDEOGAP")) == (f"{base}.mp4", None)
+
+
 def test_sources_skip_input_video_and_keep_video_url(world):
     artist, title = "Тестовая Группа", "Песня Ёлки"
     rel_dir = naming.song_dir(artist, title)

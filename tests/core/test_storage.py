@@ -679,3 +679,10 @@ def test_read_song_video_link_or_missing_file_is_none(env):
     put(root, "b/B.txt", SOLO.replace(b"#BPM:", b"#VIDEO:B.mp4\n#BPM:"))
     assert st.read_song("a").video is None
     assert st.read_song("b").video is None
+
+
+def test_read_song_video_with_non_video_extension_is_none(env):
+    st, root = env
+    put(root, "c/C.txt", SOLO.replace(b"#BPM:", b"#VIDEO:C.mp3\n#BPM:"))
+    put(root, "c/C.mp3", b"a")
+    assert st.read_song("c").video is None

@@ -235,14 +235,6 @@ def _is_input_video(f: Path) -> bool:
     return f.stem == INPUT_VIDEO_STEM and f.suffix.lower() in naming.VIDEO_EXTS
 
 
-def _video_name(value: str | None) -> str | None:
-    """Имя видеофайла из ``#VIDEO`` (ссылка ``v=…`` или путь с папками — не файл песни)."""
-    value = (value or "").strip()
-    if not value or "/" in value or "\\" in value:
-        return None
-    return value if PurePosixPath(value).suffix.lower() in naming.VIDEO_EXTS else None
-
-
 def _set_videogap(data: bytes, gap: str | None) -> bytes:
     """``#VIDEOGAP:gap`` или удаление строки (``gap`` None); прочие байты не меняются."""
     if gap is not None:
@@ -260,7 +252,7 @@ def _carry_video(ctx: JobContext, job: Job, storage: Storage, old_rel: str, resu
         return
     txt = txts[0]
     data = txt.read_bytes()
-    own = _video_name(ultrastar.parse(data).header("VIDEO"))
+    own = naming.video_file_name(ultrastar.parse(data).header("VIDEO"))
     if own and (result / own).is_file():
         return  # своё видео нового результата побеждает (история 30)
     part = None
@@ -539,15 +531,19 @@ def _youtube_failed(reason: str, tail: str = "", what: str = YOUTUBE_FAILED) -> 
 # 403, сеть и «нет формата» сюда не относятся: это сбой загрузки, а не мёртвая ссылка.
 _GONE_MARKERS = ("video unavailable", "private video", "removed", "not available",
                  "this video has been removed", "http error 404", "http error 410")
-_NOT_GONE_MARKERS = ("http error 403", "format is not available")
 YOUTUBE_GONE = "youtube_gone"
 
 
-def _is_gone(reason: str, tail: str) -> bool:
-    low = reason.lower()
-    if any(m in low for m in _NOT_GONE_MARKERS) or any(m in tail for m in _NETWORK_MARKERS):
-        return False
-    return any(m in low for m in _GONE_MARKERS)
+def _ytdlp_kind(cause: str, tail: str) -> str | None:
+    """Вид сбоя yt-dlp: ``no_format``, ``forbidden`` (403), ``network``, ``gone`` (ролик убран) или None."""
+    low = cause.lower()
+    if "format is not available" in low:
+        return "no_format"
+    if "http error 403" in low:
+        return "forbidden"
+    if any(m in tail for m in _NETWORK_MARKERS):
+        return "network"
+    return "gone" if any(m in low for m in _GONE_MARKERS) else None
 
 
 def _ytdlp_reason(tail: str) -> str:
@@ -556,6 +552,22 @@ def _ytdlp_reason(tail: str) -> str:
     if errors:
         return errors[-1][len("ERROR:"):].strip()
     return "yt-dlp завершился с ошибкой"
+
+
+def ytdlp_failure(e: JobFailed, what: str, *, reason: str = "youtube", texts: dict[str, str] | None = None,
+                  gone_reason: str | None = YOUTUBE_GONE) -> JobFailed:
+    """Сбой yt-dlp → ``JobFailed`` — единый разбор вывода для звука и видео: причина — последняя
+    строка ``ERROR:``, вид — ``_ytdlp_kind``. Текст — ``texts[вид]`` или «``what``: причина»
+    (``what`` — подпись: «YouTube не отдал звук», «Не удалось скачать видео»…), к нему — хвост лога.
+    Убранный ролик получает ``gone_reason`` (повод взять другую ссылку песни)."""
+    tail = _log_tail(e)
+    cause = _ytdlp_reason(tail)
+    kind = _ytdlp_kind(cause, tail)
+    msg = (texts or {}).get(kind) or f"{what}: {cause}"
+    failed = JobFailed(reason, f"{msg}\n\n{tail}" if tail else msg)
+    if kind == "gone" and gone_reason:
+        failed.reason = gone_reason
+    return failed
 
 
 def download_youtube(ctx: JobContext, job_id: int, url: str, work: Path,
@@ -571,12 +583,7 @@ def download_youtube(ctx: JobContext, job_id: int, url: str, work: Path,
     try:
         ctx.run_command(job_id, cmd + ["--", url], tracker=DownloadTracker(), what="yt-dlp")
     except JobFailed as e:
-        tail = _log_tail(e)
-        reason = _ytdlp_reason(tail)
-        failed = _youtube_failed(reason, tail, what)
-        if _is_gone(reason, tail):
-            failed.reason = YOUTUBE_GONE
-        raise failed from None
+        raise ytdlp_failure(e, what) from None
     mp3 = work / "youtube.mp3"
     if not mp3.is_file():
         raise _youtube_failed("yt-dlp не создал mp3", what=what)
@@ -638,8 +645,7 @@ def search_youtube(ctx: JobContext, job_id: int, query: str, count: int = SEARCH
         ctx.run_command(job_id, ctx.ytdlp_cmd() + ["-4", "-J", "--flat-playlist", "--",
                                                    f"ytsearch{count}:{query}"], what="yt-dlp", json_out=out)
     except JobFailed as e:
-        tail = _log_tail(e)
-        raise _youtube_failed(_ytdlp_reason(tail), tail) from None
+        raise ytdlp_failure(e, YOUTUBE_FAILED, gone_reason=None) from None
     for line in reversed(out):
         try:
             data = json.loads(line)
@@ -858,6 +864,7 @@ VIDEO_NO_FORMAT = ("По ссылке нет видео (сайт не отда�
                    "вставьте ссылку на ролик или загрузите файл")
 VIDEO_FORBIDDEN = "Сайт видео отказал в доступе (HTTP 403) — попробуйте позже или обновите yt-dlp"
 VIDEO_NETWORK = "Нет связи с сайтом видео — проверьте интернет и попробуйте ещё раз"
+VIDEO_TEXTS = {"no_format": VIDEO_NO_FORMAT, "forbidden": VIDEO_FORBIDDEN, "network": VIDEO_NETWORK}
 VIDEO_YANDEX = "Яндекс Музыка отдаёт только звук — вставьте ссылку на видео"
 
 
@@ -891,18 +898,7 @@ def download_video(ctx: JobContext, job_id: int, url: str, dest_dir: Path, heigh
     try:
         ctx.run_command(job_id, cmd, tracker=tracker, what="yt-dlp")
     except JobFailed as e:
-        tail = _log_tail(e)
-        reason = _ytdlp_reason(tail)
-        low = reason.lower()
-        if "format is not available" in low:
-            msg = VIDEO_NO_FORMAT
-        elif "http error 403" in low:
-            msg = VIDEO_FORBIDDEN
-        elif any(m in tail for m in _NETWORK_MARKERS):
-            msg = VIDEO_NETWORK
-        else:
-            msg = f"{VIDEO_FAILED}: {reason}"
-        raise JobFailed("video", f"{msg}\n\n{tail}" if tail else msg) from None
+        raise ytdlp_failure(e, VIDEO_FAILED, reason="video", texts=VIDEO_TEXTS, gone_reason=None) from None
     found = sorted(f for f in work.iterdir() if f.is_file() and f.suffix.lower() in naming.VIDEO_EXTS)
     if not found:
         raise JobFailed("video", f"{VIDEO_FAILED}: yt-dlp не создал видеофайл")
@@ -971,7 +967,7 @@ def publish_video(ctx: JobContext, job: Job, src: Job) -> None:
         storage = ctx.storage()
         txt = storage.read(txt_rel)
         song = ultrastar.parse(txt)
-        old = _video_name(song.header("VIDEO"))
+        old = naming.video_file_name(song.header("VIDEO"))
         if remove:
             changed = [song.remove_header(k) for k in ("VIDEO", "VIDEOGAP")]
             new_txt = ultrastar.render(song) if any(changed) else txt

@@ -85,7 +85,7 @@ def test_inspect_ytdlp_single_track_and_existing_song(env, lc):
     assert body["kind"] == "ytdlp" and body["title"] == "Numb"
     assert body["tracks"] == [{"url": YT, "artist": "Linkin Park", "title": "Numb", "duration": 187.0,
                                "thumbnail": "https://i.ytimg.com/vi/kXYiU_JCYtU/maxresdefault.jpg",
-                               "existing_song_id": sid}]
+                               "existing_song_id": sid, "video": True}]
     assert FakeYandex.calls == []
 
 
@@ -158,6 +158,7 @@ def test_inspect_yandex_track_and_album(env, lc):
     body = r.json()
     assert body["kind"] == "yandex_track" and body["title"] == "Группа крови"
     assert body["tracks"][0]["duration"] == 285.5 and body["tracks"][0]["artist"] == "Кино"
+    assert body["tracks"][0]["video"] is False  # Яндекс Музыка — только звук, видео по ней нет
     assert ("init", GOOD) in FakeYandex.calls
     assert ("info", "yandex_track", "https://music.yandex.ru/album/40620828/track/148124289") in FakeYandex.calls
     album = _inspect(lc, "https://music.yandex.ru/album/40620828").json()
@@ -421,7 +422,7 @@ def test_generate_video_own_url_and_file(env, lc):
                 files={"audio": ("s.mp3", MP3, "audio/mpeg"), "video_file": ("Clip.MOV", b"MOV")})
     assert r.status_code == 201, r.text
     p = r.json()["params"]
-    assert p["video"] == {"mode": "file", "height": 720}
+    assert p["video"] == {"mode": "file"}  # качество — только у ссылки
     assert p["inputs"]["video"].endswith("/in/video.mov")
     assert (env.data / p["inputs"]["video"]).read_bytes() == b"MOV"
     r = _gen(lc, audio=MP3, lyrics="Текст", artist="C", video_mode="none")

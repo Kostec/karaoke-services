@@ -386,27 +386,26 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
     has_audio = audio is not None and bool(audio.filename)
     if has_audio and not is_mp3(audio.file.read(4)):
         raise ApiError(400, "Это не mp3-файл", field="audio")
-    link = (youtube_url or "").strip() or None
-    if link and not re.match(r"https?://", link, re.I):
+    user_link = (youtube_url or "").strip() or None
+    if user_link and not re.match(r"https?://", user_link, re.I):
         raise ApiError(400, "Ссылка на YouTube должна начинаться с http(s)://", field="youtube_url")
+    # ссылка звука выбирается один раз: своя, иначе первая из песни; её же берёт видео «из ссылки песни»
+    song_links = _unique_links(s["youtube"])
+    chosen = user_link or (song_links[0] if song_links else None)
     alternatives: list[str] = []
     from_user = False
+    link = None
     if not has_audio and not s["audio_rel"]:
-        song_links = _unique_links(s["youtube"])
-        link = link or (song_links[0] if song_links else None)
+        link = chosen
         if not link:
             raise ApiError(400, NEED_AUDIO, field="audio")
         # фронт присылает ссылку песни как есть: своя — только та, которой нет в разборе
         from_user = link not in song_links
         if not from_user:
             alternatives = [u for u in song_links if u != link][:MAX_YOUTUBE_ALTERNATIVES]
-    else:
-        link = None
-    # видео «из ссылки песни»: сначала v= из #VIDEO, иначе выбранная (или первая) ссылка звука
+    # видео «из ссылки песни»: сначала v= из #VIDEO, иначе выбранная ссылка звука
     links = s.get("video_links") or []
-    song_links = _unique_links(s["youtube"])
-    source_video = (links[0] if links else
-                    link or (youtube_url or "").strip() or (song_links[0] if song_links else None))
+    source_video = links[0] if links else chosen
     video_params, video_ext = video_choice(video_mode, video_url, video_file, video_height, videogap,
                                            source_url=source_video, pack=bool(s.get("video_rel")),
                                            default_gap=s.get("videogap"))

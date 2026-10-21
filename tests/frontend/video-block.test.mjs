@@ -83,7 +83,7 @@ test('videoForm: поля POST /api/jobs/video', () => {
 
 // ---------------------------------------------------------------- таск 06: блок при создании песни
 
-import { videoChoices, isVideoLink } from '../../web/static/js/video-block.js';
+import { videoChoices, videoAccept, fileHint } from '../../web/static/js/video-block.js';
 import { generateForm, importForm } from '../../web/static/js/api.js';
 import { importFields } from '../../web/static/js/import-logic.js';
 import { trackFields } from '../../web/static/js/folder-logic.js';
@@ -95,12 +95,24 @@ test('videoChoices: варианты по ситуации, по умолчан�
     { modes: ['none', 'source', 'url', 'file', 'pack'], mode: 'pack' });
 });
 
-test('isVideoLink: Яндекс Музыка и аудио VK — не видео', () => {
-  assert.equal(isVideoLink('https://www.youtube.com/watch?v=abcdefghijk'), true);
-  assert.equal(isVideoLink('https://vk.com/video-1_2'), true);
-  assert.equal(isVideoLink('https://music.yandex.ru/album/1/track/2'), false);
-  assert.equal(isVideoLink('https://vk.com/audio-1_2'), false);
-  assert.equal(isVideoLink(''), false);
+test('у фронта нет своего списка «не видео»-сайтов: признак приходит с сервера', async () => {
+  const mod = await import('../../web/static/js/video-block.js');
+  assert.equal('isVideoLink' in mod, false);
+});
+
+test('videoAccept и fileHint — из списка /api/defaults::video_exts, запасной — naming.VIDEO_EXT_ORDER', () => {
+  assert.equal(videoAccept(['.mp4', '.mkv']), '.mp4,.mkv');
+  assert.equal(videoAccept(), '.mp4,.m4v,.mkv,.webm,.avi,.mov,.mpg,.mpeg');
+  assert.equal(videoAccept([]), '.mp4,.m4v,.mkv,.webm,.avi,.mov,.mpg,.mpeg');
+  assert.equal(fileHint(['.mp4', '.mkv'], 5), 'mp4, mkv; до 5 МБ');
+  assert.equal(fileHint(['.webm']), 'webm');
+});
+
+test('videoError: смещение — то же множество, что у сервера (parse_videogap)', () => {
+  const err = (gap) => videoError({ mode: 'url', url: 'https://x', gap });
+  for (const bad of ['1e3', '1_0', 'inf', 'NaN', '1.2.3', 'абв', '1'.repeat(400), '١'])
+    assert.equal(err(bad)?.field, 'videogap', bad);
+  for (const ok of ['+1,5', '-.25', '2.', ' 0.1234 ']) assert.equal(err(ok), null, ok);
 });
 
 test('generateForm и importForm шлют поля блока «Видео»', () => {

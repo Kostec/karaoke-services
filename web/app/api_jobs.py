@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import urllib.parse
 from pathlib import Path
@@ -313,7 +314,8 @@ def instrumental(body: InstrumentalIn, request: Request):
     return job.to_dict()
 
 
-VIDEO_EXTS_TEXT = "mp4, m4v, mkv, webm, avi, mov, mpg или mpeg"
+_VIDEO_EXT_NAMES = [e.lstrip(".") for e in naming.VIDEO_EXT_ORDER]
+VIDEO_EXTS_TEXT = ", ".join(_VIDEO_EXT_NAMES[:-1]) + " или " + _VIDEO_EXT_NAMES[-1]  # из naming.VIDEO_EXT_ORDER
 
 
 def video_link(url: str, field: str = "video_url") -> str:
@@ -326,6 +328,15 @@ def video_link(url: str, field: str = "video_url") -> str:
     if link.kind != "ytdlp":
         raise ApiError(400, "Яндекс Музыка отдаёт только звук — нужна ссылка на видео", field=field)
     return link.url
+
+
+def is_video_link(url: str | None) -> bool:
+    """Годится ли ссылка для видео — то же правило, что у ``video_link`` (для подсказок фронту)."""
+    try:
+        video_link(url or "")
+    except ApiError:
+        return False
+    return True
 
 
 def video_ext_of(filename: str | None, field: str = "video") -> str:
@@ -349,15 +360,17 @@ def parse_video_height(raw: str | int | None, field: str = "video_height") -> in
     return height
 
 
+# Смещение видео: [+-]цифры[.цифры] или [+-].цифры — то же множество, что у фронта
+# (video-block.js::videoError); запятая — точка, экспонента и «_» не принимаются.
+_VIDEOGAP_RE = re.compile(r"[-+]?(\d+\.?\d*|\.\d+)", re.ASCII)
+
+
 def parse_videogap(raw: str | None, field: str = "videogap") -> float | None:
     """Смещение видео в секундах (может быть отрицательным, до 3 знаков); пусто — ``None``."""
-    text = (raw or "").strip().replace(",", ".")
+    text = (raw or "").strip().replace(",", ".", 1)
     if not text:
         return None
-    try:
-        gap = round(float(text), 3)
-    except ValueError:
-        gap = float("nan")
+    gap = round(float(text), 3) if _VIDEOGAP_RE.fullmatch(text) else float("nan")
     if gap != gap or gap in (float("inf"), float("-inf")):
         raise ApiError(400, "Смещение видео — число секунд, например 1.5 или -0.25", field=field)
     return gap
@@ -400,7 +413,8 @@ def video_choice(mode: str | None, url: str | None, file: UploadFile | None, hei
         ext = video_ext_of(file.filename, "video_file")
     elif not pack:
         raise ApiError(400, NO_PACK_VIDEO, field="video_mode")
-    video["height"] = parse_video_height(height)
+    if mode in ("url", "source"):  # качество — только у скачивания по ссылке
+        video["height"] = parse_video_height(height)
     g = parse_videogap(gap)
     if g is None and mode in ("source", "pack"):
         g = default_gap

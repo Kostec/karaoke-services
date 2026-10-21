@@ -2,7 +2,7 @@
 // Звук — mp3-файл или ссылка на трек (audio_url, скачает воркер); одно сбрасывает другое.
 
 import { api, PARAM_KEYS, generateForm, errorText } from './api.js';
-import { createVideoBlock, videoChoices, isVideoLink } from './video-block.js';
+import { createVideoBlock, videoChoices } from './video-block.js';
 import { h, clear, toast, debounce, songName, field, confirmDialog } from './ui.js';
 import { readId3, planAutofill } from './id3.js';
 import {
@@ -82,7 +82,7 @@ async function build() {
   f.audio = h('input', { type: 'file', name: 'audio', accept: '.mp3,audio/mpeg' });
   // блок «Видео» (истории 24, 29): «из ссылки песни» — только при yt-dlp-ссылке на звук
   f.video = createVideoBlock({ ...videoChoices({}), maxMb: d.max_video_mb, heights: d.video_heights,
-    defaultHeight: d.default_video_height });
+    defaultHeight: d.default_video_height, exts: d.video_exts });
   f.audioHint = h('div', { class: 'small muted' });
   f.audioErr = h('div', { class: 'field-error', hidden: true });
   f.audioUrl = h('input', { type: 'text', name: 'audio_url', inputmode: 'url', autocomplete: 'off',
@@ -366,11 +366,14 @@ function clearLink(input) {
   if (hadLink && !f.audio.files[0]) { audioDuration = null; durationSeq++; applyLrcDefault(); }
 }
 
-/** Варианты блока «Видео» по звуку: ссылка yt-dlp (не Яндекс) — есть «из ссылки песни». */
+/**
+ * Варианты блока «Видео» по звуку: есть ссылка — есть «из ссылки песни». Годится ли она для видео,
+ * решает сервер: после «Получить» — признак video трека из link/inspect, до него — 400 на отправке.
+ */
 function refreshVideo() {
   if (!f.video) return;
   const url = f.audio.files[0] ? '' : audioUrlValue();
-  const source = isVideoLink(url);
+  const source = !!url && !(link && link.url === url && link.video === false);
   f.video.setModes(videoChoices({ source }).modes);
   f.video.setSource(source ? url : '');
 }
@@ -422,7 +425,7 @@ async function onGetLink() {
       return;
     }
     const t = out.track;
-    link = { input, url: t.url || input, list: '' };
+    link = { input, url: t.url || input, list: '', video: t.video };
     linkThumb = t.thumbnail || null;
     const plan = planAutofill({ artist: f.artist.value, title: f.title.value }, t, autoVals);
     for (const [k, v] of Object.entries(plan)) {

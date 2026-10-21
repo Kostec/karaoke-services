@@ -5,15 +5,16 @@
 // Яндекс Музыка…) — /api/link/inspect и та же группа генерации, только звук — audio_url.
 
 import { api, getDefaults, inspectForm, importForm, generateForm, errorText } from './api.js';
-import { createVideoBlock, videoChoices, isVideoLink } from './video-block.js';
+import { createVideoBlock, videoChoices } from './video-block.js';
 
-let videoDefaults = {}; // max_video_mb, video_heights, default_video_height из /api/defaults
+let videoDefaults = {}; // max_video_mb, video_heights, default_video_height, video_exts из /api/defaults
 
 /** Блок «Видео» карточки: source — ссылка для «из ссылки…» ('' — варианта нет), pack — видео в архиве. */
 function videoBlock({ source = '', pack = false, label, gap, onChange }) {
   return createVideoBlock({ ...videoChoices({ source: !!source, pack }), sourceUrl: source,
     labels: label ? { source: label } : undefined, gap: gap ?? '', maxMb: videoDefaults.max_video_mb,
-    heights: videoDefaults.video_heights, defaultHeight: videoDefaults.default_video_height, onChange });
+    heights: videoDefaults.video_heights, defaultHeight: videoDefaults.default_video_height,
+    exts: videoDefaults.video_exts, onChange });
 }
 import { h, clear, toast, field, debounce, songName } from './ui.js';
 import { readId3 } from './id3.js';
@@ -352,7 +353,7 @@ function buildCard(item) {
   card.youtube.addEventListener('input', () => {
     state.youtube = card.youtube.value;
     if (!vlinks.length) {
-      const src = isVideoLink(videoSource()) ? videoSource() : '';
+      const src = videoSource(); // годится ли ссылка для видео — решает сервер (400 у поля video_mode)
       card.video.setModes(videoChoices({ source: !!src, pack: !!song.video_file }).modes);
       card.video.setSource(src);
       state.video = card.video.fields();
@@ -586,7 +587,7 @@ async function inspectLink(url) {
     const heading = tracks.length === 1 ? 'Трек на генерацию' : `Треки на генерацию: ${tracks.length}`;
     const note = tracks.length > 1 && info.title ? info.title : null;
     if (!(await openGroup(g, my, heading, note))) return;
-    for (const t of tracks) addTrack(g, { file: null, state: initialLinkTrack(t) });
+    for (const t of tracks) addTrack(g, { file: null, state: { ...initialLinkTrack(t), videoOk: t.video } });
     g.box.scrollIntoView({ block: 'start', behavior: 'smooth' });
     runLyricsQueue(g);
   } catch (e) {
@@ -674,7 +675,7 @@ function buildTrack(g, row) {
   card.lrcBox = h('div', { hidden: true }, h('label', { class: 'check' }, card.lrc, LRC_TIMING_LABEL), card.lrcHint);
   card.status = h('div', { class: 'small', role: 'status' });
   if (!row.file) { // трек по ссылке; mp3 из папки видео не выбирает (история 31)
-    const src = isVideoLink(state.url) ? state.url : '';
+    const src = state.videoOk === false ? '' : state.url; // признак video трека из link/inspect
     card.video = videoBlock({ source: src, onChange: () => { state.video = card.video.fields(); } });
     state.video = card.video.fields();
   }

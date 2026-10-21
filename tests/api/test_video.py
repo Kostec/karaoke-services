@@ -13,7 +13,30 @@ def test_defaults_video_limits(env):
         assert c.get("/api/defaults").json()["max_video_mb"] == 2000
 
 
+def test_defaults_and_error_list_video_exts_from_naming(client, song):
+    from karaoke_core import naming
+
+    exts = client.get("/api/defaults").json()["video_exts"]
+    assert sorted(exts) == sorted(naming.VIDEO_EXTS) and exts[0] == ".mp4"
+    r = client.post("/api/jobs/video", data={"song_id": song["song_id"]},
+                    files={"video": ("clip.flv", b"x", "video/x-flv")})
+    assert r.status_code == 400 and r.json()["field"] == "video"
+    assert r.json()["detail"] == "Видео должно быть файлом mp4, m4v, mkv, webm, avi, mov, mpg или mpeg"
+
+
 URL = "https://www.youtube.com/watch?v=abc123"
+
+
+def test_videogap_accepts_same_set_as_front(client, song):
+    """Как video-block.js::videoError: [+-]цифры[.цифры] (запятая — точка), без экспоненты и «_»."""
+    for gap in ("1e3", "1_0", "inf", "nan", "1.2.3", "абв", "1" * 400):
+        r = post_video(client, song["song_id"], video_url=URL, videogap=gap)
+        assert (r.status_code, r.json().get("field")) == (400, "videogap"), gap
+    for gap, value in (("+1,5", 1.5), ("-.25", -0.25), ("2.", 2.0), (" 0.1234 ", 0.123)):
+        r = post_video(client, song["song_id"], video_url=URL, videogap=gap)
+        assert r.status_code == 201, (gap, r.text)
+        assert r.json()["params"]["videogap"] == value
+        client.post(f"/api/jobs/{r.json()['id']}/cancel")
 
 
 def post_video(client, song_id, *, file=None, **fields):

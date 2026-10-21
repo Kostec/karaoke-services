@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import BinaryIO, Iterable
 
-from .. import ultrastar
+from .. import naming, ultrastar
 from ..db import LibraryItem
 
 PART_SUFFIX = ".part"
@@ -412,11 +412,15 @@ class Storage(ABC):
     def _entry(rel: str, e: Entry, song, names: set[str]) -> SongEntry:
         lower = {n.lower(): n for n in names}
 
-        def present(key: str) -> str | None:
-            value = (song.header(key) or "").strip()
+        def existing(value: str | None) -> str | None:
+            """Имя файла из заголовка, если он лежит в папке (регистр — как на диске)."""
+            value = (value or "").strip()
             if not value or "/" in value or "\\" in value:
                 return None
             return value if value in names else lower.get(value.lower())
+
+        def present(key: str) -> str | None:
+            return existing(song.header(key))
 
         return SongEntry(
             rel_dir=rel, txt_name=e.name,
@@ -425,7 +429,7 @@ class Storage(ABC):
             audio=present("AUDIO") or present("MP3"),
             instrumental=present("INSTRUMENTAL"),
             cover=present("COVER"),
-            video=present("VIDEO"),
+            video=existing(naming.video_file_name(song.header("VIDEO"))),
             is_duet=bool(song.is_duet),
             mtime=e.mtime or None,
         )

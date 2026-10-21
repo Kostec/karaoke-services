@@ -72,3 +72,12 @@ def test_video_suffix_keeps_extension_lowercased():
 
 def test_video_exts_are_the_supported_containers():
     assert naming.VIDEO_EXTS == {".mp4", ".m4v", ".mkv", ".webm", ".avi", ".mov", ".mpg", ".mpeg"}
+
+
+def test_video_file_name_is_file_name_with_video_extension():
+    assert naming.video_file_name(" А - Б.MKV ") == "А - Б.MKV"
+    assert naming.video_file_name("v=abcdefghijk,co=cover.jpg") is None  # ссылка usdb
+    assert naming.video_file_name("clips/a.mp4") is None
+    assert naming.video_file_name(r"clips\a.mp4") is None
+    assert naming.video_file_name("a.txt") is None
+    assert naming.video_file_name("") is None and naming.video_file_name(None) is None

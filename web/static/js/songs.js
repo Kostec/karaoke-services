@@ -1,6 +1,6 @@
 // Раздел «Песни»: список из индекса, поиск, удаление в корзину, перегенерация, минусовка, видео.
 
-import { api, getDefaults, errorText } from './api.js';
+import { api, getDefaults, errorText, JOB_FINAL } from './api.js';
 import { h, clear, confirmDialog, runAction, toast, fmtDate, debounce, days, songName } from './ui.js';
 import { createVideoBlock } from './video-block.js';
 import { songEditors, onEditorsChanged } from './extensions.js';
@@ -12,6 +12,28 @@ let data = null;
 let scanTimer = null;
 let seq = 0;
 let waits = 0; // повторные запросы, пока идёт (или ещё не прошло) сканирование
+const watched = new Set(); // задания (видео, минусовка), по завершении которых список перечитывается
+const WATCH_MS = 3000;
+
+/** Следить за заданием песни: дошло до конца (done/failed/cancelled) — перечитать список, если он на экране. */
+function watchJob(job) {
+  if (!job?.id || watched.has(job.id)) return;
+  watched.add(job.id);
+  const tick = async () => {
+    try {
+      const j = await api.job(job.id);
+      if (JOB_FINAL.includes(j.state)) {
+        watched.delete(job.id);
+        if (root && !root.hidden) load();
+        return;
+      }
+    } catch (e) {
+      if (e?.status === 404) { watched.delete(job.id); return; } // задание удалено
+    }
+    setTimeout(tick, WATCH_MS);
+  };
+  setTimeout(tick, WATCH_MS);
+}
 
 export function mount(section) {
   root = section;
@@ -162,7 +184,7 @@ async function instrumental(btn, song) {
   const name = songName(song.artist, song.title);
   if (song.instrumental
     && !(await confirmDialog(`Пересоздать минусовку для "${name}"? Старый файл уйдёт в корзину.`, 'Пересоздать'))) return;
-  await runAction(btn, () => api.instrumental(song.song_id, !!song.instrumental), 'Минусовка поставлена в очередь');
+  watchJob(await runAction(btn, () => api.instrumental(song.song_id, !!song.instrumental), 'Минусовка поставлена в очередь'));
 }
 
 /** Текущее #VIDEOGAP песни (из заголовков GET /notes); нет или ошибка — ''. */
@@ -182,7 +204,7 @@ async function openVideoDialog(song) {
   let d = {};
   try { d = await getDefaults(); } catch { /* умолчания блока */ }
   const block = createVideoBlock({ modes: ['url', 'file'], mode: 'url', gap: '0', maxMb: d.max_video_mb,
-    heights: d.video_heights, defaultHeight: d.default_video_height });
+    heights: d.video_heights, defaultHeight: d.default_video_height, exts: d.video_exts });
   let gapKnown = false; // текущее смещение песни прочитано (иначе без правки videogap не уходит)
   const errEl = h('div', { class: 'banner err', hidden: true, role: 'alert' });
   const submit = h('button', { type: 'button', class: 'primary' }, song.video ? 'Заменить видео' : 'Прикрепить');
@@ -208,8 +230,9 @@ async function openVideoDialog(song) {
     errEl.hidden = true;
     for (const b of [submit, removeBtn]) if (b) b.disabled = true;
     try {
-      await api.video(song.song_id, form);
+      const job = await api.video(song.song_id, form);
       el.close();
+      watchJob(job); // метка «видео» на карточке обновится сама
       toast(okText);
     } catch (e) {
       if (!block.showApiError(e)) {

@@ -9,9 +9,11 @@ export const VIDEO_MODES = ['none', 'source', 'url', 'file', 'pack'];
 export const MODE_LABELS = {
   none: 'Без видео', source: 'Из ссылки песни', url: 'Своя ссылка', file: 'Файл', pack: 'Из архива',
 };
-export const VIDEO_HEIGHTS = [360, 480, 720, 1080, 0]; // как /api/defaults::video_heights; 0 — лучшее
+// Качества и расширения приходят из /api/defaults (video_heights, default_video_height, video_exts —
+// naming.VIDEO_EXT_ORDER); эти списки — только запасные, если сервер не ответил.
+export const VIDEO_HEIGHTS = [360, 480, 720, 1080, 0]; // 0 — лучшее
 export const DEFAULT_VIDEO_HEIGHT = 720;
-export const VIDEO_ACCEPT = '.mp4,.m4v,.mkv,.webm,.avi,.mov,.mpg,.mpeg'; // naming.VIDEO_EXTS
+export const VIDEO_EXTS = ['.mp4', '.m4v', '.mkv', '.webm', '.avi', '.mov', '.mpg', '.mpeg'];
 export const HEIGHT_KEY = 'video.height';
 const GAP_ERROR = 'Смещение видео — число секунд, например 1.5 или -0.25';
 
@@ -49,12 +51,21 @@ export function videoChoices({ source = false, pack = false } = {}) {
   return { modes, mode: pack ? 'pack' : 'none' };
 }
 
-/** Ссылка годится для видео: не Яндекс Музыка и не аудио VK (там только звук). Окончательно решает сервер. */
-export function isVideoLink(url) {
-  const u = String(url ?? '').trim();
-  if (!/^https?:\/\//i.test(u)) return false;
-  return !/^https?:\/\/([\w-]+\.)*(music\.yandex\.[a-z]+|yandex\.[a-z]+\/music)|vk\.(com|ru)\/(audio|music)/i.test(u);
+const extList = (exts) => (Array.isArray(exts) && exts.length ? exts : VIDEO_EXTS);
+
+/** accept поля файла из списка расширений (/api/defaults::video_exts). */
+export function videoAccept(exts) {
+  return extList(exts).join(',');
 }
+
+/** Подсказка у поля файла: «mp4, mkv…; до N МБ». */
+export function fileHint(exts, maxMb) {
+  const names = extList(exts).map((e) => String(e).replace(/^\./, '')).join(', ');
+  return maxMb ? `${names}; до ${maxMb} МБ` : names;
+}
+
+// Как api_jobs.parse_videogap: [+-]цифры[.цифры] или [+-].цифры (после normGap), конечное число.
+const GAP_RE = /^[-+]?(\d+\.?\d*|\.\d+)$/;
 
 /** Ошибка заполнения до отправки: {field, text} (field — как у API) или null. */
 export function videoError(state = {}) {
@@ -63,7 +74,7 @@ export function videoError(state = {}) {
   if (mode === 'url' && !String(state.url ?? '').trim()) return { field: 'video_url', text: 'Вставьте ссылку на видео' };
   if (mode === 'file' && !state.file) return { field: 'video', text: 'Выберите видеофайл' };
   const gap = normGap(state.gap);
-  if (gap && !/^[-+]?(\d+\.?\d*|\.\d+)$/.test(gap)) return { field: 'videogap', text: GAP_ERROR };
+  if (gap && !(GAP_RE.test(gap) && Number.isFinite(Number(gap)))) return { field: 'videogap', text: GAP_ERROR };
   return null;
 }
 
@@ -90,7 +101,7 @@ export function rememberHeight(height, ls) {
 /**
  * Разметка блока. opts: {modes (какие показать, порядок — как в VIDEO_MODES), mode (начальный),
  * labels ({режим: подпись} поверх MODE_LABELS), sourceUrl (ссылка для режима source),
- * heights, defaultHeight, gap (начальное смещение), maxMb (лимит файла), onChange(state)}.
+ * heights, defaultHeight, exts (расширения файла), gap (начальное смещение), maxMb (лимит файла), onChange(state)}.
  * Возвращает {el, state() (+ gapTouched), fields(), setMode, setModes(modes, mode?), setSource(url), setGap, reset(mode?, gap?),
  * validate() → bool (ошибка — у поля), showError(field, text), showApiError(e) → bool, clearErrors()}.
  */
@@ -106,7 +117,7 @@ export function createVideoBlock(opts = {}) {
   const heightSel = h('select', { name: 'video_height', 'aria-label': 'Качество видео' },
     heights.map((v) => h('option', { value: String(v) }, heightLabel(v))));
   heightSel.value = String(rememberedHeight(heights, opts.defaultHeight ?? DEFAULT_VIDEO_HEIGHT));
-  const fileIn = h('input', { type: 'file', name: 'video', accept: VIDEO_ACCEPT, 'aria-label': 'Видеофайл' });
+  const fileIn = h('input', { type: 'file', name: 'video', accept: videoAccept(opts.exts), 'aria-label': 'Видеофайл' });
   const gapIn = h('input', { type: 'text', name: 'videogap', inputmode: 'decimal', class: 'video-gap',
     value: opts.gap ?? '', 'aria-label': 'Смещение видео, с' });
   const sourceEl = h('div', { class: 'small muted video-source' });
@@ -115,7 +126,7 @@ export function createVideoBlock(opts = {}) {
   const inputs = { video_mode: modeSel, video_url: urlIn, video_height: heightSel, video: fileIn, videogap: gapIn };
   const errEl = (key) => (errs[key] = h('div', { class: 'field-error', hidden: true, role: 'alert' }));
 
-  const hint = opts.maxMb ? `mp4, mkv, webm, avi, mov…; до ${opts.maxMb} МБ` : 'mp4, mkv, webm, avi, mov…';
+  const hint = fileHint(opts.exts, opts.maxMb);
   const rows = {
     url: h('label', { class: 'field' }, h('span', {}, 'Ссылка на видео',
       h('span', { class: 'hint' }, ' (YouTube, VK Видео, RuTube…)')), urlIn, errEl('video_url')),

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from karaoke_core import musiclink
 
-from .api_jobs import ctx_of
+from .api_jobs import ctx_of, is_video_link
 from .context import AppContext, link_api_error
 
 router = APIRouter(prefix="/api/link", tags=["Ссылки"])
@@ -41,5 +41,6 @@ def inspect(body: LinkIn, request: Request):
             "tracks": [{"url": t.url, "artist": t.artist, "title": t.title, "duration": t.duration,
                         "thumbnail": t.thumbnail,
                         "existing_song_id": ctx.existing_song_id(t.artist, t.title)
-                        if t.artist and t.title else None}
+                        if t.artist and t.title else None,
+                        "video": is_video_link(t.url)}
                        for t in info.tracks]}

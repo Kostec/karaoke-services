@@ -74,6 +74,7 @@ export const api = {
   defaults: getDefaults,
 
   jobs: (limit = 50) => request('GET', `/api/jobs?limit=${limit}`),
+  job: (id) => request('GET', `/api/jobs/${id}`),
   generate: (form) => request('POST', '/api/jobs/generate', form),
   instrumental: (songId, replace) => request('POST', '/api/jobs/instrumental', { song_id: songId, replace }),
   /** Видео к песне: form — FormData или поля videoFields/{remove} (см. videoForm). */
@@ -137,22 +138,32 @@ export function pickParams(src = {}) {
   return out;
 }
 
+const filled = (v) => v !== undefined && v !== null && v !== '';
+
+/**
+ * Поля блока «Видео» (video-block.js::videoFields) в multipart — единственное место сборки.
+ * fileField — имя файловой части, разница намеренная: у POST /api/jobs/video файл — само поле
+ * `video` (источник — какое поле пришло, video_mode не нужен), а у generate/import форма уже несёт
+ * свои файлы (`audio`, `cover`), поэтому видео — `video_file` рядом с `video_mode`.
+ * Файл важнее ссылки: при файле ссылка и качество не уходят; пустое не уходит.
+ */
+function appendVideo(fd, { video_mode: mode, video_url: url, video_file: file, video_height: height, videogap } = {},
+  fileField) {
+  if (mode) fd.append('video_mode', mode);
+  if (file) fd.append(fileField, file, file.name || 'video');
+  else {
+    if (typeof url === 'string' && url.trim()) fd.append('video_url', url.trim());
+    if (filled(height)) fd.append('video_height', String(height));
+  }
+  if (filled(videogap)) fd.append('videogap', String(videogap));
+}
+
 /**
  * multipart для POST /api/jobs/generate — единственное место сборки (форма и редактор текста).
  * {artist, title, lyrics, params, audio? | audio_url?, cover?, song_id?, replace?, lyrics_lrc?}
  * audio_url — ссылка на трек вместо файла (звук скачает воркер); при файле не уходит.
  * lyrics_lrc — LRC файловой частью: строка — взять её ('' — сбросить сохранённый), нет — не трогать.
  */
-/** Поля блока «Видео» (video-block.js::videoFields) в multipart generate/import; без video_mode — ничего. */
-function appendVideo(fd, { video_mode: mode, video_url: url, video_file: file, video_height: height, videogap } = {}) {
-  if (!mode) return;
-  fd.append('video_mode', mode);
-  if (typeof url === 'string' && url.trim()) fd.append('video_url', url.trim());
-  if (file) fd.append('video_file', file, file.name || 'video');
-  if (height !== undefined && height !== null && height !== '') fd.append('video_height', String(height));
-  if (videogap !== undefined && videogap !== null && videogap !== '') fd.append('videogap', String(videogap));
-}
-
 export function generateForm({ artist, title, lyrics = '', params = {}, audio, audio_url: audioUrl, cover,
   cover_url: coverUrl, song_id: songId, replace = false, lyrics_lrc: lrc, ...video }) {
   const fd = new FormData();
@@ -167,7 +178,7 @@ export function generateForm({ artist, title, lyrics = '', params = {}, audio, a
   fd.append('params', JSON.stringify(pickParams(params)));
   if (songId) fd.append('song_id', songId);
   fd.append('replace', replace ? 'true' : 'false');
-  appendVideo(fd, video);
+  if (video.video_mode) appendVideo(fd, video, 'video_file'); // без video_mode — ничего
   return fd;
 }
 
@@ -195,7 +206,7 @@ export function importForm({ token, index, artist, title, audio, youtube_url: yo
   if (youtubeUrl) fd.append('youtube_url', youtubeUrl);
   fd.append('instrumental', instrumental ? 'true' : 'false');
   fd.append('replace', replace ? 'true' : 'false');
-  appendVideo(fd, video);
+  if (video.video_mode) appendVideo(fd, video, 'video_file'); // без video_mode — ничего
   return fd;
 }
 
@@ -204,18 +215,10 @@ export function importForm({ token, index, artist, title, audio, youtube_url: yo
  * video_url, video_height, video_file → файловая часть video, videogap) или {remove: true}.
  * video_mode сюда не уходит: у эндпоинта источник — само поле.
  */
-export function videoForm(songId, { video_url: url, video_file: file, video_height: height, videogap, remove } = {}) {
+export function videoForm(songId, { remove, video_mode: _mode, ...fields } = {}) {
   const fd = new FormData();
   fd.append('song_id', songId);
-  if (remove) {
-    fd.append('remove', 'true');
-    return fd;
-  }
-  if (file) fd.append('video', file, file.name || 'video');
-  else if (typeof url === 'string' && url.trim()) {
-    fd.append('video_url', url.trim());
-    if (height !== undefined && height !== null && height !== '') fd.append('video_height', String(height));
-  }
-  if (videogap !== undefined && videogap !== null && videogap !== '') fd.append('videogap', String(videogap));
+  if (remove) fd.append('remove', 'true');
+  else appendVideo(fd, fields, 'video');
   return fd;
 }
