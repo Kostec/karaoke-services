@@ -16,6 +16,7 @@ import {
   octaveLabel, clampZoom, zoomScroll, hitZone, noteAt, rulerStep, pitchRange, ensureVisible, rebaseBeat,
 } from './timeline-math.js';
 import { loadPeaks, drawWave } from './waveform.js';
+import { liveNotes } from './notes-panel-logic.js';
 
 const RULER_H = 24;
 const WAVE_H = 44;
@@ -44,10 +45,9 @@ function saveZoom(v) {
 }
 
 const isRap = (t) => t === 'R' || t === 'G';
-/** Партия ноты: певец 2 — 2, певец 1 и «оба» — 1 (как в модели). */
-const partOf = (x) => (x?.voice === 2 ? 2 : 1);
 const VOICE_CLASS = { 1: 'p1', 2: 'p2', both: 'both' };
-const voiceWord = (v) => (v === 'both' ? 'оба' : `певец ${v === 2 ? 2 : 1}`);
+/** Подписи певца строки — один словарь модели (кнопка, «кому», «у кого», «кто»). */
+const voiceLabel = (v) => M.VOICE_LABELS[v] ?? M.VOICE_LABELS[1];
 
 export async function openNotesEditor(song, { reload } = {}) {
   let state = null;
@@ -186,7 +186,7 @@ export async function openNotesEditor(song, { reload } = {}) {
 
   function noteTitle(x, bad) {
     const t = String(x.text).trim() || '∅';
-    const who = state.duet ? ` · ${voiceWord(x.voice)}` : '';
+    const who = state.duet ? ` · ${voiceLabel(x.voice).who}` : '';
     return `«${t}» · ${fmtTime(msOf(x.start))} · ${x.length} бит${who}${bad ? ' · перекрывается с соседней!' : ''}`;
   }
 
@@ -281,7 +281,7 @@ export async function openNotesEditor(song, { reload } = {}) {
       fc.append(chip);
     });
     // границы строк — внутри каждой партии (у дуэта ↵ певца 1 — на верхней полосе слогов, певца 2 — на нижней)
-    for (const v of duet ? [1, 2] : [1]) {
+    for (const v of M.parts(state)) {
       const ls = M.voiceLines(state, v);
       for (let j = 1; j < ls.length; j += 1) {
         const pv = ls[j - 1][ls[j - 1].length - 1];
@@ -292,6 +292,7 @@ export async function openNotesEditor(song, { reload } = {}) {
         const k = document.createElement('b');
         k.textContent = '↵';
         k.dataset.id = x.id;
+        k.dataset.voice = String(v); // партия полосы: ↵ у строки «оба» склеивает в ней
         k.title = duet ? `Граница строки (певец ${v})` : 'Граница строки';
         b.append(k);
         fb.append(b);
@@ -365,7 +366,7 @@ export async function openNotesEditor(song, { reload } = {}) {
     selInfo.textContent = n === 0 ? 'Ничего не выбрано'
       : n === total && n > 1 ? `Выбраны все ноты (${n})`
         : one ? `«${String(one.text).trim() || '∅'}» · ${one.length} бит · ${fmtTime(msOf(one.start))}`
-            + `${state.duet ? ` · ${voiceWord(one.voice)}` : ''}`
+            + `${state.duet ? ` · ${voiceLabel(one.voice).who}` : ''}`
           : `Выбрано нот: ${n}`;
     const ro = !editable();
     textBtn.disabled = ro || n !== 1;
@@ -472,14 +473,7 @@ export async function openNotesEditor(song, { reload } = {}) {
     playhead.style.transform = `translateX(${bx(beat)}px)`;
     timeEl.textContent = `${fmtTime(posMs)} / ${endLabel}`;
     // живая нота — в каждой партии своя (у соло партия одна — все ноты)
-    const now = new Set();
-    if (playing) {
-      for (const v of state.duet ? [1, 2] : [1]) {
-        const part = state.duet ? M.voiceNotes(state, v) : state.notes;
-        const i = noteAt(part, beat);
-        if (i >= 0) now.add(part[i].id);
-      }
-    }
+    const now = playing ? liveNotes(state, beat) : new Set();
     if (now.size !== liveIds.size || [...now].some((id) => !liveIds.has(id))) {
       for (const id of liveIds) {
         const was = els.get(id);
@@ -589,7 +583,7 @@ export async function openNotesEditor(song, { reload } = {}) {
 
   /** Ноты партии ноты id (у соло — все ноты): по ним ходят Tab и правка слогов. */
   function partNotes(id) {
-    return state.duet ? M.voiceNotes(state, partOf(byId(id))) : state.notes;
+    return byId(id) ? M.partNotes(state, id) : M.voiceNotes(state, 1); // нет выбора — партия певца 1
   }
 
   /** Певец новой ноты: певец выбранной ноты (у соло — 1). */
@@ -974,8 +968,11 @@ export async function openNotesEditor(song, { reload } = {}) {
     playReason,
     editable, apply, select, revealNote, editChip, render, renderSel, toast, play, stopPlay, seekMs, playLine,
     msOf, beatOf, bx, xBeat, py,
-    /** Ноты партии ноты id (у соло — все); подпись певца v: «Певец 2 (имя)». */
-    partNotes, singerLabel,
+    /**
+     * Ноты партии ноты id (у соло — все); подпись певца v: «Певец 2 (имя)»;
+     * voiceLabel(v) — подписи певца строки (1 | 2 | 'both'): {short, to, at, who} из M.VOICE_LABELS.
+     */
+    partNotes, singerLabel, voiceLabel,
     onRender: (f) => hooks.render.push(f),
     onSelect: (f) => hooks.select.push(f),
     onTick: (f) => hooks.tick.push(f),

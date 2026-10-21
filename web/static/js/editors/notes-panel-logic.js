@@ -1,6 +1,9 @@
 // Чистая логика панели текста и отстукивания редактора нот (таск 04; спека: истории 16, 21, 23) — без DOM.
 
-import { msToBeat, inVoice } from './notes-model.js';
+import {
+  msToBeat, inVoice, partOf, parts, voiceNotes,
+} from './notes-model.js';
+import { noteAt } from './timeline-math.js';
 
 /**
  * Индекс строки, звучащей на бите beat (от начала первой ноты до конца последней), иначе −1.
@@ -61,8 +64,46 @@ export function tapTiming(downMs, upMs, gap, bpm) {
  */
 export function tapQueue(notes, fromId) {
   const from = notes.find((x) => x.id === fromId);
-  const sub = notes.filter((x) => inVoice(x, from?.voice === 2 ? 2 : 1));
+  const sub = notes.filter((x) => inVoice(x, partOf(from)));
   const i = sub.indexOf(from);
   return sub.slice(Math.max(0, i)).map((x) => x.id);
+}
+
+/** Живые ноты на бите beat: в каждой партии своя (id; нота «оба» — один раз), у соло — одна. */
+export function liveNotes(state, beat) {
+  const now = new Set();
+  for (const v of parts(state)) {
+    const part = voiceNotes(state, v);
+    const i = noteAt(part, beat);
+    if (i >= 0) now.add(part[i].id);
+  }
+  return now;
+}
+
+/** Звучащие строки на бите beat: номера в lines (= M.lines(state)) — по одной в каждой партии. */
+export function liveLines(state, lines, beat) {
+  const now = new Set();
+  for (const v of parts(state)) {
+    const li = lineAt(lines, beat, state.duet ? v : undefined);
+    if (li >= 0) now.add(li);
+  }
+  return now;
+}
+
+/**
+ * Раскладка панели «Текст»: [{key, li, g, num}] в порядке на экране. Соло — строки по порядку (g 0);
+ * дуэт — группа певца 1 (g 1, со строками «оба»), потом певца 2 (g 2, тоже с «оба»).
+ * num — номер строки внутри группы, тот же, что в ошибках validate («Певец 2, строка 3»).
+ */
+export function panelRows(state, lines) {
+  if (!state.duet) return lines.map((_, li) => ({ key: `0:${li}`, li, g: 0, num: li + 1 }));
+  const out = [];
+  for (const g of parts(state)) {
+    let num = 0;
+    lines.forEach((line, li) => {
+      if (line.length && inVoice(line[0], g)) out.push({ key: `${g}:${li}`, li, g, num: ++num });
+    });
+  }
+  return out;
 }
 

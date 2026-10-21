@@ -7,7 +7,9 @@
 
 import { h } from '../ui.js';
 import { toSyllables } from './syllables.js';
-import { lineAt, lineStatus, plural } from './notes-panel-logic.js';
+import {
+  lineStatus, plural, liveLines, panelRows,
+} from './notes-panel-logic.js';
 
 const CLOSED_KEY = 'notesEditor.textPanelClosed';
 const PHONE = '(max-width: 639px)';
@@ -28,8 +30,6 @@ const sylCount = (text) => toSyllables(String(text).replace(/~/g, '')).length;
 /** Отпечаток строки: ноты и их слоги — набранный текст помнится, пока строка не изменилась иначе. */
 const sigOf = (line) => line.map((x) => `${x.id}:${x.text}`).join('\u0001');
 const voiceOfLine = (line) => line?.[0]?.voice ?? 1;
-const VOICE_LABEL = { 1: '1', 2: '2', both: 'оба' };
-const VOICE_TITLE = { 1: 'певцу 1', 2: 'певцу 2', both: 'обоим' };
 
 export function textPanelPlugin(ctx) {
   const { M, els } = ctx;
@@ -115,7 +115,7 @@ export function textPanelPlugin(ctx) {
     if (!line) return;
     flush();
     if (voiceOfLine(line) === v) return;
-    ctx.apply((s) => M.setVoice(s, line.map((x) => x.id), v), `Строка — ${VOICE_TITLE[v]}`);
+    ctx.apply((s) => M.setVoice(s, line.map((x) => x.id), v), `Строка — ${ctx.voiceLabel(v).to}`);
   }
 
   function makeRow(key, li, g) {
@@ -124,7 +124,8 @@ export function textPanelPlugin(ctx) {
     const st = h('div', { class: 'st', 'aria-live': 'polite' });
     const row = { key, li, g, item: null, num, inp, st, vbtns: [] };
     row.vbtns = M.VOICES.map((v) => {
-      const b = h('button', { type: 'button', title: `Отдать строку ${VOICE_TITLE[v]}`, 'aria-pressed': 'false' }, VOICE_LABEL[v]);
+      const { short, to } = ctx.voiceLabel(v);
+      const b = h('button', { type: 'button', title: `Отдать строку ${to}`, 'aria-pressed': 'false' }, short);
       b.addEventListener('mousedown', (e) => e.preventDefault()); // фокус не уходит из поля строки
       b.addEventListener('click', () => setVoice(row, v));
       return b;
@@ -232,17 +233,14 @@ export function textPanelPlugin(ctx) {
     for (const r of rows) r.item.classList.toggle('cur', !!lines[r.li]?.some((x) => sel.has(x.id)));
   }
 
-  function markLive(force = false) {
+  /**
+   * Подсветка звучащих строк (у дуэта — по строке каждой партии). repaint — перерисовать и прокрутить
+   * к звучащей строке, даже если звучат те же строки (список перестроен, панель развёрнута).
+   */
+  function markLive(repaint = false) {
     const st = ctx.state;
-    const now = new Set();
-    if (st && ctx.playing) {
-      const beat = ctx.beatOf(ctx.posMs);
-      for (const v of st.duet ? [1, 2] : [null]) {
-        const li = lineAt(lines, beat, v ?? undefined);
-        if (li >= 0) now.add(li);
-      }
-    }
-    if (!force && now.size === liveLis.size && [...now].every((li) => liveLis.has(li))) return;
+    const now = st && ctx.playing ? liveLines(st, lines, ctx.beatOf(ctx.posMs)) : new Set();
+    if (!repaint && now.size === liveLis.size && [...now].every((li) => liveLis.has(li))) return;
     const fresh = [...now].filter((li) => !liveLis.has(li));
     liveLis = now;
     let scrolled = false;
@@ -250,7 +248,7 @@ export function textPanelPlugin(ctx) {
       const on = now.has(r.li);
       r.item.classList.toggle('live', on);
       // прокрутка — к первой новой звучащей строке (у дуэта их может быть две)
-      if (on && !scrolled && (force || fresh.includes(r.li)) && !closed && editLi < 0) {
+      if (on && !scrolled && (repaint || fresh.includes(r.li)) && !closed && editLi < 0) {
         r.item.scrollIntoView({ block: 'nearest' });
         scrolled = true;
       }
@@ -268,25 +266,13 @@ export function textPanelPlugin(ctx) {
     });
   }
 
-  /** Порядок строк на экране: соло — по времени; дуэт — группа певца 1 (с «оба»), потом певца 2 (с «оба»). */
-  function layout(st) {
-    if (!st.duet) return lines.map((_, li) => ({ key: `0:${li}`, li, g: 0 }));
-    const out = [];
-    for (const g of [1, 2]) {
-      lines.forEach((line, li) => {
-        const v = voiceOfLine(line);
-        if (v === 'both' || v === g) out.push({ key: `${g}:${li}`, li, g });
-      });
-    }
-    return out;
-  }
-
   function refresh() {
     const st = ctx.state;
     if (!st || gone) return;
     lines = M.lines(st);
     refreshNames();
-    const want = layout(st);
+    // порядок на экране и номера строк внутри партии — panelRows (как в ошибках «Певец 2, строка 3»)
+    const want = panelRows(st, lines);
     const keys = new Set(want.map((w) => w.key));
     for (const [k, r] of byKey) {
       if (!keys.has(k)) { r.item.remove(); byKey.delete(k); }
@@ -301,7 +287,7 @@ export function textPanelPlugin(ctx) {
     if (key !== orderKey) {
       orderKey = key;
       const nodes = [];
-      for (const g of st.duet ? [1, 2] : [0]) {
+      for (const g of st.duet ? M.parts(st) : [0]) {
         if (g) nodes.push(groupHead[g - 1]);
         nodes.push(...rows.filter((r) => r.g === g).map((r) => r.item));
       }
@@ -310,13 +296,11 @@ export function textPanelPlugin(ctx) {
     for (const [i, gh] of groupHead.entries()) gh.textContent = ctx.singerLabel(i + 1);
     for (const t of [...typed.keys()]) if (t >= lines.length) typed.delete(t);
     const ro = !ctx.editable();
-    const counter = { 0: 0, 1: 0, 2: 0 };
-    for (const r of rows) {
-      // номер строки — внутри партии (как в сообщениях об ошибках «Певец 2, строка 3»)
-      counter[r.g] += 1;
-      r.num.textContent = String(counter[r.g]);
+    for (const [i, r] of rows.entries()) {
+      const { num } = want[i];
+      r.num.textContent = String(num);
       const v = voiceOfLine(lines[r.li]);
-      const label = st.duet ? `${ctx.singerLabel(r.g)}, строка ${counter[r.g]}` : `Строка ${counter[r.g]}`;
+      const label = st.duet ? `${ctx.singerLabel(r.g)}, строка ${num}` : `Строка ${num}`;
       r.inp.setAttribute('aria-label', label);
       r.item.dataset.voice = st.duet ? String(v) : '';
       r.item.classList.toggle('duet', !!st.duet);
@@ -332,8 +316,7 @@ export function textPanelPlugin(ctx) {
       paintStatus(r);
     }
     markCur();
-    liveLis = new Set([-2]);
-    markLive();
+    markLive(true); // строки перестроены — подсветку звучащих наложить заново
   }
 
   ctx.onRender(refresh);

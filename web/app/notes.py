@@ -98,22 +98,22 @@ def _fmt_gap(value: float) -> str:
     return "0" if text == "-0" else text
 
 
-def _tracks(body: NotesIn) -> list[tuple[int | None, list[LineIn]]]:
-    """Партии тела запроса: ``[(None, строки)]`` у соло, ``[(1, …), (2, …)]`` у дуэта.
+def _tracks(body: NotesIn) -> tuple[bool, list[tuple[int | None, list[LineIn]]]]:
+    """Дуэт ли и партии тела запроса: ``(False, [(None, строки)])`` у соло, ``(True, [(1, …), (2, …)])`` у дуэта.
 
     Дуэт — если хотя бы у одной строки с нотами певец 2. Если ``player`` есть только
     у части строк или он не 1/2 — ApiError(400).
     """
     if all(line.player is None for line in body.lines):
-        return [(None, body.lines)]
+        return False, [(None, body.lines)]
     for i, line in enumerate(body.lines, start=1):
         if line.player is None:
             raise ApiError(400, f"Строка {i}: не указан певец (1 или 2)")
         if line.player not in (1, 2):
             raise ApiError(400, f"Строка {i}: певец — 1 или 2, а не {line.player}")
     if not any(line.player == 2 and line.notes for line in body.lines):
-        return [(None, body.lines)]
-    return [(p, [line for line in body.lines if line.player == p]) for p in (1, 2)]
+        return False, [(None, body.lines)]
+    return True, [(p, [line for line in body.lines if line.player == p]) for p in (1, 2)]
 
 
 def _flatten(lines: list[LineIn]) -> Flat:
@@ -132,11 +132,14 @@ def _flatten(lines: list[LineIn]) -> Flat:
     return out
 
 
-def _where(player: int | None, li: int, what: str, text: str | None = None) -> str:
-    """Место ошибки: у соло «Что: строка K, слог «x»», у дуэта «Певец N, строка K: что, слог «x»»."""
+def _where(player: int | None, li: int, what: str, text: str | None = None, *, solo: str | None = None) -> str:
+    """Место ошибки: у соло «Что: строка K, слог «x»», у дуэта «Певец N, строка K: что, слог «x»».
+
+    ``solo`` — готовый текст для соло, если в нём строка названа внутри фразы.
+    """
     syl = f", слог «{text.strip()}»" if text is not None else ""
     if player is None:
-        return f"{what}: строка {li}{syl}"
+        return solo if solo is not None else f"{what}: строка {li}{syl}"
     return f"Певец {player}, строка {li}: {what[0].lower()}{what[1:]}{syl}"
 
 
@@ -160,11 +163,9 @@ def _validate(player: int | None, flat: Flat) -> None:
             if n.start < p_end:
                 raise ApiError(400, _where(player, li, "Ноты перекрываются", n.text))
             if br is not None and not p_end <= br <= n.start:
-                if player is None:
-                    raise ApiError(400, f"Разрыв строки {p_li} должен стоять между концом её последней ноты "
-                                        f"и началом строки {li}")
-                raise ApiError(400, f"Певец {player}, строка {p_li}: разрыв должен стоять между концом "
-                                    f"её последней ноты и началом строки {li}")
+                raise ApiError(400, _where(
+                    player, p_li, f"Разрыв должен стоять между концом её последней ноты и началом строки {li}",
+                    solo=f"Разрыв строки {p_li} должен стоять между концом её последней ноты и началом строки {li}"))
         prev = (li, n)
 
 
@@ -176,7 +177,7 @@ def _break_before_p2(lines: list[LineIn]) -> int | None:
     li, last = with_notes[-1]
     end = max(n.start + n.length for n in last.notes)
     if last.break_beat < end:
-        raise ApiError(400, f"Певец 1, строка {li}: разрыв должен стоять не раньше конца её последней ноты")
+        raise ApiError(400, _where(1, li, "Разрыв должен стоять не раньше конца её последней ноты"))
     return last.break_beat
 
 
@@ -188,9 +189,8 @@ def apply_notes(song: ultrastar.Song, body: NotesIn) -> None:
     блоками ``P1 …``, ``P2 …``; прежние метки ``P`` переиспользуются. Без строк
     певца 2 песня записывается соло: без меток и заголовков имён.
     """
-    parts = _tracks(body)
+    duet, parts = _tracks(body)
     tracks = [(p, _flatten(lines)) for p, lines in parts]
-    duet = parts[0][0] is not None
     if not any(flat for _p, flat in tracks):
         raise ApiError(400, "В песне должна остаться хотя бы одна нота")
     for p, flat in tracks:

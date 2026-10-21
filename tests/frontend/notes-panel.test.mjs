@@ -2,8 +2,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  lineAt, lineStatus, tapTiming, tapQueue,
+  lineAt, lineStatus, tapTiming, tapQueue, liveNotes, liveLines, panelRows,
 } from '../../web/static/js/editors/notes-panel-logic.js';
+import * as M from '../../web/static/js/editors/notes-model.js';
 
 const n = (start, length) => ({ start, length });
 // строки: [0..6), [10..16), [20..24)
@@ -81,4 +82,60 @@ test('дуэт: отстукивание идёт до конца партии �
   assert.deepEqual(tapQueue(notes, 2), [2, 3, 4]);
   assert.deepEqual(tapQueue(notes, 1), [1, 3, 5]);
   assert.deepEqual(tapQueue(notes, 99), [0, 1, 3, 5], 'нет такой — с первой ноты партии певца 1');
+});
+
+// Дуэт из ответа GET: P1 [A a] [B — «оба»] [C], P2 [X] [B — «оба»] [Z].
+let nid = 0;
+const note = (start, length, text) => ({ id: nid++, type: ':', start, length, pitch: 5, text });
+function duetState() {
+  nid = 0;
+  return M.fromPayload({
+    editable: true, bpm: 300, gap: 0, headers: [], duet: true, singers: { p1: '', p2: '' },
+    lines: [
+      { break_beat: 6, player: 1, notes: [note(0, 2, 'A'), note(2, 2, 'a')] },
+      { break_beat: 14, player: 1, notes: [note(8, 2, 'B')] },
+      { break_beat: null, player: 1, notes: [note(16, 2, 'C')] },
+      { break_beat: 6, player: 2, notes: [note(0, 3, 'X')] },
+      { break_beat: 14, player: 2, notes: [note(8, 2, 'B')] },
+      { break_beat: null, player: 2, notes: [note(20, 2, 'Z')] },
+    ],
+  });
+}
+const texts = (st, ids) => [...ids].map((id) => st.notes.find((x) => x.id === id).text).sort();
+const lineTexts = (ls, lis) => [...lis].map((li) => ls[li].map((x) => x.text).join('')).sort();
+
+test('дуэт: живые ноты — по одной в каждой партии, нота «оба» — один раз', () => {
+  const st = duetState();
+  assert.deepEqual(texts(st, liveNotes(st, 1)), ['A', 'X']);
+  assert.deepEqual(texts(st, liveNotes(st, 9)), ['B']);
+  assert.deepEqual(texts(st, liveNotes(st, 21)), ['Z']);
+  assert.equal(liveNotes(st, 6).size, 0, 'пауза у обоих');
+  const solo = M.makeSolo(st);
+  assert.deepEqual(texts(solo, liveNotes(solo, 1)), ['X'], 'у соло — одна нота (при перекрытии — начавшаяся позже)');
+});
+
+test('дуэт: звучащая строка каждой партии (номера в M.lines)', () => {
+  const st = duetState();
+  const ls = M.lines(st);
+  assert.deepEqual(lineTexts(ls, liveLines(st, ls, 1)), ['Aa', 'X']);
+  assert.deepEqual(lineTexts(ls, liveLines(st, ls, 9)), ['B']);
+  assert.deepEqual(lineTexts(ls, liveLines(st, ls, 17)), ['C']);
+  assert.equal(liveLines(st, ls, 6).size, 0);
+});
+
+test('панель: дуэт — группа певца 1, потом певца 2 («оба» в обеих), номера строк внутри партии', () => {
+  const st = duetState();
+  const ls = M.lines(st);
+  const rows = panelRows(st, ls).map((r) => [r.g, r.num, ls[r.li].map((x) => x.text).join(''), r.key]);
+  const li = (t) => ls.findIndex((l) => l.map((x) => x.text).join('') === t);
+  assert.deepEqual(rows, [
+    [1, 1, 'Aa', `1:${li('Aa')}`], [1, 2, 'B', `1:${li('B')}`], [1, 3, 'C', `1:${li('C')}`],
+    [2, 1, 'X', `2:${li('X')}`], [2, 2, 'B', `2:${li('B')}`], [2, 3, 'Z', `2:${li('Z')}`],
+  ]);
+  // тот же номер называет validate: «Певец 2, строка 3»
+  const bad = M.resize(st, st.notes.find((x) => x.text === 'Z').id, 'left', -11); // Z заезжает на B
+  assert.match(M.validate(bad).message, /^Певец 2, строка 3: /);
+  const solo = M.makeSolo(st);
+  assert.deepEqual(panelRows(solo, M.lines(solo)).map((r) => [r.g, r.num, r.key]),
+    M.lines(solo).map((_, i) => [0, i + 1, `0:${i}`]));
 });

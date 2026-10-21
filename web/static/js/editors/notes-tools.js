@@ -59,7 +59,11 @@ const DUET_HELP = [
   ['«Сделать дуэтом»', 'все строки — певцу 1; дальше строки раздаются певцу 2 или обоим'],
   ['«Певцу: 1 / 2 / оба»', 'отдать строки выбранных нот (строка переходит целиком); то же — переключатель у строки в панели «Текст»'],
   ['«Сделать соло»', 'всё — певцу 1, строки «оба» остаются одной копией'],
-  ['Цвета', 'певец 1 — синий, певец 2 — фиолетовый, «оба» — зелёный; слоги певца 1 — на верхней полосе, певца 2 — на нижней'],
+  // цвета — образцами легенды (токены --accent, --ne-p2, --ne-both), без названий цветов словами
+  ['Цвета', () => [
+    ...[['p1', 'певец 1'], ['p2', 'певец 2'], ['both', '«оба»']].flatMap(([c, who]) => [
+      h('span', { class: `ne-lg ${c}` }, h('i', { 'aria-hidden': 'true' }), who), ' ']),
+    '— как в легенде над нотами; слоги певца 1 — на верхней полосе, певца 2 — на нижней']],
   ['Внутри партии', 'Tab, отстукивание, сдвиг текста ⇠/⇢, перетаскивание слога, Разрезать, Слить и ↵ Строка работают в партии выбранной ноты'],
   ['Новая нота', 'получает певца выбранной ноты'],
 ];
@@ -176,13 +180,13 @@ export function toolsPlugin(ctx) {
   const duetBtn = btn('Сделать дуэтом', 'Сделать дуэтом: все строки — певцу 1, потом раздай строки певцу 2 или обоим');
   const soloBtn = btn('Сделать соло', 'Сделать соло: всё — певцу 1, строки «оба» — одной копией');
   const voiceBtns = M.VOICES.map((v) => {
-    const word = v === 'both' ? 'обоим' : `певцу ${v}`;
-    const b = btn(v === 'both' ? 'оба' : String(v), `Отдать строки выбранных нот ${word}`, { class: 'ne-vbtn' });
+    const { short, to: word, at } = ctx.voiceLabel(v);
+    const b = btn(short, `Отдать строки выбранных нот ${word}`, { class: 'ne-vbtn' });
     b.addEventListener('click', () => {
       const ids = [...ctx.selection];
       if (!ids.length) return;
       const ok = ctx.apply((s) => M.setVoice(s, ids, v), `Строки выбранных нот — ${word}`);
-      if (!ok && ctx.state.duet) ctx.toast(`Строки уже у ${v === 'both' ? 'обоих' : `певца ${v}`}`);
+      if (!ok && ctx.state.duet) ctx.toast(`Строки уже у ${at}`);
     });
     return b;
   });
@@ -212,7 +216,7 @@ export function toolsPlugin(ctx) {
     for (const [i, b] of voiceBtns.entries()) {
       b.disabled = !sel.size;
       const v = M.VOICES[i];
-      const all = sel.size > 0 && [...sel].every((id) => st.notes.find((x) => x.id === id)?.voice === v);
+      const all = !!st && M.allVoice(st, sel, v);
       b.classList.toggle('on', all);
       b.setAttribute('aria-pressed', String(all));
     }
@@ -328,7 +332,8 @@ export function toolsPlugin(ctx) {
   els.brkLayer.addEventListener('click', (e) => {
     const b = e.target.closest('.ne-brk b');
     if (!b || !ctx.editable()) return;
-    ctx.apply((s) => M.mergeLineAt(s, Number(b.dataset.id)), 'Строки склеены');
+    // склейка — в партии полосы, на которой стоит ↵ (у строки «оба» значок есть на обеих полосах)
+    ctx.apply((s) => M.mergeLineAt(s, Number(b.dataset.id), Number(b.dataset.voice) || null), 'Строки склеены');
   });
   ctx.onRender(() => {
     if (!ctx.editable()) return;
@@ -455,7 +460,8 @@ export function toolsPlugin(ctx) {
   const help = h('dialog', { class: 'ne-help', 'aria-label': 'Сочетания клавиш' },
     h('h3', {}, 'Сочетания клавиш'), table,
     h('h4', {}, 'Дуэт'),
-    h('table', { class: 'ne-help-table' }, ...DUET_HELP.map(([what, text]) => h('tr', {}, h('td', {}, h('b', {}, what)), h('td', {}, text)))),
+    h('table', { class: 'ne-help-table' }, ...DUET_HELP.map(([what, text]) => h('tr', {}, h('td', {}, h('b', {}, what)),
+      h('td', {}, ...(typeof text === 'function' ? text() : [text]))))),
     h('p', { class: 'small muted' }, 'Клавиши работают и в русской раскладке. Пока курсор в поле ввода, сочетания редактора не срабатывают.'),
     h('p', {}, closeHelp));
   ctx.dlg.append(help);

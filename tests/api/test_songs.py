@@ -383,13 +383,27 @@ def _p2(notes):
     (lambda n: _p2(n)[1]["notes"][0].update(pitch=101), "Певец 2, строка 2: высота ноты — от −40 до 100, слог «Хо»"),
     (lambda n: n["lines"][2].pop("player"), "Строка 3: не указан певец (1 или 2)"),
     (lambda n: n["lines"][0].update(player=3), "Строка 1: певец — 1 или 2, а не 3"),
-], ids=["overlap", "break", "pitch", "no-player", "bad-player"])
+    # разрыв после последней строки певца 1 пишется перед P2 — не раньше конца её ноты (12..16)
+    (lambda n: n["lines"][1].update(break_beat=14),
+     "Певец 1, строка 2: разрыв должен стоять не раньше конца её последней ноты"),
+], ids=["overlap", "break", "pitch", "no-player", "bad-player", "break-before-p2"])
 def test_notes_put_duet_validation_is_per_track(env, client, change, detail):
     sid, path, notes = _duet(env, client, DUET_FIX_TXT)
     change(notes)
     r = client.put(f"/api/songs/{sid}/notes", json=notes)
     assert (r.status_code, r.json()["detail"]) == (400, detail)
     assert path.read_bytes() == DUET_FIX_TXT
+
+
+def test_notes_more_than_two_singers_are_read_only(env, client):
+    raw = ("#TITLE:Duet\n#ARTIST:Pair\n#BPM:300\n#GAP:0\n"
+           "P1\n: 0 4 5 Раз\nP2\n: 0 4 6 Два\nP3\n: 0 4 7 Три\nE\n").encode()
+    sid, path, notes = _duet(env, client, raw)
+    assert notes["editable"] is False
+    assert notes["reason"] == "В песне больше двух певцов — редактор только для просмотра"
+    r = client.put(f"/api/songs/{sid}/notes", json=notes)
+    assert r.status_code == 409 and r.json()["detail"] == notes["reason"]
+    assert path.read_bytes() == raw and client.get("/api/trash").json() == []
 
 
 def test_notes_put_solo_to_duet_and_back(env, client, song):

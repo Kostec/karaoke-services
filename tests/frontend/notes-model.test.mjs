@@ -491,6 +491,20 @@ test('дуэт: слить, разрезать, ↵ строка, склеить
   assert.deepEqual(voiceTexts(m, 2), voiceTexts(st, 2));
 });
 
+test('дуэт: ↵ у строки «оба» склеивает в партии полосы — и только если строки соседние в обеих партиях', () => {
+  const st = M.fromPayload(duetPayload());
+  // C1 → «оба»: строки «Bo th» и «C1» соседние и у певца 1, и у певца 2 — склейка с нижней полосы (P2)
+  const both = M.setVoice(st, [byText(st, 'C1').id], 'both');
+  const m = M.mergeLineAt(both, byText(both, 'C1').id, 2);
+  assert.deepEqual(voiceTexts(m, 2), [['X2', 'x2'], ['Bo', 'th', 'C1'], ['Z2']]);
+  assert.deepEqual(voiceTexts(m, 1), [['A1', 'a1'], ['Bo', 'th', 'C1']]);
+  // C1 → певцу 2, Z2 → «оба»: у певца 1 «Bo th» и «Z2» рядом, у певца 2 между ними строка «C1»
+  const mid = M.setVoice(M.setVoice(st, [byText(st, 'C1').id], 2), [byText(st, 'Z2').id], 'both');
+  assert.deepEqual(voiceTexts(mid, 2), [['X2', 'x2'], ['Bo', 'th'], ['C1'], ['Z2']]);
+  assert.throws(() => M.mergeLineAt(mid, byText(mid, 'Z2').id, 2), /разных певцов/);
+  assert.throws(() => M.mergeLineAt(mid, byText(mid, 'Z2').id, 1), /у певца 2 между ними своя строка/);
+});
+
 test('дуэт: удаление и добавление нот — в партии ноты; вторую партию можно опустошить', () => {
   const st = M.fromPayload(duetPayload());
   assert.deepEqual(voiceTexts(M.deleteNotes(st, [byText(st, 'X2').id]), 2), [['x2'], ['Bo', 'th'], ['Z2']]);
@@ -572,6 +586,43 @@ test('voiceNotes / voiceLines: ноты и строки партии вмест�
   assert.equal(M.lines(st).length, 5, 'строка «оба» — одна');
   const bad = { ...st, notes: st.notes.map((x) => (x.text === 'Z2' ? { ...x, type: 'Q' } : x)) };
   assert.deepEqual(M.validate(bad), { message: 'Певец 2, строка 3: неизвестный тип ноты «Q», слог «Z2»', id: byText(st, 'Z2').id });
+});
+
+test('partOf / partNotes / parts: партия ноты — певец 2 во второй, певец 1 и «оба» в первой; у соло — все ноты', () => {
+  const st = M.fromPayload(duetPayload());
+  assert.deepEqual(['A1', 'Bo', 'X2'].map((t) => M.partOf(byText(st, t))), [1, 1, 2]);
+  assert.equal(M.partOf({ id: 0 }), 1, 'нота без певца — певца 1');
+  assert.deepEqual(M.partNotes(st, byText(st, 'Z2').id).map((x) => x.text), ['X2', 'x2', 'Bo', 'th', 'Z2']);
+  assert.deepEqual(M.partNotes(st, byText(st, 'th').id).map((x) => x.text), ['A1', 'a1', 'Bo', 'th', 'C1']);
+  const solo = M.fromPayload(payload());
+  assert.equal(M.partNotes(solo, solo.notes[2].id), solo.notes);
+  assert.throws(() => M.partNotes(st, 99), /Нет такой ноты/);
+  assert.deepEqual([M.parts(st), M.parts(solo)], [[1, 2], [1]]);
+});
+
+test('allVoice: все выбранные ноты уже у певца v (пустой выбор — нет)', () => {
+  const st = M.fromPayload(duetPayload());
+  const ids = (...t) => t.map((x) => byText(st, x).id);
+  assert.equal(M.allVoice(st, ids('X2', 'Z2'), 2), true);
+  assert.equal(M.allVoice(st, ids('X2', 'Bo'), 2), false, '«оба» — не певец 2');
+  assert.equal(M.allVoice(st, ids('Bo', 'th'), 'both'), true);
+  assert.equal(M.allVoice(st, [], 1), false);
+  assert.equal(M.allVoice(st, [99], 1), false);
+});
+
+test('VOICE_LABELS: подписи певцов строки — кнопка, «кому», «у кого»', () => {
+  assert.deepEqual(M.VOICES.map((v) => M.VOICE_LABELS[v].short), ['1', '2', 'оба']);
+  assert.deepEqual(M.VOICES.map((v) => M.VOICE_LABELS[v].to), ['певцу 1', 'певцу 2', 'обоим']);
+  assert.deepEqual(M.VOICES.map((v) => M.VOICE_LABELS[v].at), ['певца 1', 'певца 2', 'обоих']);
+  assert.deepEqual(M.VOICES.map((v) => M.VOICE_LABELS[v].who), ['певец 1', 'певец 2', 'оба']);
+});
+
+test('дуэт: нота певца 1 перекрывает ноту «оба» → ошибка у певца 1', () => {
+  const st = M.fromPayload(duetPayload());
+  // a1 (2..4) тянется до 9: заезжает на «Bo» (8..10) строки «оба»
+  const bad = M.resize(st, byText(st, 'a1').id, 'right', 5);
+  assert.ok(M.overlaps(bad).has(byText(st, 'Bo').id));
+  assert.deepEqual(M.validate(bad), { message: 'Певец 1, строка 2: ноты перекрываются, слог «Bo»', id: byText(st, 'Bo').id });
 });
 
 test('дуэт: разрыв после последней строки певца 1 («- N» перед P2) доезжает до PUT как был', () => {
