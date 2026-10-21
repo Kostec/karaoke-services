@@ -26,6 +26,13 @@ DEFAULT_MAX_IMPORT_MB = 500  # лимит архива/файлов импорт
 def max_import_mb(ctx) -> int:
     return ctx.int_env("MAX_IMPORT_MB", DEFAULT_MAX_IMPORT_MB)
 MAX_FOLDER_AUDIO_MB = 200  # mp3 чужой песни, копируемый из папки результата во вход задания
+DEFAULT_MAX_VIDEO_MB = 2000  # лимит видеофайла, если MAX_VIDEO_MB не задан
+VIDEO_HEIGHTS = [360, 480, 720, 1080, 0]  # качество видео по ссылке; 0 — лучшее
+DEFAULT_VIDEO_HEIGHT = 720
+
+
+def max_video_mb(ctx) -> int:
+    return ctx.int_env("MAX_VIDEO_MB", DEFAULT_MAX_VIDEO_MB)
 
 
 def align_models(ctx: AppContext) -> dict[str, str]:
@@ -63,6 +70,9 @@ def defaults_payload(ctx: AppContext) -> dict:
         "max_cover_mb": MAX_COVER_MB,
         "max_lyrics_mb": MAX_LYRICS_MB,
         "max_import_mb": max_import_mb(ctx),
+        "max_video_mb": max_video_mb(ctx),
+        "video_heights": VIDEO_HEIGHTS,
+        "default_video_height": DEFAULT_VIDEO_HEIGHT,
         "trash_days": ctx.trash.days,
     }
 

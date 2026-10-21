@@ -274,6 +274,14 @@ dialog .actions { justify-content: flex-end; }
 
 /* поиск текста песни (new-song.js) */
 dialog.lyrics-dlg { width: min(640px, calc(100vw - 32px)); }
+
+/* блок «Видео» (video-block.js) и диалог «Видео…» карточки песни */
+dialog.video-dlg { width: min(560px, calc(100vw - 32px)); }
+dialog.video-dlg .actions .spacer { flex: 1 1 auto; }
+.video-block .field { margin: 8px 0; }
+.video-block input[name="video_url"], .video-block input[type="file"] { width: 100%; }
+.video-block .video-gap { max-width: 10ch; }
+.video-source { word-break: break-all; margin: 4px 0; }
 .lyrics-hits { max-height: 60vh; overflow: auto; display: grid; gap: 8px; }
 .lyrics-hit { margin: 0; }
 .lyrics-preview { white-space: pre-line; margin: 6px 0; }

@@ -1,7 +1,8 @@
-// Раздел «Песни»: список из индекса, поиск, удаление в корзину, перегенерация, минусовка.
+// Раздел «Песни»: список из индекса, поиск, удаление в корзину, перегенерация, минусовка, видео.
 
-import { api, getDefaults } from './api.js';
-import { h, clear, confirmDialog, runAction, fmtDate, debounce, days, songName } from './ui.js';
+import { api, getDefaults, errorText } from './api.js';
+import { h, clear, confirmDialog, runAction, toast, fmtDate, debounce, days, songName } from './ui.js';
+import { createVideoBlock } from './video-block.js';
 import { songEditors, onEditorsChanged } from './extensions.js';
 
 let trashDays = null; // из /api/defaults (TRASH_DAYS)
@@ -112,6 +113,7 @@ function card(song) {
   else if (song.own) tags.push(tag('создана сервисом', true));
   if (song.source === 'usdb') tags.push(tag('из usdb', true));
   if (song.is_duet) tags.push(tag('дуэт', true));
+  if (song.video) tags.push(tag('видео', true));
 
   const actions = h('div', { class: 'actions' });
   actions.append(
@@ -119,6 +121,7 @@ function card(song) {
       onclick: (e) => { if (!enabled) e.preventDefault(); } }, 'Перегенерировать'),
     h('button', { type: 'button', disabled: !enabled || !song.audio, title: song.audio ? null : 'У песни нет аудиофайла',
       onclick: (e) => instrumental(e.target, song) }, song.instrumental ? 'Пересоздать минусовку' : 'Минусовка'),
+    h('button', { type: 'button', disabled: !enabled, onclick: () => openVideoDialog(song) }, 'Видео…'),
   );
   // Места для редакторов (таск 07): кнопки появляются, когда редактор зарегистрирован.
   const editors = h('span', { class: 'song-editors', style: 'display:contents' });
@@ -160,4 +163,68 @@ async function instrumental(btn, song) {
   if (song.instrumental
     && !(await confirmDialog(`Пересоздать минусовку для "${name}"? Старый файл уйдёт в корзину.`, 'Пересоздать'))) return;
   await runAction(btn, () => api.instrumental(song.song_id, !!song.instrumental), 'Минусовка поставлена в очередь');
+}
+
+/** Текущее #VIDEOGAP песни (из заголовков GET /notes); нет или ошибка — ''. */
+async function currentVideoGap(song) {
+  try {
+    const { headers = [] } = await api.notes(song.song_id);
+    const hit = headers.find(([k]) => String(k).toUpperCase() === 'VIDEOGAP');
+    return hit ? String(hit[1]).trim().replace(',', '.') : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Диалог «Видео…»: своя ссылка с качеством или файл, смещение; у песни с видео — «Убрать видео». */
+async function openVideoDialog(song) {
+  const name = songName(song.artist, song.title);
+  let d = {};
+  try { d = await getDefaults(); } catch { /* умолчания блока */ }
+  const block = createVideoBlock({ modes: ['url', 'file'], mode: 'url', gap: '0', maxMb: d.max_video_mb,
+    heights: d.video_heights, defaultHeight: d.default_video_height });
+  let gapTouched = false;
+  block.el.querySelector('input[name="videogap"]').addEventListener('input', () => { gapTouched = true; }, { once: true });
+  const errEl = h('div', { class: 'banner err', hidden: true, role: 'alert' });
+  const submit = h('button', { type: 'button', class: 'primary' }, song.video ? 'Заменить видео' : 'Прикрепить');
+  const cancel = h('button', { type: 'button', onclick: () => el.close() }, 'Отмена');
+  const removeBtn = song.video
+    ? h('button', { type: 'button', class: 'danger', onclick: () => removeVideo() }, 'Убрать видео') : null;
+  const el = h('dialog', { class: 'video-dlg', 'aria-labelledby': 'video-dlg-title' },
+    h('h3', { id: 'video-dlg-title' }, `Видео: ${name}`),
+    song.video ? h('div', { class: 'banner warn' },
+      `У песни уже есть видео «${song.video}». При замене старое видео удалится.`) : null,
+    block.el, errEl,
+    h('div', { class: 'actions' }, removeBtn, h('span', { class: 'spacer' }), cancel, submit));
+  el.addEventListener('close', () => el.remove());
+  document.body.append(el);
+  if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
+  currentVideoGap(song).then((gap) => { if (!gapTouched && gap) block.setGap(gap); });
+
+  async function send(form, okText) {
+    errEl.hidden = true;
+    for (const b of [submit, removeBtn]) if (b) b.disabled = true;
+    try {
+      await api.video(song.song_id, form);
+      el.close();
+      toast(okText);
+    } catch (e) {
+      if (!block.showApiError(e)) {
+        errEl.textContent = errorText(e);
+        errEl.hidden = false;
+      }
+    } finally {
+      for (const b of [submit, removeBtn]) if (b) b.disabled = false;
+    }
+  }
+
+  submit.addEventListener('click', () => {
+    if (block.validate()) send(block.fields(), 'Видео поставлено в очередь');
+  });
+
+  async function removeVideo() {
+    if (!(await confirmDialog(`Убрать видео у "${name}"? Файл видео удалится, а #VIDEO и #VIDEOGAP уйдут из .txt.`,
+      'Убрать', { danger: true }))) return;
+    send({ remove: true }, 'Удаление видео поставлено в очередь');
+  }
 }

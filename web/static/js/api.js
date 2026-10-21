@@ -76,6 +76,8 @@ export const api = {
   jobs: (limit = 50) => request('GET', `/api/jobs?limit=${limit}`),
   generate: (form) => request('POST', '/api/jobs/generate', form),
   instrumental: (songId, replace) => request('POST', '/api/jobs/instrumental', { song_id: songId, replace }),
+  /** Видео к песне: form — FormData или поля videoFields/{remove} (см. videoForm). */
+  video: (songId, form) => request('POST', '/api/jobs/video', form instanceof FormData ? form : videoForm(songId, form)),
   cancel: (id) => request('POST', `/api/jobs/${id}/cancel`),
   restart: (id) => request('POST', `/api/jobs/${id}/restart`),
   republish: (id) => request('POST', `/api/jobs/${id}/republish`),
@@ -182,5 +184,26 @@ export function importForm({ token, index, artist, title, audio, youtube_url: yo
   if (youtubeUrl) fd.append('youtube_url', youtubeUrl);
   fd.append('instrumental', instrumental ? 'true' : 'false');
   fd.append('replace', replace ? 'true' : 'false');
+  return fd;
+}
+
+/**
+ * multipart для POST /api/jobs/video: song_id и поля блока «Видео» (video-block.js::videoFields —
+ * video_url, video_height, video_file → файловая часть video, videogap) или {remove: true}.
+ * video_mode сюда не уходит: у эндпоинта источник — само поле.
+ */
+export function videoForm(songId, { video_url: url, video_file: file, video_height: height, videogap, remove } = {}) {
+  const fd = new FormData();
+  fd.append('song_id', songId);
+  if (remove) {
+    fd.append('remove', 'true');
+    return fd;
+  }
+  if (file) fd.append('video', file, file.name || 'video');
+  else if (typeof url === 'string' && url.trim()) {
+    fd.append('video_url', url.trim());
+    if (height !== undefined && height !== null && height !== '') fd.append('video_height', String(height));
+  }
+  if (videogap !== undefined && videogap !== null && videogap !== '') fd.append('videogap', String(videogap));
   return fd;
 }

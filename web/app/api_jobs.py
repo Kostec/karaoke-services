@@ -20,12 +20,14 @@ from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_LRC, INPUT_L
 from karaoke_core.storage import StorageError
 
 from .context import ApiError, AppContext, link_api_error, not_found, song_key
-from .params import MAX_COVER_MB, MAX_FOLDER_AUDIO_MB, MAX_LYRICS_MB, parse_params
+from .params import (DEFAULT_VIDEO_HEIGHT, MAX_COVER_MB, MAX_FOLDER_AUDIO_MB, MAX_LYRICS_MB, VIDEO_HEIGHTS,
+                     max_video_mb, parse_params)
 
 router = APIRouter(prefix="/api/jobs", tags=["Задания"])
 CHUNK = 1 << 16
 SSE_TAIL_LINES = 500
 MB = 1024 * 1024
+INPUT_VIDEO_STEM = "video"  # in/video.<ext> — как handlers.INPUT_VIDEO_STEM воркера
 
 
 def ctx_of(request: Request) -> AppContext:
@@ -301,6 +303,101 @@ def instrumental(body: InstrumentalIn, request: Request):
     return job.to_dict()
 
 
+VIDEO_EXTS_TEXT = "mp4, m4v, mkv, webm, avi, mov, mpg или mpeg"
+
+
+def video_link(url: str, field: str = "video_url") -> str:
+    """Ссылка на видео для yt-dlp; Яндекс Музыка (только звук), VK-аудио и адреса
+    домашней сети — 400 с ``field``. Общая для «Видео…», generate и импорта."""
+    try:
+        link = musiclink.classify(url)
+    except musiclink.MusicLinkError as e:
+        raise link_api_error(e, field=field) from None
+    if link.kind != "ytdlp":
+        raise ApiError(400, "Яндекс Музыка отдаёт только звук — нужна ссылка на видео", field=field)
+    return link.url
+
+
+def video_ext_of(filename: str | None, field: str = "video") -> str:
+    """Расширение видеофайла из ``naming.VIDEO_EXTS`` (нижний регистр, с точкой), иначе 400."""
+    ext = Path(filename or "").suffix.lower()
+    if ext not in naming.VIDEO_EXTS:
+        raise ApiError(400, f"Видео должно быть файлом {VIDEO_EXTS_TEXT}", field=field)
+    return ext
+
+
+def parse_video_height(raw: str | int | None, field: str = "video_height") -> int:
+    """Качество видео по ссылке: одно из ``VIDEO_HEIGHTS`` (0 — лучшее); пусто — 720."""
+    if raw in (None, ""):
+        return DEFAULT_VIDEO_HEIGHT
+    try:
+        height = int(str(raw).strip())
+    except ValueError:
+        height = -1
+    if height not in VIDEO_HEIGHTS:
+        raise ApiError(400, "Качество видео: 360, 480, 720, 1080 или лучшее", field=field)
+    return height
+
+
+def parse_videogap(raw: str | None, field: str = "videogap") -> float | None:
+    """Смещение видео в секундах (может быть отрицательным, до 3 знаков); пусто — ``None``."""
+    text = (raw or "").strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        gap = round(float(text), 3)
+    except ValueError:
+        gap = float("nan")
+    if gap != gap or gap in (float("inf"), float("-inf")):
+        raise ApiError(400, "Смещение видео — число секунд, например 1.5 или -0.25", field=field)
+    return gap
+
+
+@router.post("/video", status_code=201, summary="Видео к песне из папки: ссылка, файл или убрать",
+             description="Ровно один источник: файл `video` или `video_url` (качество `video_height`), "
+                         "либо `remove`. Файл кладётся в songs/<A>/<A - T>/jobs/<id>/in/video.<ext>.")
+def video(request: Request,
+          song_id: str = Form(...),
+          video: UploadFile | None = File(None),
+          video_url: str | None = Form(None),
+          video_height: str | None = Form(None),
+          videogap: str | None = Form(None),
+          remove: bool = Form(False)):
+    ctx = ctx_of(request)
+    item = ctx.find_song(song_id)
+    queue_duplicate(ctx, "video", song_id=item.song_id)
+    has_file = video is not None and bool(video.filename)
+    url = (video_url or "").strip()
+    params: dict = {"rel_dir": item.rel_dir, "txt_name": item.txt_name, "target_id": item.target_id}
+    ext = None
+    if remove:
+        if has_file or url:
+            raise ApiError(400, "Нужно что-то одно: убрать видео или прикрепить новое", field="video")
+        if not item.video:
+            raise ApiError(409, "У песни нет видео")
+        params["remove"] = True
+    else:
+        if has_file and url:
+            raise ApiError(400, "Нужно что-то одно: видеофайл или ссылка", field="video")
+        if not has_file and not url:
+            raise ApiError(400, "Загрузите видеофайл или вставьте ссылку", field="video")
+        if url:
+            params["video_url"] = video_link(url)
+            params["video_height"] = parse_video_height(video_height)
+        else:
+            ext = video_ext_of(video.filename)
+        params["videogap"] = parse_videogap(videogap)
+    staging = Staging(ctx, item.rel_dir)
+    try:
+        if ext:
+            copy_limited(video.file, staging.path("video", f"{INPUT_VIDEO_STEM}{ext}"), max_video_mb(ctx), "video")
+    except BaseException:
+        staging.discard()
+        raise
+    ref = {"artist": item.artist, "title": item.title, "song_id": item.song_id}
+    return staging.enqueue("video", ref, params).to_dict()
+
+
 @router.get("", summary="Очередь и история")
 def list_jobs(request: Request, limit: int = Query(50, ge=1, le=1000)):
     return [j.to_dict() for j in ctx_of(request).jobs.list(limit)]
@@ -326,6 +423,8 @@ def restart(job_id: int, request: Request):
     job = _job_or_404(ctx, job_id)
     if job.state not in FINAL_STATES:
         raise ApiError(409, "Перезапустить можно только завершённое задание")
+    if job.type == "video":
+        queue_duplicate(ctx, "video", song_id=job.song_id)
     if job.type != "generate":
         return ctx.jobs.enqueue(job.type, job, job.params, parent_id=job.id).to_dict()
     queue_duplicate(ctx, "generate", key=song_key(job.artist, job.title))
