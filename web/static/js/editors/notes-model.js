@@ -2,7 +2,7 @@
 
 import { toSyllables } from './syllables.js';
 //
-// State: {editable, reason, bpm, gap, headers, notes, nextId, created, duet, singers: {p1, p2}}.
+// State: {editable, reason, bpm, gap, headers, notes, nextId, created, duet, singers: {p1, p2}, p1Break}.
 // notes — плоский список нот; порядок важен внутри партии (подпоследовательности нот одного певца):
 //   {id, src, type, start, length, pitch, text, ls, brk, voice, src2, brk2}
 //   id   — ключ ноты в редакторе (уникален, не меняется при правках);
@@ -149,6 +149,8 @@ export function fromPayload(data) {
     editable: data.editable !== false, reason: data.reason ?? null, bpm: data.bpm, gap: data.gap ?? null,
     headers: data.headers ?? [], notes: markLineStarts(mergeByStart(n1, n2)), nextId: next, created: [],
     duet, singers: { p1: s.p1 ?? '', p2: s.p2 ?? '' },
+    // разрыв «- N» после последней строки певца 1 (перед P2); null — разрыва нет
+    p1Break: duet && b1.length ? b1[b1.length - 1].break_beat ?? null : null,
   };
 }
 
@@ -196,8 +198,11 @@ export function toPayload(state) {
     const copy = (x) => v === 2 && voiceOf(x) === 'both';
     return ls.map((line, li) => {
       const nx = ls[li + 1];
+      const last = line[line.length - 1];
+      let tail = null; // у последней строки певца 1 — прежний разрыв перед P2, не раньше конца её ноты
+      if (v === 1 && state.p1Break != null) tail = Math.max(state.p1Break, last.start + last.length);
       return {
-        break_beat: nx ? breakBeat(line[line.length - 1], nx[0], copy(nx[0]) ? nx[0].brk2 : nx[0].brk) : null,
+        break_beat: nx ? breakBeat(last, nx[0], copy(nx[0]) ? nx[0].brk2 : nx[0].brk) : tail,
         player: v,
         notes: line.map((x) => noteOut(x, copy(x) ? x.src2 ?? null : x.src)),
       };
@@ -267,7 +272,8 @@ function settle(state, notes, moved = [], extra = {}) {
     gap = Math.max(0, g);
     list = list.map((x) => ({ ...x, start: x.start - min, brk: shiftBeat(x.brk, -min), brk2: shiftBeat(x.brk2, -min) }));
   }
-  return { ...state, gap, notes: markLineStarts(list.slice()), created: [], ...extra };
+  const p1Break = min < 0 ? shiftBeat(state.p1Break ?? null, -min) : state.p1Break ?? null;
+  return { ...state, gap, p1Break, notes: markLineStarts(list.slice()), created: [], ...extra };
 }
 
 /**
@@ -688,18 +694,21 @@ export function setSingers(state, p1, p2) {
 export function validate(state) {
   if (!state.notes.length) return { message: LAST_NOTE_ERROR, id: null };
   const blocks = state.duet ? [1, 2].map((v) => ({ v, ls: voiceLines(state, v) })) : [{ v: null, ls: lines(state) }];
-  const at = (v, li) => (v ? `Певец ${v}, строка ${li + 1}` : `строка ${li + 1}`);
+  // место — как _where в web/app/notes.py: соло «Что: строка K, слог «x»», дуэт «Певец N, строка K: что, слог «x»»
+  const place = (v, li, what, x) => {
+    const syl = x ? `, слог «${String(x.text).trim()}»` : '';
+    return v ? `Певец ${v}, строка ${li + 1}: ${what[0].toLowerCase()}${what.slice(1)}${syl}` : `${what}: строка ${li + 1}${syl}`;
+  };
   for (const { v, ls } of blocks) {
     for (let li = 0; li < ls.length; li += 1) {
       for (const x of ls[li]) {
         // тексты — дословно как 400 сервера (web/app/notes.py)
-        const where = `${at(v, li)}, слог «${String(x.text).trim()}»`;
-        const fail = (message, place = where) => ({ message: `${message}: ${place}`, id: x.id });
+        const fail = (what, withSyl = true) => ({ message: place(v, li, what, withSyl ? x : null), id: x.id });
         if (!TYPES.includes(x.type)) return fail(`Неизвестный тип ноты «${x.type}»`);
         if (!Number.isInteger(x.start) || x.start < 0) return fail(START_ERROR);
         if (!Number.isInteger(x.length) || x.length < 1) return fail(LENGTH_ERROR);
         if (!Number.isInteger(x.pitch) || x.pitch < PITCH_MIN || x.pitch > PITCH_MAX) return fail(PITCH_ERROR);
-        if (/[\r\n]/.test(String(x.text))) return fail(NEWLINE_ERROR, at(v, li));
+        if (/[\r\n]/.test(String(x.text))) return fail(NEWLINE_ERROR, false);
       }
     }
   }
@@ -710,10 +719,7 @@ export function validate(state) {
         const prev = flat[k - 1];
         k += 1;
         if (prev && x.start < prev.start + prev.length) {
-          const message = v
-            ? `${at(v, li)}: ноты перекрываются`
-            : `Ноты перекрываются: строка ${li + 1}, слог «${String(x.text).trim()}»`;
-          return { message, id: x.id };
+          return { message: place(v, li, 'Ноты перекрываются', x), id: x.id };
         }
       }
     }

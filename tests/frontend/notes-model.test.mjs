@@ -455,7 +455,7 @@ test('дуэт: перекрытия считаются внутри парти�
   // Z2 (20) → 11: заезжает на «th» (10..12) копии «оба» во второй партии
   const bad = M.move(st, [byText(st, 'Z2').id], -9, 0);
   assert.deepEqual(new Set(M.overlaps(bad)), new Set([byText(st, 'th').id, byText(st, 'Z2').id]));
-  assert.deepEqual(M.validate(bad), { message: 'Певец 2, строка 3: ноты перекрываются', id: byText(st, 'Z2').id });
+  assert.deepEqual(M.validate(bad), { message: 'Певец 2, строка 3: ноты перекрываются, слог «Z2»', id: byText(st, 'Z2').id });
   assert.deepEqual(voiceTexts(bad, 1), [['A1', 'a1'], ['Bo', 'th'], ['C1']], 'первая партия не тронута');
 });
 
@@ -571,5 +571,18 @@ test('voiceNotes / voiceLines: ноты и строки партии вмест�
   assert.deepEqual(M.voiceLines(st, 1).map((l) => l.map((x) => x.text)), [['A1', 'a1'], ['Bo', 'th'], ['C1']]);
   assert.equal(M.lines(st).length, 5, 'строка «оба» — одна');
   const bad = { ...st, notes: st.notes.map((x) => (x.text === 'Z2' ? { ...x, type: 'Q' } : x)) };
-  assert.deepEqual(M.validate(bad), { message: 'Неизвестный тип ноты «Q»: Певец 2, строка 3, слог «Z2»', id: byText(st, 'Z2').id });
+  assert.deepEqual(M.validate(bad), { message: 'Певец 2, строка 3: неизвестный тип ноты «Q», слог «Z2»', id: byText(st, 'Z2').id });
+});
+
+test('дуэт: разрыв после последней строки певца 1 («- N» перед P2) доезжает до PUT как был', () => {
+  const data = (brk) => ({
+    editable: true, bpm: 300, gap: 0, headers: [], duet: true, singers: { p1: '', p2: '' },
+    lines: [
+      { break_beat: brk, player: 1, notes: [{ id: 0, type: ':', start: 0, length: 4, pitch: 5, text: 'Раз' }] },
+      { break_beat: null, player: 2, notes: [{ id: 1, type: ':', start: 8, length: 4, pitch: 5, text: 'Два' }] },
+    ],
+  });
+  assert.equal(M.toPayload(M.fromPayload(data(6))).lines[0].break_beat, 6);
+  assert.equal(M.toPayload(M.fromPayload(data(null))).lines[0].break_beat, null);
+  assert.equal(M.isDirty(M.fromPayload(data(6)), M.fromPayload(data(6))), false);
 });
