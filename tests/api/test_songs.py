@@ -1,5 +1,7 @@
 """Песни: индекс, exists, карточка, текст, ноты, аудио/обложка, удаление, корзина."""
 
+from pathlib import Path
+
 import pytest
 
 from karaoke_core.db import Songs, connect
@@ -111,14 +113,21 @@ def test_notes_merge_split_delete(env, client, song):
     assert txt.read_text("utf-8").endswith(": 0 4 5 При\n- 4\n: 4 4 5 вет\n: 12 4 7 мир\nE\n")
 
 
-def test_notes_duet_is_read_only(env, client):
+def test_notes_duet_is_editable_with_players_and_singers(env, client):
     env.put_song("Pair/Pair - Duet", env.DUET_TXT, "Pair - Duet")
     client.post("/api/songs/rescan")
     duet = next(i for i in client.get("/api/songs").json()["items"] if i["is_duet"])
     n = client.get(f"/api/songs/{duet['song_id']}/notes").json()
-    assert n["editable"] is False and n["reason"] == "Дуэты редактор пока не поддерживает — только просмотр"
-    r = client.put(f"/api/songs/{duet['song_id']}/notes", json=n)
-    assert r.status_code == 409 and r.json()["detail"] == n["reason"]
+    assert (n["editable"], n["duet"], n["singers"]) == (True, True, {"p1": "", "p2": ""})
+    assert "reason" not in n
+    assert [(ln["player"], ln["break_beat"], [x["text"] for x in ln["notes"]]) for ln in n["lines"]] == [
+        (1, 6, ["Раз"]), (2, None, ["Два"])]
+
+
+def test_notes_solo_is_not_duet(client, song):
+    n = client.get(f"/api/songs/{song['song_id']}/notes").json()
+    assert (n["duet"], n["singers"]) == (False, {"p1": "", "p2": ""})
+    assert all("player" not in ln for ln in n["lines"])
 
 
 def test_audio_range_and_cover(env, client, song):
@@ -327,3 +336,98 @@ def test_notes_put_allows_empty_syllable_and_touching_notes(env, client, song):
     notes["lines"][0]["break_beat"] = 12  # ровно на начале следующей строки — допустимо
     assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
     assert "\n: 0 4 5 \n: 4 4 5 вет\n- 12\n".encode() in txt.read_bytes()
+
+
+# --------------------------------------------------------------------------- дуэты
+
+# Фикстура дуэта ядра; её нота длины 0 (для fix_zero_length) PUT не пропустит — здесь длина 1.
+DUET_FIX_TXT = ((Path(__file__).resolve().parents[1] / "core" / "fixtures" / "duet.txt").read_bytes()
+                .replace(": 20 0 8 ".encode(), ": 20 1 8 ".encode()))
+
+
+def _duet(env, client, txt: bytes):
+    env.put_song("Pair/Pair - Duet", txt, "Pair - Duet")
+    assert client.post("/api/songs/rescan").status_code == 202
+    sid = next(i["song_id"] for i in client.get("/api/songs").json()["items"]
+               if i["rel_dir"] == "Pair/Pair - Duet")
+    return sid, env.out / "Pair" / "Pair - Duet" / "Pair - Duet.txt", client.get(f"/api/songs/{sid}/notes").json()
+
+
+@pytest.mark.parametrize("fixture", ["duet.txt", "DUET_TXT"])  # без «- N» перед P2 и с ним
+def test_notes_put_duet_unchanged_is_byte_exact(env, client, fixture):
+    txt = DUET_FIX_TXT if fixture == "duet.txt" else env.DUET_TXT
+    sid, path, notes = _duet(env, client, txt)
+    r = client.put(f"/api/songs/{sid}/notes", json=notes)
+    assert r.status_code == 200, r.text
+    assert path.read_bytes() == txt and client.get("/api/trash").json() == []
+
+
+def test_notes_put_duet_one_p2_note_changes_only_its_line(env, client):
+    raw = DUET_FIX_TXT
+    sid, path, notes = _duet(env, client, raw)
+    p2 = [ln for ln in notes["lines"] if ln["player"] == 2]
+    p2[1]["notes"][0]["pitch"] = 9
+    assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
+    assert path.read_bytes() == raw.replace(": 12 4 8 Хо".encode(), ": 12 4 9 Хо".encode())
+
+
+def _p2(notes):
+    return [ln for ln in notes["lines"] if ln["player"] == 2]
+
+
+@pytest.mark.parametrize("change, detail", [
+    # ноты P2 с бита 0 не перекрываются с P1 — перекрытие только внутри партии
+    (lambda n: _p2(n)[1]["notes"][0].update(start=6), "Певец 2, строка 2: ноты перекрываются, слог «Хо»"),
+    (lambda n: _p2(n)[0].update(break_beat=13),
+     "Певец 2, строка 1: разрыв должен стоять между концом её последней ноты и началом строки 2"),
+    (lambda n: _p2(n)[1]["notes"][0].update(pitch=101), "Певец 2, строка 2: высота ноты — от −40 до 100, слог «Хо»"),
+    (lambda n: n["lines"][2].pop("player"), "Строка 3: не указан певец (1 или 2)"),
+    (lambda n: n["lines"][0].update(player=3), "Строка 1: певец — 1 или 2, а не 3"),
+], ids=["overlap", "break", "pitch", "no-player", "bad-player"])
+def test_notes_put_duet_validation_is_per_track(env, client, change, detail):
+    sid, path, notes = _duet(env, client, DUET_FIX_TXT)
+    change(notes)
+    r = client.put(f"/api/songs/{sid}/notes", json=notes)
+    assert (r.status_code, r.json()["detail"]) == (400, detail)
+    assert path.read_bytes() == DUET_FIX_TXT
+
+
+def test_notes_put_solo_to_duet_and_back(env, client, song):
+    sid = song["song_id"]
+    txt = env.out / "Artist" / "Artist - Song" / "Artist - Song.txt"
+    head = env.SONG_TXT.decode("utf-8").split(": 0 4 5")[0]
+    notes = client.get(f"/api/songs/{sid}/notes").json()
+    a, b = notes["lines"]
+    both = {**b, "player": 2, "notes": [{**x, "id": None} for x in b["notes"]]}  # «оба» — копия в P2
+    notes["lines"] = [{**a, "player": 1}, {**b, "player": 1}, both]
+    notes["singers"] = {"p1": "Аня", "p2": "Боря"}
+    r = client.put(f"/api/songs/{sid}/notes", json=notes)
+    assert r.status_code == 200, r.text
+    assert r.json()["is_duet"] is True
+    assert txt.read_text("utf-8") == head.replace("#X-CUSTOM:keep\n", "#X-CUSTOM:keep\n#P1:Аня\n#P2:Боря\n") + (
+        "P1\n: 0 4 5 При\n: 4 4 5 вет\n- 10\n: 12 4 7 мир\n* 16 2 7 !\nP2\n: 12 4 7 мир\n* 16 2 7 !\nE\n")
+    back = client.get(f"/api/songs/{sid}/notes").json()
+    assert (back["duet"], back["singers"]) == (True, {"p1": "Аня", "p2": "Боря"})
+    assert [ln["player"] for ln in back["lines"]] == [1, 1, 2]
+
+    back["lines"] = [{**ln, "player": 1} for ln in back["lines"][:2]]  # «Сделать соло»
+    r = client.put(f"/api/songs/{sid}/notes", json=back)
+    assert r.status_code == 200 and r.json()["is_duet"] is False
+    assert txt.read_bytes() == env.SONG_TXT
+
+
+def test_notes_put_duet_singer_names_and_reused_marks(env, client):
+    raw = ("#TITLE:Duet\n#ARTIST:Pair\n#DUETSINGERP1:A\n#BPM:300\n#GAP:0\n"
+           "P 1\n: 0 4 5 Раз\nP 2\n: 8 4 5 Два\nE\n").encode()
+    sid, path, notes = _duet(env, client, raw)
+    assert notes["singers"] == {"p1": "A", "p2": ""}
+    assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
+    assert path.read_bytes() == raw  # имена те же — #P1 не добавляется
+    notes["singers"] = {"p1": "Аня", "p2": "Боря"}
+    notes["lines"][1]["notes"][0]["pitch"] = 6
+    assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
+    assert path.read_text("utf-8") == ("#TITLE:Duet\n#ARTIST:Pair\n#DUETSINGERP1:Аня\n#BPM:300\n#GAP:0\n"
+                                       "#P1:Аня\n#P2:Боря\nP 1\n: 0 4 5 Раз\nP 2\n: 8 4 6 Два\nE\n")
+    notes["singers"] = {"p1": "", "p2": "Боря"}
+    assert client.put(f"/api/songs/{sid}/notes", json=notes).status_code == 200
+    assert "P1:" not in path.read_text("utf-8") and "#P2:Боря\n" in path.read_text("utf-8")

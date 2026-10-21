@@ -15,7 +15,7 @@ from typing import ClassVar
 __all__ = [
     "Song", "Header", "Note", "LineBreak", "PlayerMark", "End", "RawLine",
     "parse", "render", "set_header_line", "fix_zero_length", "beat_to_ms",
-    "extract_lyrics", "NOTE_TYPES", "decode", "number",
+    "extract_lyrics", "NOTE_TYPES", "decode", "number", "singer_names", "set_singer_names",
 ]
 
 NOTE_TYPES = (":", "*", "F", "R", "G")
@@ -35,6 +35,7 @@ _INSERT_AFTER = {
     "VOCALS": ("AUDIO", "MP3"),
     "AUDIO": ("MP3",),
     "COVER": ("GENRE", "LANGUAGE", "YEAR", "TITLE"),
+    "P2": ("P1",),
 }
 
 
@@ -203,6 +204,16 @@ class Song:
             elif isinstance(item, End):
                 break
         return out
+
+    def tracks(self) -> dict[int, list[dict]]:
+        """Строки по партиям: ``{1: [строки], 2: [строки]}``; у соло — только ``1``.
+
+        Строки без метки певца (до первого ``P``) относятся к певцу 1.
+        """
+        out: dict[int, list[dict]] = {}
+        for line in self.lines():
+            out.setdefault(line["player"] or 1, []).append(line)
+        return out or {1: []}
 
 
 # --------------------------------------------------------------------------- разбор
@@ -413,6 +424,33 @@ def beat_to_ms(song: Song, beat: float) -> float:
         raise ValueError("В файле нет корректного #BPM")
     gap = number(song.header("GAP"), 0.0)
     return gap + beat * 60000.0 / (bpm * 4)
+
+
+def singer_names(song: Song) -> tuple[str, str]:
+    """Имена певцов дуэта: ``#P1/#P2``, иначе ``#DUETSINGERP1/2``; нет — пустая строка."""
+    names = []
+    for i in (1, 2):
+        value = song.header(f"P{i}")
+        if value is None:
+            value = song.header(f"DUETSINGERP{i}")
+        names.append((value or "").strip())
+    return names[0], names[1]
+
+
+def set_singer_names(song: Song, p1: str, p2: str) -> None:
+    """Записать имена певцов: ``#P1/#P2``; ``#DUETSINGERP*`` — только если уже были.
+
+    Пустое имя удаляет оба заголовка этого певца.
+    """
+    for i, name in ((1, p1), (2, p2)):
+        name = (name or "").strip()
+        if not name:
+            song.remove_header(f"P{i}")
+            song.remove_header(f"DUETSINGERP{i}")
+            continue
+        song.set_header(f"P{i}", name)
+        if song.header(f"DUETSINGERP{i}") is not None:
+            song.set_header(f"DUETSINGERP{i}", name)
 
 
 def extract_lyrics(song: Song) -> str:

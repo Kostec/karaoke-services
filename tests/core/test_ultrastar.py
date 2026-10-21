@@ -157,3 +157,34 @@ def test_extract_lyrics():
     assert ultrastar.extract_lyrics(song) == "Ла ла слоги тест\nВторая строчка\nКонец"
     duet = ultrastar.parse((FIX / "duet.txt").read_bytes())
     assert ultrastar.extract_lyrics(duet) == "Привет\nКак\n\nЗдравствуй\nХорошо"
+
+
+# --- дуэты: партии и имена певцов --------------------------------------------
+
+def test_tracks_split_duet_by_player_and_solo_is_one_track():
+    duet = ultrastar.parse((FIX / "duet.txt").read_bytes())
+    tracks = duet.tracks()
+    assert sorted(tracks) == [1, 2]
+    assert [["".join(n.text for n in ln["notes"]) for ln in tracks[p]] for p in (1, 2)] == [
+        ["Привет ", "Как "], ["Здравствуй ", "Хорошо"]]
+    solo = ultrastar.parse((FIX / "bom_crlf.txt").read_bytes())
+    assert list(solo.tracks()) == [1] and len(solo.tracks()[1]) == len(solo.lines())
+
+
+def test_singer_names_prefer_p_headers_then_duetsinger():
+    assert ultrastar.singer_names(ultrastar.parse((FIX / "duet.txt").read_bytes())) == ("Он", "Она")
+    usdb = ultrastar.parse("#TITLE:x\n#DUETSINGERP1:Аня\n#DUETSINGERP2:Боря\nP1\n: 0 1 0 a\nE\n".encode())
+    assert ultrastar.singer_names(usdb) == ("Аня", "Боря")
+    both = ultrastar.parse(b"#P1:A\n#DUETSINGERP1:B\n: 0 1 0 a\nE\n")
+    assert ultrastar.singer_names(both) == ("A", "")
+
+
+def test_set_singer_names_updates_existing_duetsinger_and_removes_empty():
+    song = ultrastar.parse(b"#TITLE:x\n#DUETSINGERP1:B\n#DUETSINGERP2:C\n#BPM:100\nP1\n: 0 1 0 a\nE\n")
+    ultrastar.set_singer_names(song, "Anna", "")
+    out = ultrastar.render(song).decode()
+    assert "#DUETSINGERP1:Anna\n" in out and "#P1:Anna\n" in out
+    assert "DUETSINGERP2" not in out and "#P2" not in out
+    plain = ultrastar.parse(b"#TITLE:x\n#BPM:100\n: 0 1 0 a\nE\n")
+    ultrastar.set_singer_names(plain, "A", "B")
+    assert ultrastar.render(plain) == b"#TITLE:x\n#BPM:100\n#P1:A\n#P2:B\n: 0 1 0 a\nE\n"
