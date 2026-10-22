@@ -98,3 +98,16 @@ def test_instrumental_with_legacy_target_id_finds_local_storage(world):
     world.run()
     assert world.jobs.get(job.id).state == "done", world.log(job.id)
     assert (world.out / DIR / INST).is_file()
+
+
+def test_publish_error_resets_only_failed_storage(world):
+    """Сбой одного хранилища закрывает только его; открытое основное остаётся в кэше."""
+    from karaoke_core.db import Settings, Target
+    from karaoke_worker import handlers
+
+    other = Settings(world.conn).save_target(Target(name="ПК", kind="local", path="/host/pc"))
+    local = world.ctx.storage("local")
+    broken = world.ctx.storage(other.id)
+    handlers._publish_error(world.ctx, OSError("обрыв"), target_id=other.id)
+    assert world.ctx.storage("local") is local
+    assert world.ctx.storage(other.id) is not broken

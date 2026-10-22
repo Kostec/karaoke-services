@@ -168,7 +168,8 @@ class AppContext:
         if fresh or cached is None or time.monotonic() - cached[0] > STATUS_TTL:
             try:
                 st = self.storage(target.id).stat("")
-                error = None if st is not None and st.is_dir else                     f"Папка результата недоступна: нет папки {target.label}"
+                error = (None if st is not None and st.is_dir
+                         else f"Папка результата недоступна: нет папки {target.label}")
             except StorageError as e:
                 error = f"Папка результата недоступна: {e}"
             cached = self._probe[target.id] = (time.monotonic(), error)
@@ -185,7 +186,8 @@ class AppContext:
                     "id": target_id, "name": ""}
         status = self._status(target, fresh)
         if target_id is None:
-            local = status if target.id == LOCAL_TARGET_ID else                 self._status(self.settings.get_target(LOCAL_TARGET_ID), fresh)
+            local = (status if target.id == LOCAL_TARGET_ID
+                     else self._status(self.settings.get_target(LOCAL_TARGET_ID), fresh))
             status = {**status, "default": dict(status), "local": dict(local)}
         return status
 

@@ -276,7 +276,8 @@ def restore(item_id: str, request: Request):
         entry = ctx.trash.get(item_id)
     except TrashError:
         raise not_found("Запись корзины не найдена") from None
-    target_id = ctx.settings.resolve_target_id(entry.target_id) if entry.target_id         else ctx.target().id
+    target_id = (ctx.settings.resolve_target_id(entry.target_id) if entry.target_id
+                 else ctx.target().id)
     if target_id is None:
         raise ApiError(409, f"Хранилище «{entry.target_label or entry.target_id}» удалено из настроек")
     try:

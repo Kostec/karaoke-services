@@ -566,8 +566,10 @@ class Settings:
             self._put_json(TARGET_ALIASES_KEY, aliases)
             for old_id, new_id in aliases.items():
                 if old_id != new_id:
+                    # строка с новым id уже есть — она свежее; старая (сирота) удаляется
                     self.conn.execute(
                         "UPDATE OR IGNORE library SET target_id=? WHERE target_id=?", (new_id, old_id))
+                    self.conn.execute("DELETE FROM library WHERE target_id=?", (old_id,))
 
     def _write_targets(self, targets: list[Target]) -> None:
         with _tx(self.conn):

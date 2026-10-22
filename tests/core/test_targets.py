@@ -185,3 +185,15 @@ def test_make_storage_by_target(tmp_path):
     assert isinstance(smb, SmbStorage) and smb.target_id == "t_00000002" and smb.label == "//h/s/p"
     with pytest.raises(StorageError, match="ещё не поддерживается"):
         make_storage(db.Target(id="t_00000003", name="Я", kind="webdav", url="https://webdav.yandex.ru"))
+
+
+def test_migration_leaves_no_rows_with_legacy_id_on_collision(path):
+    """Та же песня проиндексирована и под старым, и под новым id: сирот со старым не остаётся."""
+    conn = db.connect(path)
+    _put(conn, "output", {"kind": "local", "path": ""})
+    _lib_row(conn, "local:/output")
+    _lib_row(conn, "local")  # коллизия по (target_id, rel_dir) после переписывания
+    _lib_row(conn, "local:/output", "C/C - D")
+    db.Settings(conn, ENV_LOCAL).get_targets()
+    rows = sorted(tuple(r) for r in conn.execute("SELECT target_id, rel_dir FROM library"))
+    assert rows == [("local", "A/A - B"), ("local", "C/C - D")]

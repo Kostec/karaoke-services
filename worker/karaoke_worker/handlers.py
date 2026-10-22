@@ -157,8 +157,17 @@ def _storage(ctx: JobContext, target_id: str | None = None) -> Storage:
     try:
         return ctx.storage(target_id)
     except StorageError as e:
-        ctx.reset_storage()
+        _reset(ctx, target_id)
         raise JobFailed("storage", f"Папка результата недоступна: {e}") from None
+
+
+def _reset(ctx: JobContext, target_id: str | None) -> None:
+    """Сбросить только упавшее хранилище (``None`` — основная цель); прочие остаются открытыми."""
+    try:
+        tid = ctx.target_of(target_id).id
+    except StorageError:
+        return  # хранилища нет в настройках — сбрасывать нечего
+    ctx.reset_storage(tid)
 
 
 def _start_publish(ctx: JobContext, job: Job) -> None:
@@ -167,8 +176,9 @@ def _start_publish(ctx: JobContext, job: Job) -> None:
     ctx.log(job.id, "Выкладка в папку результата…")
 
 
-def _publish_error(ctx: JobContext, e: Exception, note: str = "") -> JobFailed:
-    ctx.reset_storage()
+def _publish_error(ctx: JobContext, e: Exception, note: str = "", *,
+                   target_id: str | None = None) -> JobFailed:
+    _reset(ctx, target_id)
     return JobFailed("publish", f"ошибка выкладки: {e}{note}")
 
 
@@ -310,7 +320,7 @@ def publish_song(ctx: JobContext, job: Job, src: Job) -> None:
                 note = "; прежняя версия возвращена на место"
             except (StorageError, TrashError, OSError) as e2:
                 note = f"; прежняя версия осталась в корзине ({e2})"
-        raise _publish_error(ctx, e, note) from None
+        raise _publish_error(ctx, e, note, target_id=p.get("target_id") if replaced else None) from None
     ctx.log(job.id, f"Выложено в «{storage.label}»: {rel_dir} ({len(written)} файлов).")
     if old_here and replaced != rel_dir:
         # другая папка: сначала выложена новая, теперь старая — в корзину
@@ -483,7 +493,7 @@ def publish_instrumental(ctx: JobContext, job: Job, src: Job) -> None:
         if old and old != value and storage.exists(f"{rel_dir}/{old}"):
             storage.delete_file(f"{rel_dir}/{old}")
     except (StorageError, TrashError, OSError) as e:
-        raise _publish_error(ctx, e) from None
+        raise _publish_error(ctx, e, target_id=p.get("target_id")) from None
     ctx.log(job.id, f"Минусовка выложена: {rel_dir}/{value}")
     _index(ctx, job, storage, rel_dir, None)
     remove_tree(job_dir)
@@ -516,7 +526,7 @@ class InstrumentalHandler:
             with storage.open_read(f"{rel_dir}/{audio}") as f, open(src_audio, "wb") as g:
                 shutil.copyfileobj(f, g)
         except StorageError as e:
-            ctx.reset_storage()
+            _reset(ctx, p.get("target_id"))
             raise JobFailed("storage", f"Папка результата недоступна: {e}") from None
         ctx.log(job.id, f"Аудио песни: {audio}")
 
@@ -1019,7 +1029,7 @@ def publish_video(ctx: JobContext, job: Job, src: Job) -> None:
             storage.delete_file(f"{rel_dir}/{old}")
             ctx.log(job.id, f"Прежнее видео «{old}» удалено.")
     except (StorageError, TrashError, OSError) as e:
-        raise _publish_error(ctx, e) from None
+        raise _publish_error(ctx, e, target_id=p.get("target_id")) from None
     ctx.log(job.id, f"Видео убрано: {rel_dir}" if remove else f"Видео выложено: {rel_dir}/{video.name}")
     _index(ctx, job, storage, rel_dir, None)
     remove_tree(job_dir)
