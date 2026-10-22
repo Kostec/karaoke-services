@@ -220,18 +220,21 @@ dialog.editor.wide > .banner { margin: 6px 14px 0; }
 .ne-vlabel { display: none; writing-mode: vertical-rl; font-size: 13px; color: var(--muted); background: none; border: 0; padding: 6px 0; min-height: 0; cursor: pointer; }
 .ne-panel.closed .ne-vlabel { display: block; }
 .ne-plist { flex: 1; overflow: auto; padding: 6px 8px; margin: 0; list-style: none; min-height: 0; }
-.ne-plist .pl { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 2px 6px; padding: 5px 6px; border-radius: 8px; align-items: start; cursor: pointer; }
+/* номер и статус — отдельные колонки слева; перенос текста — в своей колонке, под текстом */
+.ne-plist .pl { display: grid; grid-template-columns: 22px auto minmax(0, 1fr); grid-template-areas: "n st text"; gap: 2px 6px; padding: 5px 6px; border-radius: 8px; align-items: start; cursor: pointer; }
 .ne-plist .pl.cur { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .ne-plist .pl.live { box-shadow: inset 3px 0 0 var(--ne-playhead); }
-.ne-plist .n { font-size: 12px; color: var(--muted); padding-top: 6px; text-align: right; }
+.ne-plist .n { grid-area: n; font-size: 12px; color: var(--muted); padding-top: 6px; text-align: right; }
 .ne-plist textarea { display: block; width: 100%; margin: 0; font: inherit; line-height: 1.35; color: inherit; background: transparent;
   border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; min-height: 0; resize: none; overflow: hidden;
   white-space: normal; overflow-wrap: anywhere; field-sizing: content; }
 .ne-plist textarea:hover { border-color: var(--border); }
 .ne-plist textarea:focus { border-color: var(--accent); background: var(--surface); outline: none; }
-.ne-plist .st { grid-column: 2; font-size: 12px; padding-left: 7px; color: var(--muted); }
+.ne-plist textarea { grid-area: text; }
+.ne-plist .st { grid-area: st; max-width: 7.5em; padding-top: 6px; font-size: 12px; line-height: 1.35; color: var(--muted); }
+.ne-plist .st:empty { display: none; }
 .ne-plist .st.warn { color: var(--warn); }
-.ne-plist .st button { min-height: 24px; padding: 1px 7px; font-size: 12px; margin-left: 6px; }
+.ne-plist .st button { min-height: 24px; padding: 1px 7px; font-size: 12px; margin-top: 2px; }
 .ne-pfoot { padding: 8px 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
 .ne-brk b.click { pointer-events: auto; cursor: pointer; }
 .ne-brk b.click:hover { background: var(--accent); }
@@ -287,8 +290,14 @@ dialog.ne-help h3 { margin-top: 0; }
 .ne-pgroup { font-size: 12px; font-weight: 700; color: var(--muted); padding: 8px 6px 2px; text-transform: none; }
 .ne-pgroup + .pl { margin-top: 0; }
 .ne-pgroup:not(:first-child) { margin-top: 6px; border-top: 1px solid var(--border); }
-.ne-plist .pl.duet { grid-template-columns: 22px minmax(0, 1fr) auto; }
-.ne-plist .pl.duet .st { grid-column: 2 / -1; }
+.ne-plist .pl.duet { grid-template-columns: 22px auto minmax(0, 1fr) auto; grid-template-areas: "n st text pv"; }
+.ne-plist .pl.duet .ne-pv { grid-area: pv; }
+@media (max-width: 639px) {  /* узкий экран — статус под текстом, как раньше */
+  .ne-plist .pl { grid-template-columns: 22px minmax(0, 1fr); grid-template-areas: "n text" ". st"; }
+  .ne-plist .pl.duet { grid-template-columns: 22px minmax(0, 1fr) auto; grid-template-areas: "n text pv" ". st st"; }
+  .ne-plist .st { max-width: none; padding: 0 0 0 7px; }
+  .ne-plist .st button { margin: 0 0 0 6px; }
+}
 .ne-pv { display: none; }
 .ne-plist .pl.duet .ne-pv { display: inline-flex; gap: 2px; padding-top: 2px; }
 .ne-pv button { min-height: 26px; min-width: 28px; padding: 1px 5px; font-size: 12px; }

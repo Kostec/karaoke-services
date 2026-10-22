@@ -551,8 +551,13 @@ def restart(job_id: int, request: Request):
     if job.type == "video":
         queue_duplicate(ctx, "video", song_id=job.song_id)
     if job.type == "copy":  # ожидание хранилища начинается заново
-        params = {k: v for k, v in job.params.items() if k not in ("retry_at", "wait_logged_at")}
-        return ctx.jobs.enqueue("copy", job, params, parent_id=job.id).to_dict()
+        p = job.params
+        return ctx.jobs.enqueue_copy(
+            job, rel_dir=p.get("rel_dir", ""), txt_name=p.get("txt_name", ""),
+            from_target=p.get("from_target", ""), to_target=p.get("to_target", ""),
+            replace=bool(p.get("replace")), wait=bool(p.get("wait")),
+            replace_rel_dir=p.get("replace_rel_dir"), after_job=p.get("after_job"),
+            parent_id=job.id).to_dict()
     if job.type != "generate":
         return ctx.jobs.enqueue(job.type, job, job.params, parent_id=job.id).to_dict()
     queue_duplicate(ctx, "generate", key=song_key(job.artist, job.title))

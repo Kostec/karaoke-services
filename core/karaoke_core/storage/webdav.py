@@ -5,111 +5,28 @@
 уходит одним PUT при закрытии; ``write_atomic`` кладёт ``<имя>.part`` и переименовывает его
 MOVE-ом. Ошибки — ``StorageError``/``StorageNotFound`` по-русски, пароль в них не попадает.
 
-Здесь же общие для сетевых хранилищ помощники: ``UploadOnClose`` (буфер записи),
-``download_temp`` (чтение во временный файл) и ``ListingCache`` (один листинг на папку
-за время ``list_songs``).
+Общие для сетевых хранилищ помощники и перевод ошибок — в ``_net.py``.
 """
 
 from __future__ import annotations
 
 import base64
 import email.utils
-import os
-import tempfile
 import urllib.parse
 import xml.etree.ElementTree as ET
-from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO, Callable
+from typing import BinaryIO
 
 from ..http import HttpError
-from .base import Entry, Storage, StorageBusy, StorageError, StorageNotFound
+from ._net import MAX_FILE_BYTES, ListingCache, NetErrors, UploadOnClose, download_temp  # noqa: F401
+from .base import Entry, Storage, StorageBusy, StorageError
 
 DAV = "{DAV:}"
 PROPFIND_BODY = (b'<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop>'
                  b"<d:resourcetype/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>")
 MAX_LISTING_BYTES = 64 * 2**20
-MAX_FILE_BYTES = 64 * 2**30   # потолок скачивания одного файла (видео бывает большим)
 TIMEOUT = 60
 WRONG_LOGIN = "Неверный логин или пароль приложения"
-
-
-# --------------------------------------------------------------------------- общие помощники
-
-class UploadOnClose:
-    """Файл записи сетевого хранилища: байты копятся во временном файле, при ``close()``
-    вызывается ``commit(file, size)``. Выход из ``with`` по исключению — без отправки."""
-
-    def __init__(self, commit: Callable[[BinaryIO, int], None], tmp_dir: str | None = None):
-        self._commit = commit
-        self._f = tempfile.TemporaryFile(dir=tmp_dir)
-        self._done = False
-
-    def write(self, b) -> int:
-        try:
-            return self._f.write(b)
-        except OSError as e:
-            raise StorageError(f"Не удалось записать временный файл: {e.strerror or e}") from None
-
-    def close(self) -> None:
-        if self._done:
-            return
-        self._done = True
-        try:
-            size = self._f.tell()
-            self._f.seek(0)
-            self._commit(self._f, size)
-        finally:
-            self._f.close()
-
-    def discard(self) -> None:
-        self._done = True
-        self._f.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        if exc[0] is None:
-            self.close()
-        else:
-            self.discard()
-
-
-def download_temp(fetch: Callable[[Path], None], tmp_dir: str | None = None) -> BinaryIO:
-    """Открытый на чтение временный файл, заполненный ``fetch(path)``; имя сразу удаляется
-    (файл живёт, пока открыт)."""
-    fd, name = tempfile.mkstemp(prefix=".karaoke-dl-", dir=tmp_dir)
-    os.close(fd)
-    try:
-        fetch(Path(name))
-        return open(name, "rb")
-    finally:
-        try:
-            os.unlink(name)
-        except OSError:
-            pass
-
-
-class ListingCache:
-    """Кэш ``_scandir`` на время ``list_songs``: каждая папка листается одним запросом."""
-
-    _listing: dict | None = None
-
-    def list_songs(self, max_depth: int = 4):
-        self._listing = {}
-        try:
-            return super().list_songs(max_depth)
-        finally:
-            self._listing = None
-
-    def _cached_scandir(self, rel: str, fetch: Callable[[str], list[Entry]]) -> list[Entry]:
-        if self._listing is not None and rel in self._listing:
-            return self._listing[rel]
-        entries = fetch(rel)
-        if self._listing is not None:
-            self._listing[rel] = entries
-        return entries
 
 
 # --------------------------------------------------------------------------- WebDAV
@@ -127,7 +44,7 @@ def _parse_time(value: str | None) -> float:
         return 0.0
 
 
-class WebDavStorage(ListingCache, Storage):
+class WebDavStorage(NetErrors, ListingCache, Storage):
     """``WebDavStorage(url, user, password, path, *, http, target_id, label)``; ``path`` —
     папка внутри сервера (``Karaoke/Песни``)."""
 
@@ -167,30 +84,14 @@ class WebDavStorage(ListingCache, Storage):
         return self.http.request(method, url, data=data, headers=self._headers(headers),
                                  timeout=TIMEOUT, max_bytes=max_bytes)
 
-    @contextmanager
-    def _errors(self, rel: str):
-        try:
-            yield
-        except StorageError:
-            raise
-        except HttpError as e:
-            raise self._translate(e, rel) from None
-        except OSError as e:
-            raise StorageError(f"Ошибка временного файла ({rel or self.label}): "
-                               f"{e.strerror or type(e).__name__}") from None
-
-    def _translate(self, e: HttpError, rel: str) -> StorageError:
+    def _own_error(self, e: HttpError, rel: str) -> StorageError | None:
         if e.status in (401, 403):
             return StorageError(f"{WRONG_LOGIN} — хранилище «{self.label}»")
-        if e.status == 404:
-            return StorageNotFound(f"Не найдено в хранилище «{self.label}»: {rel or '/'}")
         if e.status == 423:
             return StorageBusy(f"Файл заблокирован на сервере: {rel}")
         if e.status == 507:
             return StorageError(f"В хранилище «{self.label}» закончилось место")
-        if e.status is None:
-            return StorageError(f"Хранилище недоступно: {e}")
-        return StorageError(f"Хранилище «{self.label}» ответило ошибкой {e.status} ({rel or '/'})")
+        return None
 
     # ----------------------------------------------------------------- PROPFIND
 

@@ -230,3 +230,28 @@ def test_old_v1_database_migrates_to_video_column(path):
     conn.close()
     item = db.Library(db.connect(path)).get("t1", "A/A - B")
     assert (item.txt_name, item.video) == ("A - B.txt", None)
+
+
+def test_v2_database_gets_song_id_column_and_find_uses_index(path):
+    """V3: у существующих строк library появляется song_id, find ищет по индексу, а не перебором."""
+    import hashlib
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.executescript(db._SCHEMA_V1 + ";" + db._SCHEMA_V2 + ";PRAGMA user_version = 2;")
+    conn.execute("INSERT INTO library (target_id, rel_dir, txt_name, artist) VALUES ('t1', 'A/A - B', 'A - B.txt', 'A')")
+    conn.execute("INSERT INTO library (target_id, rel_dir, txt_name, artist) VALUES ('t2', 'A/A - B', 'A - B.txt', 'A2')")
+    conn.commit()
+    conn.close()
+    want = hashlib.sha1("t2\nA/A - B".encode("utf-8")).hexdigest()[:16]
+    c = db.connect(path)
+    lib = db.Library(c)
+    item = lib.find(want)
+    assert (item.target_id, item.artist, item.song_id) == ("t2", "A2", want)
+    assert lib.find("0" * 16) is None
+    plan = " ".join(str(tuple(r)) for r in c.execute(
+        "EXPLAIN QUERY PLAN SELECT * FROM library WHERE song_id=?", (want,)))
+    assert "USING INDEX" in plan
+    lib.upsert(db.LibraryItem(target_id="t3", rel_dir="C/C - D", txt_name="C - D.txt"))
+    new_id = hashlib.sha1("t3\nC/C - D".encode("utf-8")).hexdigest()[:16]
+    assert lib.find(new_id).rel_dir == "C/C - D"

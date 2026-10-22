@@ -15,14 +15,13 @@ from __future__ import annotations
 import json
 import secrets
 import time
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
 
 from ..http import HttpError
 from .base import Entry, Storage, StorageError, StorageNotFound
-from .webdav import MAX_FILE_BYTES, ListingCache, UploadOnClose, download_temp
+from ._net import MAX_FILE_BYTES, ListingCache, NetErrors, UploadOnClose, download_temp
 
 API = "https://www.googleapis.com/drive/v3/files"
 UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files"
@@ -82,7 +81,7 @@ def _oauth_form(client_id: str, client_key: str, **fields) -> dict:
     return form
 
 
-class GDriveStorage(ListingCache, Storage):
+class GDriveStorage(NetErrors, ListingCache, Storage):
     """``GDriveStorage(client_id, client_secret, token_json, path, *, http, target_id, label)``
     (аргументы позиционные); ``path`` — папка на «Моём диске» (``Karaoke/Песни``)."""
 
@@ -214,24 +213,13 @@ class GDriveStorage(ListingCache, Storage):
         except ValueError:
             raise StorageError("Google Диск вернул непонятный ответ") from None
 
-    @contextmanager
-    def _errors(self, rel: str):
-        try:
-            yield
-        except StorageError:
-            raise
-        except HttpError as e:
-            if e.status == 404:
-                raise StorageNotFound(f"Не найдено в хранилище «{self.label}»: {rel or '/'}") from None
-            if e.status == 403:
-                raise StorageError("Google Диск: нет доступа к файлу или превышен лимит запросов "
-                                   f"({rel or '/'})") from None
-            if e.status is None:
-                raise StorageError(f"Хранилище недоступно: {e}") from None
-            raise StorageError(f"Google Диск ответил ошибкой {e.status} ({rel or '/'})") from None
-        except OSError as e:
-            raise StorageError(f"Ошибка временного файла ({rel or self.label}): "
-                               f"{e.strerror or type(e).__name__}") from None
+    def _own_error(self, e: HttpError, rel: str) -> StorageError | None:
+        if e.status == 403:
+            return StorageError(f"Google Диск: нет доступа к файлу или превышен лимит запросов ({rel or '/'})")
+        return None
+
+    def _status_error(self, e: HttpError, rel: str) -> StorageError:
+        return StorageError(f"Google Диск ответил ошибкой {e.status} ({rel or '/'})")
 
     # ----------------------------------------------------------------- путь → id
 

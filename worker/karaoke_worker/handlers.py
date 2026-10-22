@@ -6,7 +6,7 @@ import json
 import os
 import re
 import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
@@ -1188,10 +1188,6 @@ COPY_RETRY_S = 60  # ожидающее копирование повторяе�
 COPY_LOG_EVERY_S = 600  # строка «недоступно» в логе — не чаще раза в 10 минут
 
 
-def _later(seconds: float) -> str:
-    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
-
-
 class CopyHandler:
     """«Копирование»: папка песни из одного хранилища в другое (Решения §9, истории 18–22, 36)."""
     needs_gpu = False
@@ -1306,11 +1302,11 @@ class CopyHandler:
         ctx.check_cancel(job.id, force=True)
         p = dict(job.params)
         last = p.get("wait_logged_at")
-        if not last or datetime.fromisoformat(_later(0)) - datetime.fromisoformat(last) >= timedelta(
+        if not last or datetime.fromisoformat(now()) - datetime.fromisoformat(last) >= timedelta(
                 seconds=COPY_LOG_EVERY_S):
             ctx.log(job.id, message)
             p["wait_logged_at"] = now()
-        p["retry_at"] = _later(COPY_RETRY_S)
+        p["retry_at"] = now(COPY_RETRY_S)
         ctx.jobs.update(job.id, state="queued", stage=stage, params=p)
 
 

@@ -71,3 +71,22 @@ def test_song_shows_pending_copies(env, client, song):
     assert item["pending_copies"] == want
     client.post(f"/api/jobs/{job_id}/cancel")
     assert client.get(f"/api/songs/{song['song_id']}").json()["pending_copies"] == []
+
+
+def test_restart_copy_returns_active_duplicate(env, client, song):
+    """«Перезапустить» копирование при уже активной такой же копии — та же копия, не новая."""
+    pc = _pc(env, client)
+    body = {"song_ids": [song["song_id"]], "target_id": pc.id}
+    first = client.post("/api/jobs/copy", json=body).json()["queued"][0]
+    jobs = client.app.state.ctx.jobs
+    jobs.update(first, state="failed", params={**jobs.get(first).params, "retry_at": "2000-01-01T00:00:00+00:00"})
+    active = client.post("/api/jobs/copy", json=body).json()["queued"][0]
+    assert active != first
+    r = client.post(f"/api/jobs/{first}/restart")
+    assert r.status_code == 201, r.text
+    assert r.json()["id"] == active
+    assert [j.id for j in jobs.active("copy")] == [active]
+    jobs.update(active, state="cancelled")
+    again = client.post(f"/api/jobs/{first}/restart").json()
+    assert again["id"] not in (first, active) and again["parent_id"] == first
+    assert "retry_at" not in again["params"] and again["params"]["to_target"] == pc.id

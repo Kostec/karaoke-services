@@ -197,3 +197,22 @@ def test_migration_leaves_no_rows_with_legacy_id_on_collision(path):
     db.Settings(conn, ENV_LOCAL).get_targets()
     rows = sorted(tuple(r) for r in conn.execute("SELECT target_id, rel_dir FROM library"))
     assert rows == [("local", "A/A - B"), ("local", "C/C - D")]
+
+
+def test_registry_caches_by_config_and_reports_deleted_target(path, tmp_path):
+    """Общее правило контекстов: кэш, пока конфиг тот же; удалённое — понятная ошибка с id."""
+    from karaoke_core.storage.registry import StorageRegistry
+
+    settings = db.Settings(db.connect(path), {})
+    made = []
+    reg = StorageRegistry(lambda: settings, lambda t: made.append(t.path) or LocalStorage(tmp_path))
+    pc = settings.save_target(db.Target(name="ПК", kind="local", path="/host/pc"))
+    assert reg.storage(pc.id) is reg.storage(pc.id) and made == ["/host/pc"]
+    settings.save_target(db.Target(id=pc.id, name="ПК", kind="local", path="/host/pc2"))
+    reg.storage(pc.id)
+    assert made == ["/host/pc", "/host/pc2"]
+    assert reg.reset(pc.id) == [pc.id]
+    settings.delete_target(pc.id)
+    with pytest.raises(StorageError) as e:
+        reg.storage(pc.id)
+    assert str(e.value) == f"Хранилище «{pc.id}» удалено из настроек"

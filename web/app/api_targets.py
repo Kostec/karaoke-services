@@ -18,17 +18,18 @@ from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
-from karaoke_core.db import LOCAL_TARGET_ID, NO_DEFAULT_DELETE, Target
+from karaoke_core.db import (LOCAL_OUTPUT_MOUNT, LOCAL_TARGET_ID, NO_DEFAULT_DELETE, NO_LOCAL_DELETE,
+                             TARGET_NOT_FOUND, Target,
+                             default_target_name)
 from karaoke_core.http import HttpError
 from karaoke_core.storage import StorageError
 
 from .api_jobs import ctx_of
 from .context import ApiError, AppContext
 
-# Корни обзора «Папки ПК» внутри контейнера (тесты подменяют на временные папки).
+# Корни обзора «Папки ПК»: в Target.path корень ``<имя>`` — это ``/<имя>`` в контейнере;
+# здесь — где он реально лежит (тесты подменяют на временные папки).
 BROWSE_ROOTS = {"host": "/host", "output": "/output"}
-# Пути корней в Target.path (не подменяются тестами).
-BROWSE_ROOTS_MOUNT = {"host": "/host", "output": "/output"}
 ROOT_NAMES = {"host": "Папки ПК", "output": "Локальное хранилище"}
 SKIP_DIRS = {"$RECYCLE.BIN", "System Volume Information", "lost+found"}
 
@@ -65,33 +66,30 @@ router = APIRouter(prefix="/api/targets", tags=["Хранилища"])
 # ---------------------------------------------------------------------- сборка и проверка
 
 
-def _rel_path(raw: str) -> str:
-    """Папка внутри шары/диска: без ``..``, ``.`` и двоеточий."""
-    path = raw.strip().replace("\\", "/").strip("/")
+def _path_parts(raw: str, error: str = "Недопустимый путь") -> list[str]:
+    """Части пути из формы/запроса (``\\`` → ``/``); ``..``, ``.`` или двоеточие —
+    400 ``field=path`` с текстом ``error``."""
+    path = raw.strip().replace("\\", "/")
     parts = [p for p in path.split("/") if p]
     if any(p in ("..", ".") for p in parts) or ":" in path:
-        raise ApiError(400, "Недопустимый путь", field="path")
-    return "/".join(parts)
+        raise ApiError(400, error, field="path")
+    return parts
+
+
+def _rel_path(raw: str) -> str:
+    """Папка внутри шары/диска: без ``..``, ``.`` и двоеточий."""
+    return "/".join(_path_parts(raw))
+
+
+LOCAL_PATH_ERROR = "Выберите папку внутри «Папок ПК» или «Локального хранилища»"
 
 
 def _local_path(raw: str) -> str:
     """Путь «Папки ПК» в контейнере: внутри ``/host`` или ``/output``."""
-    path = raw.strip().replace("\\", "/")
-    parts = [p for p in path.split("/") if p]
-    if not parts or parts[0] not in BROWSE_ROOTS or any(p in ("..", ".") for p in parts) or ":" in path:
-        raise ApiError(400, "Выберите папку внутри «Папок ПК» или «Локального хранилища»", field="path")
+    parts = _path_parts(raw, LOCAL_PATH_ERROR)
+    if not parts or parts[0] not in BROWSE_ROOTS:
+        raise ApiError(400, LOCAL_PATH_ERROR, field="path")
     return "/" + "/".join(parts)
-
-
-def _default_name(t: Target) -> str:
-    if t.kind == "local":
-        return f"Папка ПК: {t.path}"
-    if t.kind == "smb":
-        return f"SMB {t.label}"
-    if t.kind == "webdav":
-        return "Яндекс Диск" if t.preset == "yandex" else \
-            f"WebDAV {urllib.parse.urlsplit(t.url).hostname or t.url}"
-    return "Google Диск"
 
 
 def _identity(t: Target) -> tuple:
@@ -112,7 +110,7 @@ def _build(body: TargetIn, old: Target | None) -> Target:
     t = Target(id=old.id if old else "", kind=kind, user=body.user.strip())
     if kind == "local":
         t.path, t.user = _local_path(body.path), ""
-        if t.path == BROWSE_ROOTS_MOUNT["output"]:
+        if t.path == LOCAL_OUTPUT_MOUNT:
             raise ApiError(400, "Это и есть «Локальное хранилище»", field="path")
     else:
         t.path = _rel_path(body.path)
@@ -132,7 +130,7 @@ def _build(body: TargetIn, old: Target | None) -> Target:
         t.client_id, t.user = body.client_id.strip(), ""
         if not t.client_id:
             raise ApiError(400, "Впишите Client ID", field="client_id")
-    t.name = body.name.strip() or (old.name if old else "") or _default_name(t)
+    t.name = body.name.strip() or (old.name if old else "") or default_target_name(t)
 
     same = old is not None and _identity(old) == _identity(t)
     values = t._to_dict()
@@ -171,7 +169,7 @@ def _probe(ctx: AppContext, target: Target) -> None:
 def _get(ctx: AppContext, target_id: str) -> Target:
     target = ctx.settings.get_target(target_id)
     if target is None:
-        raise ApiError(404, "Хранилище не найдено")
+        raise ApiError(404, TARGET_NOT_FOUND)
     return target
 
 
@@ -245,15 +243,11 @@ def update_target(target_id: str, body: TargetIn, request: Request, background: 
 @router.delete("/{target_id}", summary="Удалить хранилище из настроек (песни в нём не трогаются)")
 def delete_target(target_id: str, request: Request):
     ctx = ctx_of(request)
-    if target_id == LOCAL_TARGET_ID:
-        raise ApiError(400, "Локальное хранилище удалить нельзя")
-    _get(ctx, target_id)
-    if ctx.settings.get_default_target_id() == target_id:
-        raise ApiError(409, NO_DEFAULT_DELETE)
     try:
-        ctx.settings.delete_target(target_id)
+        ctx.settings.delete_target(target_id)  # правило удаления — только там
     except ValueError as e:
-        raise ApiError(409, str(e)) from None
+        status = {NO_LOCAL_DELETE: 400, TARGET_NOT_FOUND: 404, NO_DEFAULT_DELETE: 409}.get(str(e), 409)
+        raise ApiError(status, str(e)) from None
     ctx.reset_storage(target_id)
     return {"ok": True}
 
@@ -265,10 +259,7 @@ def delete_target(target_id: str, request: Request):
 def browse(request: Request, root: str = "host", path: str = ""):
     if root not in BROWSE_ROOTS:
         raise ApiError(400, "Корень: host или output", field="root")
-    raw = path.replace("\\", "/")
-    parts = [p for p in raw.split("/") if p]
-    if any(p in ("..", ".") for p in parts) or ":" in raw:
-        raise ApiError(400, "Недопустимый путь", field="path")
+    parts = _path_parts(path)
     base = Path(BROWSE_ROOTS[root])
     if not base.is_dir():
         raise ApiError(404, f"Корень «{ROOT_NAMES[root]}» не примонтирован")

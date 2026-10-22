@@ -12,10 +12,11 @@ import json
 import os
 import secrets
 import sqlite3
+import urllib.parse
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Any, Callable, Iterator, Mapping
 
@@ -97,12 +98,20 @@ _SCHEMA_V2 = """
 ALTER TABLE library ADD COLUMN video TEXT
 """
 
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2]
+# V3: song_id строки library — поиск песни по id через индекс (заполняется и у старых строк).
+_SCHEMA_V3 = """
+ALTER TABLE library ADD COLUMN song_id TEXT;
+UPDATE library SET song_id = karaoke_song_id(target_id, rel_dir);
+CREATE INDEX library_song_id ON library(song_id)
+"""
+
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3]
 
 
-def now() -> str:
-    """Текущее время UTC в ISO 8601."""
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def now(after_s: float = 0.0) -> str:
+    """Время UTC в ISO 8601 (секунды); ``after_s`` — через столько секунд от текущего
+    (единый формат отметок, в т.ч. ``params.retry_at``)."""
+    return (datetime.now(timezone.utc) + timedelta(seconds=after_s)).isoformat(timespec="seconds")
 
 
 def connect(path) -> sqlite3.Connection:
@@ -114,6 +123,7 @@ def connect(path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
+    conn.create_function("karaoke_song_id", 2, song_id_for, deterministic=True)
     _migrate(conn)
     return conn
 
@@ -417,6 +427,8 @@ DEFAULT_TARGET_KEY = "default_target"
 # {старый target_id: новый id} — что переписала миграция (старые задания и корзина).
 TARGET_ALIASES_KEY = "target_aliases"
 NO_DEFAULT_DELETE = "Сначала выберите другую основную цель"
+NO_LOCAL_DELETE = "Локальное хранилище удалить нельзя"
+TARGET_NOT_FOUND = "Хранилище не найдено"
 
 
 @dataclass
@@ -491,15 +503,26 @@ def new_target_id() -> str:
     return f"t_{secrets.token_hex(4)}"
 
 
+def default_target_name(target: Target) -> str:
+    """Имя хранилища, если пользователь его не задал (форма «Настроек» и миграция)."""
+    if target.kind == "local":
+        return f"Папка ПК: {target.path}" if target.path else LOCAL_TARGET_NAME
+    if target.kind == "smb":
+        return f"SMB {target.label}"
+    if target.kind == "webdav":
+        return "Яндекс Диск" if target.preset == "yandex" else             f"WebDAV {urllib.parse.urlsplit(target.url).hostname or target.url}"
+    return "Google Диск"
+
+
 def _target_from_output(target: OutputTarget) -> Target:
     """Хранилище из прежней «папки результата» (без id)."""
     if target.kind == "local":
-        return Target(name=f"Папка ПК: {target.path}" if target.path else LOCAL_TARGET_NAME,
-                      kind="local", path=target.local_root)
-    smb = Target(name=f"SMB {smb_label(target.host, target.share, target.path)}", kind="smb", host=target.host,
-                 share=target.share, path=target.path, user=target.user)
-    smb.secret = target.password or None
-    return smb
+        t = Target(kind="local", path=target.local_root)
+    else:
+        t = Target(kind="smb", host=target.host, share=target.share, path=target.path, user=target.user)
+        t.secret = target.password or None
+    t.name = default_target_name(t)
+    return t
 
 
 @dataclass(frozen=True)
@@ -603,7 +626,8 @@ class Settings:
                 if old_id != new_id:
                     # строка с новым id уже есть — она свежее; старая (сирота) удаляется
                     self.conn.execute(
-                        "UPDATE OR IGNORE library SET target_id=? WHERE target_id=?", (new_id, old_id))
+                        "UPDATE OR IGNORE library SET target_id=?, song_id=karaoke_song_id(?, rel_dir)"
+                        " WHERE target_id=?", (new_id, new_id, old_id))
                     self.conn.execute("DELETE FROM library WHERE target_id=?", (old_id,))
 
     def _write_targets(self, targets: list[Target]) -> None:
@@ -627,7 +651,7 @@ class Settings:
         stored = self._stored_targets()
         old = next((t for t in stored if t.id == target.id), None) if target.id else None
         if target.id and old is None:
-            raise ValueError("Хранилище не найдено")
+            raise ValueError(TARGET_NOT_FOUND)
         values = target._to_dict()
         if not target.id:
             values["id"] = new_target_id()
@@ -643,12 +667,12 @@ class Settings:
         """Удалить хранилище из настроек и стереть его индекс песен (песни не трогаются).
         Встроенное и основную цель удалить нельзя — ``ValueError``."""
         if target_id == LOCAL_TARGET_ID:
-            raise ValueError("Локальное хранилище удалить нельзя")
+            raise ValueError(NO_LOCAL_DELETE)
         if target_id == self.get_default_target_id():
             raise ValueError(NO_DEFAULT_DELETE)
         stored = self._stored_targets()
         if not any(t.id == target_id for t in stored):
-            raise ValueError("Хранилище не найдено")
+            raise ValueError(TARGET_NOT_FOUND)
         with _tx(self.conn):
             self._put_json(TARGETS_KEY, [t._to_dict() for t in stored if t.id != target_id])
             self.conn.execute("DELETE FROM library WHERE target_id=?", (target_id,))
@@ -661,7 +685,7 @@ class Settings:
 
     def set_default_target_id(self, target_id: str) -> None:
         if self.get_target(target_id) is None:
-            raise ValueError("Хранилище не найдено")
+            raise ValueError(TARGET_NOT_FOUND)
         with _tx(self.conn):
             self._put_json(DEFAULT_TARGET_KEY, target_id)
 
@@ -805,6 +829,7 @@ class LibraryItem:
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "LibraryItem":
         d = dict(row)
+        d.pop("song_id", None)  # вычисляемое свойство; в таблице — для поиска по индексу
         d["is_duet"] = bool(d["is_duet"])
         return cls(**d)
 
@@ -824,12 +849,13 @@ class Library:
         self.conn = conn
 
     def _insert(self, item: LibraryItem) -> None:
-        values = [getattr(item, c) for c in _LIB_COLS]
-        values[_LIB_COLS.index("is_duet")] = int(bool(item.is_duet))
+        cols = _LIB_COLS + ["song_id"]
+        values = [getattr(item, c) for c in cols]
+        values[cols.index("is_duet")] = int(bool(item.is_duet))
         self.conn.execute(
-            f"INSERT INTO library ({', '.join(_LIB_COLS)}) VALUES ({', '.join('?' * len(_LIB_COLS))})"
+            f"INSERT INTO library ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})"
             f" ON CONFLICT(target_id, rel_dir) DO UPDATE SET "
-            + ", ".join(f"{c}=excluded.{c}" for c in _LIB_COLS if c not in ("target_id", "rel_dir")),
+            + ", ".join(f"{c}=excluded.{c}" for c in cols if c not in ("target_id", "rel_dir")),
             values)
 
     def replace_all(self, target_id: str, items) -> None:
@@ -862,11 +888,9 @@ class Library:
         return items
 
     def find(self, song_id: str) -> LibraryItem | None:
-        """Песня по ``song_id`` в индексе любого хранилища."""
-        for row in self.conn.execute("SELECT * FROM library"):
-            if song_id_for(row["target_id"], row["rel_dir"]) == song_id:
-                return LibraryItem.from_row(row)
-        return None
+        """Песня по ``song_id`` в индексе любого хранилища (колонка ``song_id`` с индексом)."""
+        row = self.conn.execute("SELECT * FROM library WHERE song_id=? LIMIT 1", (song_id,)).fetchone()
+        return LibraryItem.from_row(row) if row else None
 
     def get(self, target_id: str, rel_dir: str) -> LibraryItem | None:
         row = self.conn.execute("SELECT * FROM library WHERE target_id=? AND rel_dir=?",

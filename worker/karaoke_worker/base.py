@@ -22,10 +22,11 @@ from collections import deque
 from pathlib import Path
 from typing import Callable, Mapping
 
-from karaoke_core.db import LOCAL_TARGET_ID, Jobs, Library, Settings, Songs, Target, connect
+from karaoke_core.db import Jobs, Library, Settings, Songs, Target, connect
 from karaoke_core.paths import DataPaths
 from karaoke_core.http import Http
-from karaoke_core.storage import Storage, StorageError, make_storage
+from karaoke_core.storage import Storage, make_storage
+from karaoke_core.storage.registry import StorageRegistry
 from karaoke_core.trash import Trash
 
 from .progress import LineSplitter, ProgressTracker, clean_line
@@ -103,16 +104,17 @@ class JobContext:
         self.http = Http()
         self.storage_factory = storage_factory or (lambda t: make_storage(t, http=self.http))
         self._last_cancel_check = 0.0
-        self._storages: dict[str, tuple[Target, Storage]] = {}  # id → (конфиг, Storage)
+        # выбор и кэш хранилищ; фабрика читается при каждом открытии (тесты её подменяют)
+        self._registry = StorageRegistry(lambda: self.settings, lambda t: self.storage_factory(t))
         self.fatal_grace = FATAL_GRACE_S
 
     # ------------------------------------------------------------ папка результата
 
     def targets(self) -> list[Target]:
-        return self.settings.get_targets()
+        return self._registry.targets()
 
     def default_target(self) -> Target:
-        return self.settings.get_target(self.settings.get_default_target_id()) or self.targets()[0]
+        return self._registry.default_target()
 
     def target(self) -> Target:
         """Основная цель (куда выкладываются новые песни)."""
@@ -121,41 +123,22 @@ class JobContext:
     def target_of(self, target_id: str | None) -> Target:
         """Хранилище по id любого формата (в т.ч. прежний ``smb://…`` старых заданий);
         ``None`` — основная цель; удалено из настроек — ``StorageError``."""
-        if target_id is None:
-            return self.default_target()
-        target = self.settings.get_target(self.settings.resolve_target_id(target_id))
-        if target is None:
-            raise StorageError("хранилище удалено из настроек")
-        return target
+        return self._registry.target_of(target_id)
 
     def storage(self, target_id: str | None = None) -> Storage:
         """Открытое хранилище по id (``None`` — основная цель); кэш, пока конфиг тот же."""
-        target = self.target_of(target_id)
-        cached = self._storages.get(target.id)
-        if cached is not None and cached[0] == target:
-            return cached[1]
-        self.reset_storage(target.id)
-        storage = self.storage_factory(target)
-        self._storages[target.id] = (target, storage)
-        return storage
+        return self._registry.storage(target_id)
 
     def local_storage(self) -> Storage:
-        return self.storage(LOCAL_TARGET_ID)
+        return self._registry.local_storage()
 
     def migrate_targets(self) -> None:
         """Список хранилищ (миграция со старой «папки результата») и корзина на новые id."""
-        self.settings.get_targets()
-        self.trash.retarget(self.settings.resolve_target_id)
+        self._registry.migrate(self.trash)
 
     def reset_storage(self, target_id: str | None = None) -> None:
         """Закрыть хранилища — все или одно (после ошибки связи или при остановке)."""
-        for tid in [target_id] if target_id else list(self._storages):
-            cached = self._storages.pop(tid, None)
-            if cached is not None:
-                try:
-                    cached[1].close()
-                except Exception:  # noqa: BLE001
-                    pass
+        self._registry.reset(target_id)
 
     # ------------------------------------------------------------ команды
 
