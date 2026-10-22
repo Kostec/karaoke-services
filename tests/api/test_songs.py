@@ -197,7 +197,7 @@ def test_song_source_from_import_params(env, client):
     client.post("/api/songs/rescan")
     items = {i["rel_dir"]: i for i in client.get("/api/songs").json()["items"]}
     assert {d: i["source"] for d, i in items.items()} == {
-        "Artist/Artist - Song": "usdb", "Pair/Pair - Duet": "files", "Gen/Gen - Own": None}
+        "Artist/Artist - Song": "usdb", "Pair/Pair - Duet": "files", "Gen/Gen - Own": "generated"}
     sid = items["Artist/Artist - Song"]["song_id"]
     assert client.get(f"/api/songs/{sid}").json()["source"] == "usdb"
 
@@ -488,3 +488,166 @@ def test_notes_lines_empty_texts_is_400(env, client):
     assert r.status_code == 400 and r.json()["field"] == "texts"
     assert client.post(f"/api/songs/{sid}/notes/lines", json={}).status_code == 400
     assert client.post("/api/songs/nope/notes/lines", json={"texts": ["a"]}).status_code == 404
+
+
+# --------------------------------------------------------------------------- хранилища и zip
+
+def _pc_target(env, client):
+    """Хранилище «ПК» в ``/host/pc`` (временная ``tmp/host/pc``) с одной песней, индекс обновлён."""
+    from karaoke_core.db import Settings, Target
+    target = Settings(connect(env.data / "karaoke.sqlite")).save_target(
+        Target(name="ПК", kind="local", path="/host/pc"))
+    d = env.tmp / "host" / "pc" / "Other" / "Other - Tune"
+    d.mkdir(parents=True)
+    (d / "Other - Tune.txt").write_bytes(env.SONG_TXT.replace(b"Artist", b"Other").replace(b"Song", b"Tune"))
+    (d / "Other - Tune.mp3").write_bytes(env.MP3)
+    return target
+
+
+def test_list_songs_of_chosen_target(env, client, song):
+    target = _pc_target(env, client)
+    r = client.get("/api/songs").json()
+    assert r["target"]["id"] == "local" and [i["title"] for i in r["items"]] == ["Song"]
+    assert {(t["id"], t["name"], t["kind"]) for t in r["targets"]} >= {(target.id, "ПК", "local")}
+    assert r["targets"][0]["id"] == "local"
+    assert client.post("/api/songs/rescan", params={"target": target.id}).status_code == 202
+    r = client.get("/api/songs", params={"target": target.id}).json()
+    assert r["target"]["id"] == target.id and r["output"]["id"] == target.id
+    assert [i["title"] for i in r["items"]] == ["Tune"]
+    assert [i["title"] for i in client.get("/api/songs").json()["items"]] == ["Song"]
+    r = client.get("/api/songs", params={"target": "t_nope"})
+    assert r.status_code == 400 and r.json()["field"] == "target"
+    assert client.post("/api/songs/rescan", params={"target": "t_nope"}).status_code == 400
+
+
+def test_song_has_updated_at_from_mtime(env, client):
+    import os
+    d = env.put_song("Artist/Artist - Song", env.SONG_TXT, "Artist - Song")
+    os.utime(d / "Artist - Song.txt", (1_700_000_000, 1_700_000_000))  # 2023-11-14T22:13:20Z
+    client.post("/api/songs/rescan")
+    item = client.get("/api/songs").json()["items"][0]
+    assert item["updated_at"].startswith("2023-11-14T22:13:20")
+    assert client.get(f"/api/songs/{item['song_id']}").json()["updated_at"] == item["updated_at"]
+
+
+def test_song_zip_has_all_files_in_song_folder(env, client):
+    import io
+    import zipfile
+    from urllib.parse import quote
+    d = env.put_song("Artist/Artist - Song", env.SONG_TXT, "Artist - Song")
+    (d / "Artist - Song [Instrumental].mp3").write_bytes(b"inst" * 1000)
+    client.post("/api/songs/rescan")
+    sid = client.get("/api/songs").json()["items"][0]["song_id"]
+    r = client.get(f"/api/songs/{sid}/zip")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/zip"
+    assert f"filename*=UTF-8''{quote('Artist - Song.zip')}" in r.headers["content-disposition"]
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    assert zf.testzip() is None
+    infos = {i.filename: i for i in zf.infolist()}
+    assert set(infos) == {"Artist - Song/Artist - Song.txt", "Artist - Song/Artist - Song.mp3",
+                          "Artist - Song/Artist - Song [CO].jpg",
+                          "Artist - Song/Artist - Song [Instrumental].mp3"}
+    assert zf.read("Artist - Song/Artist - Song.txt") == env.SONG_TXT
+    assert zf.read("Artist - Song/Artist - Song [Instrumental].mp3") == b"inst" * 1000
+    assert infos["Artist - Song/Artist - Song.txt"].compress_type == zipfile.ZIP_DEFLATED
+    assert infos["Artist - Song/Artist - Song.mp3"].compress_type == zipfile.ZIP_STORED
+
+
+def test_song_zip_cyrillic_name_and_unavailable_storage(env, client):
+    from urllib.parse import quote
+    txt = env.SONG_TXT.replace(b"#TITLE:Song", "#TITLE:Песня".encode()).replace(
+        b"#ARTIST:Artist", "#ARTIST:Группа".encode())
+    env.put_song("Группа/Группа - Песня", txt, "Группа - Песня")
+    client.post("/api/songs/rescan")
+    sid = client.get("/api/songs").json()["items"][0]["song_id"]
+    r = client.get(f"/api/songs/{sid}/zip")
+    assert r.status_code == 200
+    assert f"filename*=UTF-8''{quote('Группа - Песня.zip')}" in r.headers["content-disposition"]
+    env.out.rename(env.tmp / "gone")
+    r = client.get(f"/api/songs/{sid}/zip")
+    assert r.status_code == 503 and r.json()["detail"].startswith("Папка результата недоступна")
+    assert client.get("/api/songs/nope/zip").status_code == 404
+
+
+def test_rescan_storage_open_failure_is_recorded(env):
+    from karaoke_core.db import Settings, Target
+    from karaoke_core.storage import StorageError
+
+    def factory(target):
+        if target.path == "/host/bad":
+            raise StorageError("нет связи с сервером")
+        return env.factory(target)
+
+    with env.client(storage_factory=factory) as c:
+        bad = Settings(connect(env.data / "karaoke.sqlite")).save_target(
+            Target(name="Плохое", kind="local", path="/host/bad"))
+        ctx = c.app.state.ctx
+        ctx.rescan(bad.id)
+        assert "нет связи с сервером" in ctx.scan_state[bad.id]["error"]
+        assert ctx.scan_state[bad.id].get("running") is None
+        status = ctx.output_status(target_id=bad.id)
+        assert status["ok"] is False and "нет связи с сервером" in status["error"]
+        ctx.rescan("t_removed")  # хранилища нет в настройках — тихо ничего
+
+
+def test_rescan_of_other_target_during_scan_is_queued(env, client, song):
+    import threading
+    target = _pc_target(env, client)
+    ctx = client.app.state.ctx
+    local = ctx.storage("local")
+    started, release = threading.Event(), threading.Event()
+    original = local.list_songs
+
+    def slow(*a, **kw):
+        started.set()
+        release.wait(5)
+        return original(*a, **kw)
+
+    local.list_songs = slow
+    t = threading.Thread(target=ctx.rescan, args=("local",))
+    t.start()
+    assert started.wait(5)
+    assert client.post("/api/songs/rescan", params={"target": target.id}).json() == {"scanning": True}
+    assert client.get("/api/songs", params={"target": target.id}).json()["scanning"] is True
+    release.set()
+    t.join(5)
+    r = client.get("/api/songs", params={"target": target.id}).json()
+    assert r["scanning"] is False and [i["title"] for i in r["items"]] == ["Tune"]
+
+
+def test_song_zip_check_dates_and_read_failure_log(env, client, caplog):
+    import io
+    import os
+    import zipfile
+    d = env.put_song("Artist/Artist - Song", env.SONG_TXT, "Artist - Song")
+    os.utime(d / "Artist - Song.txt", (1_699_963_200, 1_699_963_200))  # 2023-11-14 12:00 UTC
+    client.post("/api/songs/rescan")
+    sid = client.get("/api/songs").json()["items"][0]["song_id"]
+    ctx = client.app.state.ctx
+    storage = ctx.storage("local")
+    opened = []
+    original = storage.open_read
+    storage.open_read = lambda rel: (opened.append(rel), original(rel))[1]
+    r = client.get(f"/api/songs/{sid}/zip", params={"check": 1})
+    assert r.status_code == 200 and r.json() == {"ok": True, "files": 3}
+    assert opened == []  # проверка не читает файлы
+    zf = zipfile.ZipFile(io.BytesIO(client.get(f"/api/songs/{sid}/zip").content))
+    assert zf.getinfo("Artist - Song/Artist - Song.txt").date_time[:3] == (2023, 11, 14)
+
+    def broken(rel):
+        if rel.endswith(".mp3"):
+            raise OSError("диск отвалился")
+        return original(rel)
+
+    storage.open_read = broken
+    with caplog.at_level("ERROR"):
+        try:
+            client.get(f"/api/songs/{sid}/zip")
+        except OSError:
+            pass
+    assert any(sid in m and "диск отвалился" in m and "Artist - Song.mp3" in m for m in caplog.messages)
+    storage.open_read = original
+    env.out.rename(env.tmp / "gone")
+    r = client.get(f"/api/songs/{sid}/zip", params={"check": 1})
+    assert r.status_code == 503 and r.json()["detail"].startswith("Папка результата недоступна")

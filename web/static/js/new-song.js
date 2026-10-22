@@ -11,6 +11,7 @@ import {
   LRC_TIMING_LABEL,
 } from './lyrics-search.js';
 import { openLyricsDialog } from './lyrics-dialog.js';
+import { publishLine } from './songs-filter.js';
 import { linkOutcome, linkCoverUrl, isYandexNoToken, LINK_SERVICES, SETTINGS_LINK_TEXT } from './link-logic.js';
 
 
@@ -44,12 +45,19 @@ export function mount(section) {
 
 export async function show(params) {
   if (!form) await build();
+  showPublishLine(f.publishLine);
   const songId = params.get('song');
   if (songId && (!regen || regen.song_id !== songId)) {
     await loadRegen(songId);
   } else if (!songId && regen) {
     resetForm();
   }
+}
+
+/** Строка «Выкладка: …» — куда уйдёт песня (основная цель меняется в «Настройках»). */
+function showPublishLine(el) {
+  api.targets().then((r) => { el.textContent = publishLine(r); el.hidden = false; })
+    .catch(() => { el.hidden = true; });
 }
 
 // ---------------------------------------------------------------- построение формы
@@ -122,6 +130,7 @@ async function build() {
 
   f.error = h('div', { class: 'banner err', hidden: true, role: 'alert' });
   f.submit = h('button', { type: 'submit', class: 'primary' }, 'Поставить в очередь');
+  f.publishLine = h('div', { class: 'small muted publish-line' });
   f.cancelRegen = h('a', { class: 'btn', href: '#songs', hidden: true }, 'К списку песен');
   f.submitHint = h('div', { class: 'small muted' });
 
@@ -156,6 +165,7 @@ async function build() {
         field('Порог конца речи (VAD offset)', f.vad_offset, 'от 0 до 1')),
       h('label', { class: 'check' }, f.keep_debug, 'Сохранить отладку выравнивания')),
     f.error,
+    f.publishLine,
     h('div', { class: 'actions' }, f.submit, f.cancelRegen),
     f.submitHint);
 

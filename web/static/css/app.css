@@ -244,6 +244,24 @@ details.more summary { min-height: 44px; display: flex; align-items: center; cur
 
 .songs-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .songs-tools input { flex: 1 1 200px; }
+.songs-filters {
+  display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; margin: 8px 0;
+}
+.songs-search { flex: 1 1 100%; }
+.songs-search input { width: 100%; }
+.songs-filter { display: flex; flex-direction: column; gap: 2px; font-size: .85rem; color: var(--muted); }
+.songs-filter select { min-width: 0; max-width: 100%; }
+.songs-target { flex: 1 1 220px; }
+.songs-target select { width: 100%; }
+.songs-summary { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin: 4px 0 8px; }
+.tag.wait { background: var(--warn-bg); color: var(--warn); }
+dialog.copy-dlg fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; }
+dialog.copy-dlg fieldset[disabled] { opacity: .55; }
+.publish-line { margin: 8px 0; }
+@media (max-width: 600px) {
+  .songs-filter { flex: 1 1 calc(50% - 6px); }
+  .songs-filter select { width: 100%; }
+}
 
 .song { display: grid; grid-template-columns: 64px 1fr; gap: 12px; }
 .cover {

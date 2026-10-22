@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import re
+import time
+import zipfile
+from datetime import datetime, timezone
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from karaoke_core import linealign, ultrastar
+from karaoke_core import linealign, naming, ultrastar
 from karaoke_core.paths import INPUT_LYRICS
 from karaoke_core.storage import StorageError, StorageNotFound
+from karaoke_core.storage.base import PART_SUFFIX
 from karaoke_core.trash import TrashError
 
 from .api_import import SOURCES as IMPORT_SOURCES
@@ -20,6 +26,7 @@ from .context import ApiError, AppContext, not_found
 from .notes import NotesIn, apply_notes, notes_payload, read_only_reason
 
 router = APIRouter(prefix="/api", tags=["Песни"])
+log = logging.getLogger(__name__)
 
 
 def _storage_call(ctx: AppContext, fn, *a, target_id: str | None = None):
@@ -67,7 +74,8 @@ def _pending_copies(ctx: AppContext) -> dict[str, list[dict]]:
 
 
 def _song_out(ctx: AppContext, item, own=_UNREAD, pending=None) -> dict:
-    """Песня для API + ``source`` импорта из params.json своей песни (usdb|files|url или None)
+    """Песня для API + ``source`` (usdb|files|url из params.json своей песни, ``generated`` —
+    своя без импорта, None — чужая), ``updated_at`` (ISO из mtime ``.txt``)
     + ``pending_copies``; ``own``/``pending`` — уже прочитанное (список читает их одним запросом)."""
     out = ctx.song_dict(item)
     if pending is None:
@@ -77,31 +85,49 @@ def _song_out(ctx: AppContext, item, own=_UNREAD, pending=None) -> dict:
         own = ctx.songs.get(item.own_song_id) if item.own_song_id else None
     params = own.params if own and isinstance(own.params, dict) else {}
     # «импорт» — только песни из usdb/файлов/ссылки на архив; generate по ссылке на музыку
-    # (source="link") — песня, созданная сервисом
-    out["source"] = params.get("source") if params.get("source") in IMPORT_SOURCES else None
+    # (source="link") — песня, созданная сервисом; без своей записи — чужая (None)
+    if params.get("source") in IMPORT_SOURCES:
+        out["source"] = params["source"]
+    else:
+        out["source"] = "generated" if item.own_song_id else None
+    out["updated_at"] = (datetime.fromtimestamp(item.mtime, timezone.utc).isoformat(timespec="seconds")
+                         if item.mtime else None)
     return out
 
 
-@router.get("/songs", summary="Список песен из индекса")
-def list_songs(request: Request, background: BackgroundTasks, q: str | None = None):
+def _chosen_target(ctx: AppContext, target: str | None):
+    """Хранилище из ``?target=`` (нет — основная цель; неизвестное явное — 400)."""
+    if not target:
+        return ctx.default_target()
+    try:
+        return ctx.target_of(target)
+    except StorageError:
+        raise ApiError(400, "Такого хранилища нет в настройках", field="target") from None
+
+
+@router.get("/songs", summary="Список песен хранилища из индекса")
+def list_songs(request: Request, background: BackgroundTasks, q: str | None = None,
+               target: str | None = None):
     ctx = ctx_of(request)
-    target = ctx.target()
-    storage = ctx.storage()
-    items = ctx.library.list(storage.target_id, q)
+    chosen = _chosen_target(ctx, target)
+    items = ctx.library.list(chosen.id, q)
     own = ctx.songs.get_many(i.own_song_id for i in items)
     pending = _pending_copies(ctx)
-    state = ctx.scan_state.get(storage.target_id, {})
-    if not state and not ctx.library.list(storage.target_id):
-        background.add_task(ctx.rescan)  # первый показ этой цели — просканировать
-    return {"scanned_at": ctx.scanned_at(storage.target_id, items),
+    state = ctx.scan_state.get(chosen.id, {})
+    if not state and not ctx.library.list(chosen.id):
+        background.add_task(ctx.rescan, chosen.id)  # первый показ этой цели — просканировать
+    output = ctx.output_status(target_id=None if target is None else chosen.id)
+    return {"scanned_at": ctx.scanned_at(chosen.id, items),
             "scanning": bool(state.get("running")),
-            "output": ctx.output_status(), "target": target.public(),
+            "output": output, "target": chosen.public(),
+            "targets": [{"id": t.id, "name": t.name or t.label, "kind": t.kind} for t in ctx.targets()],
             "items": [_song_out(ctx, i, own.get(i.own_song_id), pending) for i in items]}
 
 
-@router.post("/songs/rescan", status_code=202, summary="Пересканировать папку в фоне")
-def rescan(request: Request, background: BackgroundTasks):
-    background.add_task(ctx_of(request).rescan)
+@router.post("/songs/rescan", status_code=202, summary="Пересканировать хранилище в фоне")
+def rescan(request: Request, background: BackgroundTasks, target: str | None = None):
+    ctx = ctx_of(request)
+    background.add_task(ctx.rescan, _chosen_target(ctx, target).id)
     return {"scanning": True}
 
 
@@ -257,6 +283,96 @@ def get_cover(song_id: str, request: Request):
     ctx = ctx_of(request)
     item = ctx.find_song(song_id)
     return _media(ctx, item, item.cover, request, "image/jpeg")
+
+
+class _ZipSink:
+    """Поток для ``zipfile``: копит записанное, генератор забирает порциями."""
+
+    def __init__(self):
+        self.parts: list[bytes] = []
+
+    def write(self, b) -> int:
+        self.parts.append(bytes(b))
+        return len(b)
+
+    def flush(self) -> None:
+        pass
+
+    def take(self) -> bytes:
+        data, self.parts = b"".join(self.parts), []
+        return data
+
+
+def _zip_name(item) -> str:
+    """``<Исполнитель - Название>`` — имя архива и папки внутри него."""
+    if item.artist and item.title:
+        return naming.base_name(item.artist, item.title)
+    return item.rel_dir.rsplit("/", 1)[-1]
+
+
+def _song_files(storage, rel_dir: str, sub: str = "") -> list[tuple[str, object]]:
+    """Файлы папки песни с подпапками: ``[(путь внутри папки, Entry)]``; ``.part`` — мимо."""
+    out = []
+    for e in storage.listdir(f"{rel_dir}/{sub}" if sub else rel_dir):
+        path = f"{sub}/{e.name}" if sub else e.name
+        if e.is_dir:
+            out.extend(_song_files(storage, rel_dir, path))
+        elif not e.name.endswith(PART_SUFFIX):
+            out.append((path, e))
+    return sorted(out, key=lambda x: x[0])
+
+
+def _zip_time(mtime: float | None) -> tuple:
+    """Дата файла в архиве — из хранилища (zip не умеет раньше 1980 года)."""
+    stamp = time.localtime(mtime) if mtime else time.localtime()
+    return max(stamp[:6], (1980, 1, 1, 0, 0, 0))
+
+
+@router.get("/songs/{song_id}/zip", summary="Папка песни одним .zip (потоком); ?check=1 — только проверка")
+def get_zip(song_id: str, request: Request, check: bool = False):
+    ctx = ctx_of(request)
+    item = ctx.find_song(song_id)
+    storage = _song_storage(ctx, item)
+    files = _storage_call(ctx, _song_files, storage, item.rel_dir, target_id=item.target_id)
+    if not files:
+        _not_found_or_unavailable(ctx, StorageNotFound("Папка песни пуста или не найдена"),
+                                  item.target_id)
+    if check:  # лёгкая проверка перед скачиванием: список получен, файлы не читаются
+        return {"ok": True, "files": len(files)}
+    name = _zip_name(item)  # список файлов уже получен — хранилище ответило до первого байта
+
+    def body():
+        sink = _ZipSink()
+        with zipfile.ZipFile(sink, "w") as zf:
+            for sub, entry in files:
+                try:
+                    f = storage.open_read(f"{item.rel_dir}/{sub}")
+                except Exception as e:
+                    log.error("zip песни %s: не удалось прочитать «%s»: %s", song_id, sub, e)
+                    raise
+                with f:
+                    info = zipfile.ZipInfo(f"{name}/{sub}", _zip_time(entry.mtime))
+                    info.compress_type = (zipfile.ZIP_DEFLATED if sub.lower().endswith(".txt")
+                                          else zipfile.ZIP_STORED)
+                    info.file_size = entry.size
+                    with zf.open(info, "w") as out:
+                        while True:
+                            try:
+                                chunk = f.read(1 << 16)
+                            except Exception as e:
+                                log.error("zip песни %s: сбой чтения «%s»: %s", song_id, sub, e)
+                                raise
+                            if not chunk:
+                                break
+                            out.write(chunk)
+                            if sink.parts:
+                                yield sink.take()
+                yield sink.take()
+        yield sink.take()
+
+    disposition = f"attachment; filename*=UTF-8''{quote(name + '.zip')}"
+    return StreamingResponse(body(), media_type="application/zip",
+                             headers={"Content-Disposition": disposition})
 
 
 @router.delete("/songs/{song_id}", summary="Удалить в корзину")

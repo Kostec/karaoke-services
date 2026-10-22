@@ -55,6 +55,8 @@ class AppContext:
         self._usdb: tuple[tuple[str, str], UsdbClient] | None = None  # (учётка, UsdbClient)
         self._probe: dict[str, tuple[float, str | None]] = {}
         self._scan_lock = threading.Lock()
+        self._scan_queue_lock = threading.Lock()
+        self._scan_queue: list[str] = []  # id хранилищ, ждущих скана
         self.scan_state: dict[str, dict] = {}
 
     # ------------------------------------------------------------------ окружение
@@ -228,28 +230,55 @@ class AppContext:
 
     # ------------------------------------------------------------------ индекс песен
 
-    def rescan(self) -> None:
-        """Пересканировать папку результата (фоново). Параллельно — только один скан."""
-        if not self._scan_lock.acquire(blocking=False):
-            return
+    def rescan(self, target_id: str | None = None) -> None:
+        """Пересканировать хранилище ``target_id`` (``None`` — основная цель; фоново).
+        Сканы идут по одному: просьба во время чужого скана встаёт в очередь и выполнится
+        следом (до тех пор хранилище показывается как ``scanning``)."""
         try:
-            storage = self.storage()
-            state = self.scan_state.setdefault(storage.target_id, {})
-            state["running"] = True
+            tid = self.target_of(target_id).id
+        except StorageError:
+            return  # хранилища нет в настройках — сканировать нечего
+        with self._scan_queue_lock:
+            if tid not in self._scan_queue:
+                self._scan_queue.append(tid)
+            self.scan_state.setdefault(tid, {})["running"] = True
+        while self._scan_lock.acquire(blocking=False):
             try:
+                while True:
+                    with self._scan_queue_lock:
+                        if not self._scan_queue:
+                            break
+                        tid = self._scan_queue.pop(0)
+                    self._scan_one(tid)
+            finally:
+                self._scan_lock.release()
+            with self._scan_queue_lock:
+                if not self._scan_queue:
+                    return  # иначе очередь пополнили между выходом и освобождением — ещё круг
+
+    def _scan_one(self, target_id: str) -> None:
+        state = self.scan_state.setdefault(target_id, {})
+        try:
+            try:
+                target = self.target_of(target_id)
+            except StorageError:
+                return  # удалили из настроек, пока ждало в очереди
+            try:
+                storage = self.storage(target.id)
                 entries = storage.list_songs()
             except StorageError as e:
                 state["error"] = str(e)
-                self.mark_output_error(e)
+                self.mark_output_error(e, target.id)
                 return
             stamp = now()
-            items = [self.library_item(e, storage.target_id, stamp) for e in entries]
-            self.library.replace_all(storage.target_id, items)
+            items = [self.library_item(e, target.id, stamp) for e in entries]
+            self.library.replace_all(target.id, items)
             state.update(scanned_at=stamp, error=None)
-            self._probe.pop(storage.target_id, None)
+            self._probe.pop(target.id, None)
         finally:
-            self.scan_state.get(self.target().id, {}).pop("running", None)
-            self._scan_lock.release()
+            with self._scan_queue_lock:
+                if target_id not in self._scan_queue:  # снова в очереди — по-прежнему «идёт»
+                    state.pop("running", None)
 
     def library_item(self, entry, target_id: str, stamp: str | None = None) -> LibraryItem:
         own = self.songs.by_rel_dir(entry.rel_dir)

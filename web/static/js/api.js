@@ -48,6 +48,24 @@ export async function request(method, url, body, { binary = false } = {}) {
   return data;
 }
 
+/** Проверить скачивание до перехода по ссылке: ответ не 2xx — ApiError с detail сервера
+ *  (тело успешного ответа не читается — запрос обрывается после заголовков). */
+export async function probeDownload(url) {
+  const ctrl = new AbortController();
+  let resp;
+  try {
+    resp = await fetch(url, { signal: ctrl.signal });
+  } catch {
+    throw new ApiError(0, 'Нет связи с сервером — проверьте сеть');
+  }
+  if (resp.ok) { ctrl.abort(); return; }
+  let data = null;
+  try { data = await resp.json(); } catch { data = null; }
+  const detail = (data && typeof data.detail === 'string' && data.detail)
+    || STATUS_TEXT[resp.status] || `Ошибка сервера (код ${resp.status})`;
+  throw new ApiError(resp.status, detail, data && typeof data === 'object' ? data : {});
+}
+
 // Состояния заданий — как karaoke_core.db.ACTIVE_STATES / FINAL_STATES.
 export const JOB_ACTIVE = ['queued', 'running', 'publishing'];
 export const JOB_FINAL = ['done', 'failed', 'cancelled'];
@@ -99,6 +117,19 @@ export const api = {
   coverUrl: (id) => `/api/songs/${encodeURIComponent(id)}/cover`,
   audioUrl: (id) => `/api/songs/${encodeURIComponent(id)}/audio`,
   deleteSong: (id) => request('DELETE', `/api/songs/${encodeURIComponent(id)}`),
+  /** Песни хранилища `target` (пусто — основная цель); q — поиск на сервере. */
+  targetSongs: (target = '', q = '') => {
+    const p = new URLSearchParams();
+    if (target) p.set('target', target);
+    if (q) p.set('q', q);
+    return request('GET', '/api/songs' + (p.size ? `?${p}` : ''));
+  },
+  rescanTarget: (target = '') =>
+    request('POST', '/api/songs/rescan' + (target ? `?target=${encodeURIComponent(target)}` : '')),
+  zipUrl: (id) => `/api/songs/${encodeURIComponent(id)}/zip`,
+  /** «Копировать в…»: `{song_ids, target_id, replace, only_missing}` → `{queued, skipped, errors}`. */
+  copySongs: (body) => request('POST', '/api/jobs/copy', body),
+  targets: () => request('GET', '/api/targets'),
 
   lyricsSearch: (artist, title) =>
     request('GET', `/api/lyrics/search?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`),

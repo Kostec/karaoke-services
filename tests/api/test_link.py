@@ -387,8 +387,8 @@ def test_generate_cover_url_failure_is_not_an_error(env, lc, http, monkeypatch, 
 def test_link_song_is_not_labelled_import(env, lc):
     _own_song(env, lc, params={"language": "en", "source": "link"})
     item = lc.get("/api/songs").json()["items"][0]
-    assert item["own"] is True and item["source"] is None
-    assert lc.get(f"/api/songs/{item['song_id']}").json()["source"] is None
+    assert item["own"] is True and item["source"] == "generated"
+    assert lc.get(f"/api/songs/{item['song_id']}").json()["source"] == "generated"
 
 
 def test_imported_song_keeps_import_source(env, lc):

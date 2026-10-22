@@ -20,6 +20,7 @@ import { h, clear, toast, field, debounce, songName } from './ui.js';
 import { readId3 } from './id3.js';
 import { usableHits, fmtSeconds, LRC_TIMING_LABEL } from './lyrics-search.js';
 import { openLyricsDialog } from './lyrics-dialog.js';
+import { publishLine } from './songs-filter.js';
 import {
   splitFolder, trackMeta, initialTrack, withExisting, withHit, withDuration, generateBlocker, trackFields,
   lyricsLabel, folderNotice, queuedText, nextLyricsRow, initialLinkTrack, NO_FOLDER_PICKER,
@@ -50,6 +51,8 @@ export function mount(section) {
 export function show() {
   if (!built) build();
   checkUsdbAccount();
+  api.targets().then((r) => { view.publishLine.textContent = publishLine(r); view.publishLine.hidden = false; })
+    .catch(() => { view.publishLine.hidden = true; });
   getDefaults().then((d) => {
     videoDefaults = d;
     if (d.max_import_mb) view.filesHint.textContent = `zip-архив или файлы песни (.txt, аудио, обложка), до ${d.max_import_mb} МБ`;
@@ -85,9 +88,10 @@ function build() {
   }
 
   view.packBox = h('div', { class: 'import-pack', hidden: true });
+  view.publishLine = h('div', { class: 'small muted publish-line', hidden: true });
   clear(root).append(
     h('div', { class: 'view-head' }, h('h2', {}, 'Импорт')),
-    buildTips(), tabs, view.panels.usdb, view.panels.files, view.panels.url, view.panels.folder, view.packBox);
+    buildTips(), view.publishLine, tabs, view.panels.usdb, view.panels.files, view.panels.url, view.panels.folder, view.packBox);
   selectTab(tab);
 }
 
