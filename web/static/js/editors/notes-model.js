@@ -635,6 +635,66 @@ export function mergeLineAt(state, id, voice = null) {
   return { ...state, notes: state.notes.map((y) => (y.id === head ? { ...y, ls: false, brk: null, brk2: null } : y)), created: [] };
 }
 
+/**
+ * Перетащить разрыв перед строкой, которая начинается нотой id (в партии voice; по умолчанию — партии ноты),
+ * в бит beat (§14). Новая первая нота строки — первая нота партии с `start >= beat` среди нот этой строки
+ * и предыдущей; граница не уходит за соседние разрывы (в каждой строке остаётся ≥1 нота). Бит разрыва —
+ * beat, если он в паузе перед новой первой нотой, иначе конец предыдущей ноты. Строки другой партии не
+ * меняются; нота «оба» переходит, только если граница проходит у обоих певцов одинаково.
+ */
+export function moveBreak(state, id, beat, voice = null) {
+  const { x } = inPart(state, id);
+  const own = voice ?? partOf(x);
+  if (!inVoice(x, own)) throw new Error(NO_NOTE_ERROR);
+  const pl = voiceLines(state, own);
+  const li = pl.findIndex((line) => line[0].id === id);
+  if (li < 0) throw new Error('Эта нота не начинает строку — разрыва перед ней нет');
+  if (li === 0) throw new Error('Это первая строка — разрыва перед ней нет');
+  const all = [...pl[li - 1], ...pl[li]];
+  const b = Math.round(Number(beat));
+  let h = all.findIndex((y, k) => k > 0 && y.start >= b);
+  if (h < 0) h = all.length - 1;
+  h = Math.min(Math.max(h, 1), all.length - 1);
+  const head = all[h];
+  const prevEnd = all[h - 1].start + all[h - 1].length;
+  const brk = b >= prevEnd && b <= head.start ? b : null;
+  const field = own === 2 && voiceOf(head) === 'both' ? 'brk2' : 'brk';
+  if (head.id === id && (head[field] ?? null) === brk) return state;
+  const notes = state.notes.map((y) => {
+    if (y.id === head.id) {
+      if (head.id === id) return { ...y, [field]: brk };
+      return { ...y, ls: true, brk, brk2: voiceOf(y) === 'both' ? brk : null };
+    }
+    if (y.id === id) return { ...y, ls: false, brk: null, brk2: null };
+    return y;
+  });
+  const out = { ...state, notes, created: [] };
+  checkBreakMove(state, out, own, [pl[li - 1], pl[li]], [all.slice(0, h), all.slice(h)]);
+  return out;
+}
+
+/**
+ * Строки после moveBreak: в партии own пара строк `before` стала парой `after`, прочие строки те же;
+ * в другой партии — без изменений или то же самое (граница по нотам «оба» у обоих певцов одинакова).
+ */
+function checkBreakMove(state, out, own, before, after) {
+  const ids = (ls) => JSON.stringify(ls.map((l) => l.map((y) => y.id)));
+  const want = (ls) => {
+    const s = ids(ls);
+    const pair = ids(before).slice(1, -1);
+    return s.includes(pair) ? s.replace(pair, ids(after).slice(1, -1)) : null;
+  };
+  for (const p of [own, ...parts(state).filter((q) => q !== own)]) {
+    const was = voiceLines(state, p);
+    const now = ids(voiceLines(out, p));
+    if (p === own) {
+      if (now !== want(was)) throw new Error(OTHER_VOICE_ERROR);
+    } else if (now !== ids(was) && now !== want(was)) {
+      throw new Error('Граница по нотам «оба» у певцов проходит по-разному — так разрыв не двигается');
+    }
+  }
+}
+
 // ---------- «Строки как в тексте» (POST /api/songs/{id}/notes/lines) ----------
 
 export const LINES_DUET_ERROR = 'У дуэта строки по тексту не расставляются — только у соло';

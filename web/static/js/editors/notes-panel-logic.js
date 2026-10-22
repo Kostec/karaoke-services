@@ -107,3 +107,16 @@ export function panelRows(state, lines) {
   return out;
 }
 
+
+/** Ширина панели «Текст» по умолчанию (px) и нижний предел; верхний — 70 % ширины окна (история 7, §15). */
+export const PANEL_WIDTH = 320;
+const PANEL_MIN = 240;
+const PANEL_MAX_SHARE = 0.7;
+
+/** Ширина панели w (px; из тяги или localStorage) в пределах 240…70 % окна winW; не число — по умолчанию. */
+export function panelWidth(w, winW) {
+  const v = w == null || w === '' ? NaN : Number(w);
+  const max = Math.max(PANEL_MIN, Math.floor(Number(winW) * PANEL_MAX_SHARE) || PANEL_MIN);
+  if (!Number.isFinite(v)) return Math.min(PANEL_WIDTH, max);
+  return Math.min(Math.max(Math.round(v), PANEL_MIN), max);
+}

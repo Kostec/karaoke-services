@@ -288,7 +288,19 @@ export async function openNotesEditor(song, { reload } = {}) {
         const x = ls[j][0];
         const b = document.createElement('div');
         b.className = `ne-brk${duet ? ` p${v}` : ''}`;
-        b.style.left = `${bx((pv.start + pv.length + x.start) / 2)}px`;
+        // линия — на бите разрыва «- N», если он задан и стоит в паузе; иначе посередине паузы
+        const end = pv.start + pv.length;
+        const brk = v === 2 && x.voice === 'both' ? x.brk2 : x.brk;
+        b.style.left = `${bx(brk != null && brk >= end && brk <= x.start ? brk : (end + x.start) / 2)}px`;
+        if (editable()) {
+          // зона захвата 8 px: тяга двигает разрыв (M.moveBreak)
+          const g = document.createElement('i');
+          g.className = 'ne-brk-grip';
+          g.dataset.id = x.id;
+          g.dataset.voice = String(v);
+          g.title = 'Тяни — граница строки: поверх нот переносит их, в паузе ставит бит разрыва';
+          b.append(g);
+        }
         const k = document.createElement('b');
         k.textContent = '↵';
         k.dataset.id = x.id;
@@ -772,6 +784,42 @@ export async function openNotesEditor(song, { reload } = {}) {
     if (!ok) render();
   }
   roll.addEventListener('pointerup', (e) => endDrag(e));
+
+  // перетаскивание разрыва строки (история 1–6, §14): призрак во время тяги, на отпускании — один шаг истории
+  let brkDrag = null;
+  brkLayer.addEventListener('pointerdown', (e) => {
+    const g = e.target.closest('.ne-brk-grip');
+    if (!g || e.button !== 0 || !editable()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    g.setPointerCapture(e.pointerId);
+    const ghost = h('div', { class: `ne-brk ghost${state.duet ? ` p${g.dataset.voice}` : ''}` });
+    ghost.style.left = g.parentElement.style.left;
+    brkLayer.append(ghost);
+    g.parentElement.classList.add('dragging');
+    brkDrag = { g, id: Number(g.dataset.id), voice: Number(g.dataset.voice) || null, x0: e.clientX, ghost, beat: null };
+    inner.classList.add('brk-dragging');
+  });
+  brkLayer.addEventListener('pointermove', (e) => {
+    if (!brkDrag) return;
+    if (brkDrag.beat == null && Math.abs(e.clientX - brkDrag.x0) < 3) return;
+    const r = inner.getBoundingClientRect();
+    brkDrag.beat = Math.round(xBeat(e.clientX - r.left));
+    brkDrag.ghost.style.left = `${bx(brkDrag.beat)}px`;
+  });
+  function endBrkDrag(cancel) {
+    if (!brkDrag) return;
+    const d = brkDrag;
+    brkDrag = null;
+    d.ghost.remove();
+    d.g.parentElement?.classList.remove('dragging');
+    inner.classList.remove('brk-dragging');
+    if (cancel || d.beat == null) return;
+    apply((s) => M.moveBreak(s, d.id, d.beat, state.duet ? d.voice : null), 'Граница строки сдвинута');
+  }
+  brkLayer.addEventListener('pointerup', () => endBrkDrag(false));
+  brkLayer.addEventListener('pointercancel', () => endBrkDrag(true));
+  brkLayer.addEventListener('lostpointercapture', () => endBrkDrag(true));
   roll.addEventListener('pointercancel', (e) => endDrag(e, true));
 
   roll.addEventListener('dblclick', (e) => {

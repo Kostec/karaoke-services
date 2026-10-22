@@ -672,3 +672,66 @@ test('setLineStarts: неверные индексы и дуэт — ошибк�
   }
   assert.throws(() => M.setLineStarts(M.fromPayload(duetPayload()), [0]), /дуэт/);
 });
+
+// ---------- перетаскивание разрыва строки (истории 1–5, §14) ----------
+
+test('разрыв: тяга поверх нот переносит их в соседнюю строку, в паузе — только бит разрыва', () => {
+  const st = M.fromPayload(payload());
+  const sec = byText(st, 'Sec').id;
+  // влево поверх « world» (6): нота уходит в следующую строку; бит 6 — в паузе 5..6
+  const left = M.moveBreak(st, sec, 6);
+  assert.deepEqual(texts(left), [['Hel', 'lo'], [' world', 'Sec', 'ond'], ['Last']]);
+  assert.deepEqual(M.toPayload(left).lines.map((l) => l.break_beat), [6, 22, null]);
+  // вправо поверх «Sec» (12..16) до бита 15: первая нота с start ≥ 15 — «ond», разрыв — конец «Sec»
+  const right = M.moveBreak(st, sec, 15);
+  assert.deepEqual(texts(right), [['Hel', 'lo', ' world', 'Sec'], ['ond'], ['Last']]);
+  assert.deepEqual(M.toPayload(right).lines.map((l) => l.break_beat), [16, 22, null]);
+  // в паузе 8..12: ноты на месте, разрыв — точка отпускания (с округлением до бита)
+  const pause = M.moveBreak(st, sec, 9.4);
+  assert.deepEqual(texts(pause), texts(st));
+  assert.deepEqual(M.toPayload(pause).lines.map((l) => l.break_beat), [9, 22, null]);
+  // правый разрыв строки «Sec ond» влево — её конец укорачивается
+  const end = M.moveBreak(st, byText(st, 'Last').id, 14);
+  assert.deepEqual(texts(end), [['Hel', 'lo', ' world'], ['Sec'], ['ond', 'Last']]);
+  assert.deepEqual(texts(st), [['Hel', 'lo', ' world'], ['Sec', 'ond'], ['Last']], 'исходное состояние не меняется');
+});
+
+test('разрыв: не перепрыгивает соседний — в каждой строке остаётся нота; первая строка и не начало — ошибка', () => {
+  const st = M.fromPayload(payload());
+  const sec = byText(st, 'Sec').id;
+  const far = M.moveBreak(st, sec, 30);
+  assert.deepEqual(texts(far), [['Hel', 'lo', ' world', 'Sec'], ['ond'], ['Last']]);
+  const back = M.moveBreak(st, sec, -5);
+  assert.deepEqual(texts(back), [['Hel'], ['lo', ' world', 'Sec', 'ond'], ['Last']]);
+  assert.deepEqual(M.toPayload(back).lines.map((l) => l.break_beat), [2, 22, null]);
+  assert.throws(() => M.moveBreak(st, byText(st, 'Hel').id, 3), /перв/);
+  assert.throws(() => M.moveBreak(st, byText(st, 'lo').id, 3), /не начинает строку/);
+  assert.throws(() => M.moveBreak(st, 99, 3), /Нет такой ноты/);
+  assert.equal(M.moveBreak(st, sec, 10), st, 'без изменений — то же состояние (шага отмены нет)');
+});
+
+test('разрыв дуэта: двигает только свою партию; «оба» — лишь при одинаковой границе у обоих певцов', () => {
+  const st = M.fromPayload(duetPayload());
+  // своя партия: у певца 2 «X2 | x2» — разрыв в паузе 3..4, у певца 1 ничего не меняется
+  const s2 = M.startLine(st, byText(st, 'x2').id);
+  const own = M.moveBreak(s2, byText(s2, 'x2').id, 3, 2);
+  assert.deepEqual(voiceTexts(own, 2), [['X2'], ['x2'], ['Bo', 'th'], ['Z2']]);
+  assert.equal(M.toPayload(own).lines.find((l) => l.player === 2).break_beat, 3);
+  assert.deepEqual(voiceIds(own, 1), voiceIds(st, 1));
+  // пауза перед «Z2» у певца 2: бит 15, разрыв певца 1 после «Bo th» (14) прежний
+  const z = M.moveBreak(st, byText(st, 'Z2').id, 15, 2);
+  assert.deepEqual(M.toPayload(z).lines.map((l) => l.break_beat), [6, 14, null, 6, 15, null]);
+  // «th» («оба») и «Z2» (певца 2) в одну строку не сходятся
+  assert.throws(() => M.moveBreak(st, byText(st, 'Z2').id, 9, 2), /разных певцов/);
+  // C1 → певцу 2, Z2 → «оба»: у певца 1 «Bo th | Z2» рядом, у певца 2 между ними «C1» — граница разная
+  const mid = M.setVoice(M.setVoice(st, [byText(st, 'C1').id], 2), [byText(st, 'Z2').id], 'both');
+  assert.throws(() => M.moveBreak(mid, byText(mid, 'Z2').id, 9, 1), /«оба»/);
+  // «Bo» («оба») в строку певца 2 «X2 x2» — строки разных певцов
+  assert.throws(() => M.moveBreak(st, byText(st, 'Bo').id, 10, 2), /разных певцов/);
+  // «Bo th» и «C1» — «оба» и соседние у обоих: граница переходит у обоих одинаково
+  const both = M.setVoice(st, [byText(st, 'C1').id], 'both');
+  const m = M.moveBreak(both, byText(both, 'C1').id, 10, 2);
+  assert.deepEqual(voiceTexts(m, 1), [['A1', 'a1'], ['Bo'], ['th', 'C1']]);
+  assert.deepEqual(voiceTexts(m, 2), [['X2', 'x2'], ['Bo'], ['th', 'C1'], ['Z2']]);
+  assert.deepEqual(M.toPayload(m).lines.map((l) => l.break_beat), [6, 10, null, 6, 10, 18, null]);
+});

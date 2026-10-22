@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   lineAt, lineStatus, tapTiming, tapQueue, liveNotes, liveLines, panelRows,
+  panelWidth, PANEL_WIDTH,
 } from '../../web/static/js/editors/notes-panel-logic.js';
 import * as M from '../../web/static/js/editors/notes-model.js';
 
@@ -138,4 +139,14 @@ test('панель: дуэт — группа певца 1, потом певц�
   const solo = M.makeSolo(st);
   assert.deepEqual(panelRows(solo, M.lines(solo)).map((r) => [r.g, r.num, r.key]),
     M.lines(solo).map((_, i) => [0, i + 1, `0:${i}`]));
+});
+test('ширина панели «Текст» (история 7): от 240 px до 70 % окна, мусор — по умолчанию 320', () => {
+  assert.equal(PANEL_WIDTH, 320);
+  assert.equal(panelWidth(500, 1600), 500);
+  assert.equal(panelWidth(100, 1600), 240);
+  assert.equal(panelWidth(1500, 1000), 700);
+  assert.equal(panelWidth(412.6, 1600), 413);
+  assert.equal(panelWidth('abc', 1600), 320);
+  assert.equal(panelWidth(null, 1600), 320);
+  assert.equal(panelWidth(320, 300), 240, 'окно уже 240/0,7 — нижний предел важнее');
 });

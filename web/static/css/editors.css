@@ -101,7 +101,7 @@ dialog.editor.wide > .banner { margin: 6px 14px 0; }
 .ne-time { font: 600 14px ui-monospace, Consolas, monospace; min-width: 118px; text-align: center; }
 .ne-selinfo { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.ne-main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr auto; }
+.ne-main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; }
 .ne-main[hidden] { display: none; }
 .ne-center { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; min-width: 0; }
 .ne-tl { display: grid; grid-template-columns: 40px 1fr; min-height: 0; }
@@ -193,13 +193,24 @@ dialog.editor.wide > .banner { margin: 6px 14px 0; }
 .ne-brk { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--ne-break); }
 .ne-brk b { position: absolute; bottom: 2px; left: -9px; width: 16px; height: 16px; border-radius: 50%; background: var(--ne-break);
   color: var(--surface); font: 700 10px/16px system-ui, sans-serif; text-align: center; }
+/* тяга разрыва строки (история 1–6): зона захвата 8 px, подсветка под курсором, призрак во время тяги */
+.ne-brk-grip { position: absolute; top: 0; bottom: 0; left: -5px; width: 8px; pointer-events: auto; cursor: col-resize; touch-action: none; }
+.ne-brk:has(> .ne-brk-grip:hover) { border-left-color: var(--ne-sel); }
+.ne-brk.dragging { opacity: .35; }
+.ne-brk.ghost { border-left: 2px solid var(--ne-sel); z-index: 2; }
+.ne-inner.brk-dragging, .ne-inner.brk-dragging * { cursor: col-resize !important; user-select: none; }
 .ne-playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: var(--ne-playhead); z-index: 5; pointer-events: none; }
 .ne-playhead::before { content: ""; position: absolute; top: 0; left: -5px; border: 6px solid transparent; border-top-color: var(--ne-playhead); }
 .ne-marquee { position: absolute; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); pointer-events: none; z-index: 6; }
 .ne-hint { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 6px 14px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
 .ne kbd { font: 12px ui-monospace, Consolas, monospace; background: var(--surface-2); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
-.ne-panel { width: 320px; border-left: 1px solid var(--border); min-height: 0; background: var(--surface);
-  display: flex; flex-direction: column; transition: width .15s; }
+.ne-panel { width: var(--ne-panel-w, 320px); border-left: 1px solid var(--border); min-height: 0; background: var(--surface);
+  display: flex; flex-direction: column; transition: width .15s; position: relative; }
+.ne-panel.resizing { transition: none; user-select: none; }
+/* ручка ширины на левом краю панели «Текст» (история 7) */
+.ne-pgrip { position: absolute; top: 0; bottom: 0; left: -4px; width: 8px; cursor: col-resize; z-index: 3; touch-action: none; }
+.ne-pgrip:hover, .ne-panel.resizing .ne-pgrip { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.ne-panel.closed .ne-pgrip { display: none; }
 .ne-panel[hidden] { display: none; }
 .ne-panel.closed { width: 40px; }
 .ne-ph { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
@@ -209,13 +220,15 @@ dialog.editor.wide > .banner { margin: 6px 14px 0; }
 .ne-vlabel { display: none; writing-mode: vertical-rl; font-size: 13px; color: var(--muted); background: none; border: 0; padding: 6px 0; min-height: 0; cursor: pointer; }
 .ne-panel.closed .ne-vlabel { display: block; }
 .ne-plist { flex: 1; overflow: auto; padding: 6px 8px; margin: 0; list-style: none; min-height: 0; }
-.ne-plist .pl { display: grid; grid-template-columns: 22px 1fr; gap: 2px 6px; padding: 5px 6px; border-radius: 8px; align-items: start; cursor: pointer; }
+.ne-plist .pl { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 2px 6px; padding: 5px 6px; border-radius: 8px; align-items: start; cursor: pointer; }
 .ne-plist .pl.cur { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .ne-plist .pl.live { box-shadow: inset 3px 0 0 var(--ne-playhead); }
 .ne-plist .n { font-size: 12px; color: var(--muted); padding-top: 6px; text-align: right; }
-.ne-plist input { width: 100%; margin: 0; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; min-height: 0; }
-.ne-plist input:hover { border-color: var(--border); }
-.ne-plist input:focus { border-color: var(--accent); background: var(--surface); outline: none; }
+.ne-plist textarea { display: block; width: 100%; margin: 0; font: inherit; line-height: 1.35; color: inherit; background: transparent;
+  border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; min-height: 0; resize: none; overflow: hidden;
+  white-space: normal; overflow-wrap: anywhere; field-sizing: content; }
+.ne-plist textarea:hover { border-color: var(--border); }
+.ne-plist textarea:focus { border-color: var(--accent); background: var(--surface); outline: none; }
 .ne-plist .st { grid-column: 2; font-size: 12px; padding-left: 7px; color: var(--muted); }
 .ne-plist .st.warn { color: var(--warn); }
 .ne-plist .st button { min-height: 24px; padding: 1px 7px; font-size: 12px; margin-left: 6px; }
@@ -241,6 +254,11 @@ dialog.ne-help h3 { margin-top: 0; }
 }
 .ne-toast.show { opacity: 1; }
 .ne-toast.err { background: var(--err); color: #fff; }
+
+@media (max-width: 767px) {
+  .ne-panel { width: 320px; }
+  .ne-pgrip { display: none; }
+}
 
 @media (max-width: 639px) {
   dialog.editor { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; border: 0; margin: 0; }
@@ -269,7 +287,7 @@ dialog.ne-help h3 { margin-top: 0; }
 .ne-pgroup { font-size: 12px; font-weight: 700; color: var(--muted); padding: 8px 6px 2px; text-transform: none; }
 .ne-pgroup + .pl { margin-top: 0; }
 .ne-pgroup:not(:first-child) { margin-top: 6px; border-top: 1px solid var(--border); }
-.ne-plist .pl.duet { grid-template-columns: 22px 1fr auto; }
+.ne-plist .pl.duet { grid-template-columns: 22px minmax(0, 1fr) auto; }
 .ne-plist .pl.duet .st { grid-column: 2 / -1; }
 .ne-pv { display: none; }
 .ne-plist .pl.duet .ne-pv { display: inline-flex; gap: 2px; padding-top: 2px; }

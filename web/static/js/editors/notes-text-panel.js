@@ -2,17 +2,42 @@
 // строки песни как обычный текст — правка раскладывает слоги по нотам строки (модель setLineText),
 // счётчик слогов/нот и «+ K нот», клик по строке — переход к её первой ноте, подсветка выбранной
 // и звучащей строки, сворачивание в узкую полоску (запоминается; на телефоне — свёрнута по умолчанию).
+// Ширина (сборка «хранилища», история 7, §15): ручка на левом краю, 240 px…70 % окна, `localStorage`
+// `notesEditor.textPanelWidth`, двойной клик — 320 px; уже 768 px ручки нет. Длинная строка переносится.
 // Дуэт (таск 03 «дуэты»): строки по группам «Певец 1» / «Певец 2» (строка «оба» — в обеих),
 // у строки переключатель «1 / 2 / оба», над строками — имена певцов; звучащая строка — в каждой партии.
 
 import { h } from '../ui.js';
 import { toSyllables } from './syllables.js';
 import {
-  lineStatus, plural, liveLines, panelRows,
+  lineStatus, plural, liveLines, panelRows, panelWidth, PANEL_WIDTH,
 } from './notes-panel-logic.js';
 
 const CLOSED_KEY = 'notesEditor.textPanelClosed';
 const PHONE = '(max-width: 639px)';
+const WIDTH_KEY = 'notesEditor.textPanelWidth';
+const NARROW = '(max-width: 767px)';
+
+function loadWidth() {
+  try { return localStorage.getItem(WIDTH_KEY); } catch { return null; }
+}
+
+function saveWidth(w) {
+  try {
+    if (w == null) localStorage.removeItem(WIDTH_KEY);
+    else localStorage.setItem(WIDTH_KEY, String(w));
+  } catch { /* хранилище недоступно */ }
+}
+
+// высоту поля по тексту даёт CSS `field-sizing: content`; где его нет — считаем сами
+const AUTO_HEIGHT = (() => { try { return CSS.supports('field-sizing', 'content'); } catch { return false; } })();
+
+/** Поле строки по высоте текста (строка переносится, а не обрезается). */
+function fit(inp) {
+  if (AUTO_HEIGHT || !inp.offsetParent) return; // скрытое поле не мерить — перемерим по ResizeObserver
+  inp.style.height = 'auto';
+  inp.style.height = `${inp.scrollHeight}px`;
+}
 
 function loadClosed() {
   try {
@@ -70,7 +95,11 @@ export function textPanelPlugin(ctx) {
   const foot = h('div', { class: 'ne-pfoot' },
     'Правь строку как обычный текст — слоги сами разложатся по нотам строки. Принудительный перенос слога — ',
     h('kbd', {}, '|'), '. Клик по строке — переход к её первой ноте.');
-  panel.append(h('div', { class: 'ne-ph' }, h('h4', {}, 'Текст'), toggle, vlabel), names, list, foot);
+  const grip = h('div', {
+    class: 'ne-pgrip', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Ширина панели «Текст»',
+    title: 'Тяни — ширина панели, двойной клик — как было',
+  });
+  panel.append(grip, h('div', { class: 'ne-ph' }, h('h4', {}, 'Текст'), toggle, vlabel), names, list, foot);
   panel.hidden = false;
 
   for (const inp of nameInp) {
@@ -97,6 +126,53 @@ export function textPanelPlugin(ctx) {
     if (!v) markLive(true);
   }
   toggle.addEventListener('click', () => setClosed(!closed));
+
+  // ---------------------------------------------------------------- ширина
+
+  let stored = loadWidth(); // как сохранено (null — по умолчанию); на экран — в пределах текущего окна
+  function fitAll() { rows.forEach((r) => fit(r.inp)); }
+  if (!AUTO_HEIGHT && typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(() => fitAll());
+    ro.observe(panel);
+    ctx.dlg.addEventListener('editor-close', () => ro.disconnect());
+  }
+  function setWidth(w) {
+    panel.style.setProperty('--ne-panel-w', `${panelWidth(w, window.innerWidth)}px`);
+    fitAll();
+  }
+  setWidth(stored);
+  let gripDrag = null;
+  grip.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || window.matchMedia(NARROW).matches) return;
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    gripDrag = { x0: e.clientX, w0: panel.getBoundingClientRect().width, w: null };
+    panel.classList.add('resizing');
+  });
+  grip.addEventListener('pointermove', (e) => {
+    if (!gripDrag) return;
+    // ручка слева: тянем влево — панель шире
+    gripDrag.w = panelWidth(gripDrag.w0 + gripDrag.x0 - e.clientX, window.innerWidth);
+    setWidth(gripDrag.w);
+  });
+  const gripEnd = () => {
+    if (!gripDrag) return;
+    const { w } = gripDrag;
+    gripDrag = null;
+    panel.classList.remove('resizing');
+    if (w != null) { stored = w; saveWidth(w); }
+  };
+  grip.addEventListener('pointerup', gripEnd);
+  grip.addEventListener('pointercancel', gripEnd);
+  grip.addEventListener('lostpointercapture', gripEnd);
+  grip.addEventListener('dblclick', () => {
+    stored = null;
+    saveWidth(null);
+    setWidth(PANEL_WIDTH);
+  });
+  const onWinResize = () => setWidth(stored);
+  window.addEventListener('resize', onWinResize);
+  ctx.dlg.addEventListener('editor-close', () => window.removeEventListener('resize', onWinResize));
   vlabel.addEventListener('click', () => { setClosed(false); toggle.focus(); });
   setClosed(closed, false);
 
@@ -120,7 +196,8 @@ export function textPanelPlugin(ctx) {
 
   function makeRow(key, li, g) {
     const num = h('span', { class: 'n', title: 'Перейти к строке' });
-    const inp = h('input', { type: 'text', spellcheck: 'false', autocomplete: 'off' });
+    // textarea в одну строку текста: длинная строка песни переносится внутри своей строки панели
+    const inp = h('textarea', { rows: '1', spellcheck: 'false', autocomplete: 'off' });
     const st = h('div', { class: 'st', 'aria-live': 'polite' });
     const row = { key, li, g, item: null, num, inp, st, vbtns: [] };
     row.vbtns = M.VOICES.map((v) => {
@@ -142,6 +219,8 @@ export function textPanelPlugin(ctx) {
       goLine(row.li);
     });
     inp.addEventListener('input', () => {
+      if (/[\x0a\x0d]/.test(inp.value)) inp.value = inp.value.replace(/[\x0a\x0d]+/g, ' '); // вставка с переводами строк
+      fit(inp);
       // таймлайн перерисовывается не на каждое нажатие, а через паузу в наборе (и сразу на Enter/уходе из поля)
       clearTimeout(typeTimer);
       pending = row;
@@ -313,6 +392,7 @@ export function textPanelPlugin(ctx) {
       r.inp.readOnly = ro;
       r.inp.title = ro ? 'Только просмотр' : 'Правь строку как текст: слоги разложатся по нотам, | — граница слога';
       if (r.li !== editLi || document.activeElement !== r.inp) r.inp.value = lineValue(r.li);
+      fit(r.inp);
       paintStatus(r);
     }
     markCur();
