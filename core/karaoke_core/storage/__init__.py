@@ -3,6 +3,8 @@
 ``LocalStorage(root)`` — каталог в контейнере (``/output/...`` или ``/host/...``).
 ``SmbStorage(host, share, base_path, user, password)`` — Samba-шара через
 ``smbprotocol``/``smbclient`` прямо из контейнера.
+``WebDavStorage`` (Яндекс Диск, Nextcloud, NAS) и ``GDriveStorage`` (Google Диск) — сетевые,
+через ``karaoke_core.http.Http``.
 
 Все пути — относительные POSIX-пути от корня хранилища
 (``"<Исполнитель>/<Исполнитель - Название>/<файл>"``). Любая ошибка доступа
@@ -16,11 +18,13 @@ from typing import Callable
 
 from ..db import Target
 from .base import SongEntry, Storage, StorageBusy, StorageError, StorageNotFound
+from .gdrive import GDriveStorage
 from .local import LocalStorage
 from .smb import SmbStorage
+from .webdav import WebDavStorage
 
 __all__ = ["Storage", "SongEntry", "StorageError", "StorageNotFound", "StorageBusy",
-           "LocalStorage", "SmbStorage", "make_storage", "STORAGE_KINDS"]
+           "LocalStorage", "SmbStorage", "WebDavStorage", "GDriveStorage", "make_storage", "STORAGE_KINDS"]
 
 
 def _local(target: Target, http=None) -> Storage:
@@ -32,10 +36,26 @@ def _smb(target: Target, http=None) -> Storage:
                       target_id=target.id, label=target.label)
 
 
-# Точка расширения: kind → фабрика(target, http). WebDAV и Google Диск регистрируются здесь же.
-STORAGE_KINDS: dict[str, Callable[..., Storage]] = {"local": _local, "smb": _smb}
+def _webdav(target: Target, http=None) -> Storage:
+    return WebDavStorage(target.url, target.user, target.secret, target.path, http=_need_http(http),
+                         target_id=target.id, label=target.label)
 
-_NOT_YET = {"webdav": "WebDAV", "gdrive": "Google Диск"}
+
+def _gdrive(target: Target, http=None) -> Storage:
+    return GDriveStorage(target.client_id, target.secret, target.token, target.path,
+                         http=_need_http(http), target_id=target.id, label=target.label)
+
+
+def _need_http(http):
+    if http is None:  # контексты передают свой Http; прямой вызов без него — стандартный
+        from ..http import Http
+        return Http()
+    return http
+
+
+# Точка расширения: kind → фабрика(target, http). 
+STORAGE_KINDS: dict[str, Callable[..., Storage]] = {"local": _local, "smb": _smb, "webdav": _webdav,
+                                                    "gdrive": _gdrive}
 
 
 def make_storage(target: Target, *, http=None) -> Storage:
@@ -43,7 +63,5 @@ def make_storage(target: Target, *, http=None) -> Storage:
     для сетевых хранилищ (контексты передают свой)."""
     factory = STORAGE_KINDS.get(target.kind)
     if factory is None:
-        if target.kind in _NOT_YET:
-            raise StorageError(f"Тип хранилища «{_NOT_YET[target.kind]}» ещё не поддерживается")
         raise StorageError(f"Неизвестный тип хранилища: «{target.kind}»")
     return factory(target, http)

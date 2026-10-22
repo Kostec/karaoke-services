@@ -183,8 +183,8 @@ def test_make_storage_by_target(tmp_path):
     smb = make_storage(db.Target(id="t_00000002", name="Шара", kind="smb", host="h", share="s",
                                  path="p", user="u", secret=PW))
     assert isinstance(smb, SmbStorage) and smb.target_id == "t_00000002" and smb.label == "//h/s/p"
-    with pytest.raises(StorageError, match="ещё не поддерживается"):
-        make_storage(db.Target(id="t_00000003", name="Я", kind="webdav", url="https://webdav.yandex.ru"))
+    with pytest.raises(StorageError, match="Неизвестный тип хранилища"):
+        make_storage(db.Target(id="t_00000003", name="Я", kind="ftp"))
 
 
 def test_migration_leaves_no_rows_with_legacy_id_on_collision(path):

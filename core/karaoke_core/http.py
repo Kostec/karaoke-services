@@ -18,9 +18,11 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 USER_AGENT = "karaoke-services"
 CHUNK = 64 * 1024
+ERROR_BODY_BYTES = 64 * 1024  # сколько тела ответа с ошибкой сохраняется в HttpError.body
 RETRY_DELAY_S = 1.0  # пауза перед единственным повтором GET/скачивания после сбоя связи
 
 log = logging.getLogger("karaoke.http")
@@ -36,12 +38,15 @@ class HttpResponse:
 
 class HttpError(Exception):
     """Ошибка запроса; ``status`` — код HTTP или ``None`` (сеть, таймаут, размер);
-    ``too_large`` — ответ больше ``max_bytes``."""
+    ``too_large`` — ответ больше ``max_bytes``; ``body`` — начало тела ответа с ошибкой
+    (до 64 КБ: причина отказа API, например ``rateLimitExceeded`` у Google)."""
 
-    def __init__(self, message: str, status: int | None = None, *, too_large: bool = False):
+    def __init__(self, message: str, status: int | None = None, *, too_large: bool = False,
+                 body: bytes = b""):
         super().__init__(message)
         self.status = status
         self.too_large = too_large
+        self.body = body
 
     @property
     def retryable(self) -> bool:
@@ -82,20 +87,24 @@ class Http:
         return Http(http.cookiejar.CookieJar())
 
     def request(self, method: str, url: str, *, params: dict | None = None,
-                data: dict | bytes | None = None, headers: dict | None = None,
+                data: dict | bytes | BinaryIO | None = None, headers: dict | None = None,
                 timeout: float = 10, max_bytes: int = 5 * 2**20) -> HttpResponse:
+        """Любой метод (в т.ч. PROPFIND/MOVE/MKCOL/PATCH); ``data`` — форма, байты или открытый
+        двоичный файл (тело уходит потоком, ``Content-Length`` задаёт вызывающий)."""
         def once() -> HttpResponse:
             with self._open(method, url, params, data, headers, timeout) as resp:
                 return self._response(resp, self._read(resp, url, max_bytes, sink=None))
         return self._retry(once, url) if method.upper() in ("GET", "HEAD") else once()
 
-    def download(self, url: str, dest: Path, *, max_bytes: int, timeout: float = 60) -> HttpResponse:
-        """Скачать потоком в ``dest``; при ошибке недокачанный файл удаляется."""
+    def download(self, url: str, dest: Path, *, max_bytes: int, timeout: float = 60,
+                 headers: dict | None = None) -> HttpResponse:
+        """Скачать потоком в ``dest``; при ошибке недокачанный файл удаляется.
+        ``headers`` — дополнительные заголовки (авторизация сетевого хранилища)."""
         dest = Path(dest)
 
         def once() -> HttpResponse:
             try:
-                with self._open("GET", url, None, None, None, timeout) as resp, open(dest, "wb") as f:
+                with self._open("GET", url, None, None, headers, timeout) as resp, open(dest, "wb") as f:
                     self._read(resp, url, max_bytes, sink=f)
                     return self._response(resp, b"")
             except BaseException:
@@ -129,8 +138,13 @@ class Http:
         try:
             return self._opener.open(req, timeout=timeout)
         except urllib.error.HTTPError as e:
+            try:
+                body = e.read(ERROR_BODY_BYTES) or b""
+            except Exception:
+                body = b""
             e.close()
-            raise HttpError(f"Сервер {_host(url)} ответил ошибкой {e.code}", status=e.code) from None
+            raise HttpError(f"Сервер {_host(url)} ответил ошибкой {e.code}", status=e.code,
+                            body=body) from None
         except (TimeoutError, socket.timeout) as e:
             raise _network_error(f"Сервер {_host(url)} не ответил вовремя", url, e) from None
         except urllib.error.URLError as e:
