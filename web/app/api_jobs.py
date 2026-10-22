@@ -313,6 +313,49 @@ def instrumental(body: InstrumentalIn, request: Request):
     return job.to_dict()
 
 
+MAX_COPY_SONGS = 1000
+
+
+class CopyIn(BaseModel):
+    song_ids: list[str]
+    target_id: str
+    replace: bool = False
+    only_missing: bool = True
+
+
+@router.post("/copy", status_code=201, summary="Копировать песни в другое хранилище")
+def copy(body: CopyIn, request: Request):
+    """Задание «Копирование» на каждую песню (Решения §9): ``{queued, skipped, errors}``."""
+    ctx = ctx_of(request)
+    if len(body.song_ids) > MAX_COPY_SONGS:
+        raise ApiError(400, f"За один раз можно копировать не больше {MAX_COPY_SONGS} песен",
+                       field="song_ids")
+    try:
+        target = ctx.target_of(body.target_id)
+    except StorageError:
+        raise ApiError(400, "Хранилище не найдено", field="target_id") from None
+    queued, skipped, errors = [], 0, []
+    for song_id in body.song_ids:
+        item = ctx.library.find(song_id)
+        if item is None:
+            errors.append({"song_id": song_id, "detail": "Песня не найдена"})
+            continue
+        if item.target_id == target.id:
+            errors.append({"song_id": song_id, "detail": "Песня уже в этом хранилище"})
+            continue
+        job = ctx.jobs.active_copy(item.rel_dir, item.target_id, target.id)
+        if job is None:
+            if body.only_missing and ctx.library.get(target.id, item.rel_dir) is not None:
+                skipped += 1
+                continue
+            job = ctx.jobs.enqueue_copy({"artist": item.artist, "title": item.title, "song_id": item.song_id},
+                                        rel_dir=item.rel_dir, txt_name=item.txt_name,
+                                        from_target=item.target_id, to_target=target.id, replace=body.replace)
+        if job.id not in queued:
+            queued.append(job.id)
+    return {"queued": queued, "skipped": skipped, "errors": errors}
+
+
 _VIDEO_EXT_NAMES = [e.lstrip(".") for e in naming.VIDEO_EXT_ORDER]
 VIDEO_EXTS_TEXT = ", ".join(_VIDEO_EXT_NAMES[:-1]) + " или " + _VIDEO_EXT_NAMES[-1]  # из naming.VIDEO_EXT_ORDER
 
@@ -507,6 +550,9 @@ def restart(job_id: int, request: Request):
         raise ApiError(409, "Перезапустить можно только завершённое задание")
     if job.type == "video":
         queue_duplicate(ctx, "video", song_id=job.song_id)
+    if job.type == "copy":  # ожидание хранилища начинается заново
+        params = {k: v for k, v in job.params.items() if k not in ("retry_at", "wait_logged_at")}
+        return ctx.jobs.enqueue("copy", job, params, parent_id=job.id).to_dict()
     if job.type != "generate":
         return ctx.jobs.enqueue(job.type, job, job.params, parent_id=job.id).to_dict()
     queue_duplicate(ctx, "generate", key=song_key(job.artist, job.title))

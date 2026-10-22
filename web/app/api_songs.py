@@ -54,10 +54,25 @@ def _read_txt(ctx: AppContext, item) -> bytes:
 _UNREAD = object()
 
 
-def _song_out(ctx: AppContext, item, own=_UNREAD) -> dict:
-    """Песня для API + ``source`` импорта из params.json своей песни (usdb|files|url или None);
-    ``own`` — уже прочитанная запись (список читает их одним запросом)."""
+def _pending_copies(ctx: AppContext) -> dict[str, list[dict]]:
+    """Активные задания «Копирование» по id песни-источника: ``[{target_id, name, job_id}]``."""
+    names = {t.id: t.name or t.label for t in ctx.targets()}
+    out: dict[str, list[dict]] = {}
+    for job in ctx.jobs.active("copy"):
+        to = job.params.get("to_target")
+        if job.song_id:
+            out.setdefault(job.song_id, []).append({"target_id": to, "name": names.get(to, to),
+                                                    "job_id": job.id})
+    return out
+
+
+def _song_out(ctx: AppContext, item, own=_UNREAD, pending=None) -> dict:
+    """Песня для API + ``source`` импорта из params.json своей песни (usdb|files|url или None)
+    + ``pending_copies``; ``own``/``pending`` — уже прочитанное (список читает их одним запросом)."""
     out = ctx.song_dict(item)
+    if pending is None:
+        pending = _pending_copies(ctx)
+    out["pending_copies"] = pending.get(item.song_id, [])
     if own is _UNREAD:
         own = ctx.songs.get(item.own_song_id) if item.own_song_id else None
     params = own.params if own and isinstance(own.params, dict) else {}
@@ -74,13 +89,14 @@ def list_songs(request: Request, background: BackgroundTasks, q: str | None = No
     storage = ctx.storage()
     items = ctx.library.list(storage.target_id, q)
     own = ctx.songs.get_many(i.own_song_id for i in items)
+    pending = _pending_copies(ctx)
     state = ctx.scan_state.get(storage.target_id, {})
     if not state and not ctx.library.list(storage.target_id):
         background.add_task(ctx.rescan)  # первый показ этой цели — просканировать
     return {"scanned_at": ctx.scanned_at(storage.target_id, items),
             "scanning": bool(state.get("running")),
             "output": ctx.output_status(), "target": target.public(),
-            "items": [_song_out(ctx, i, own.get(i.own_song_id)) for i in items]}
+            "items": [_song_out(ctx, i, own.get(i.own_song_id), pending) for i in items]}
 
 
 @router.post("/songs/rescan", status_code=202, summary="Пересканировать папку в фоне")

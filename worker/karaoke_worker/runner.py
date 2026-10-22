@@ -119,7 +119,8 @@ def _job_dir(ctx: JobContext, job: Job):
 
 def run_job(ctx: JobContext, job: Job) -> None:
     """Выполнить одно уже забранное задание до конечного состояния."""
-    ctx.log(job.id, f"=== Задание {job.id}: {job.type} — {job.artist} - {job.title}")
+    if not job.params.get("retry_at"):  # повтор ожидающего копирования — без заголовка в логе
+        ctx.log(job.id, f"=== Задание {job.id}: {job.type} — {job.artist} - {job.title}")
     handler = handlers.get(job.type)
     try:
         if handler is None:

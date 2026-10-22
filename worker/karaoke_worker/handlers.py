@@ -6,21 +6,22 @@ import json
 import os
 import re
 import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from karaoke_core import linealign, musiclink, naming, postprocess, ultrastar
-from karaoke_core.db import Job, instrumental_params, now, song_id_for
+from karaoke_core.db import FINAL_STATES, LOCAL_TARGET_ID, Job, instrumental_params, now, song_id_for
 from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_PARAMS, INPUT_VIDEO_STEM
 from karaoke_core.storage import Storage, StorageError
 from karaoke_core.trash import TrashError
 
 from .base import _NETWORK_MARKERS, JobContext, JobFailed, remove_tree
 from .progress import (IMPORT_PREPARE, PUBLISH, STAGE_DOWNLOAD, STAGE_POSTPROCESS, STAGE_PREPARE,
-                       STAGE_VIDEO_DOWNLOAD, DownloadTracker, ProgressTracker)
+                       STAGE_COPY, STAGE_COPY_DOWNLOAD, STAGE_VIDEO_DOWNLOAD, DownloadTracker, ProgressTracker)
 
 __all__ = ["Handler", "GenerateHandler", "InstrumentalHandler", "ImportHandler", "PublishHandler",
-           "VideoHandler", "download_video", "publish_video", "INPUT_VIDEO_STEM",
+           "VideoHandler", "CopyHandler", "COPY_RETRY_S", "download_video", "publish_video", "INPUT_VIDEO_STEM",
            "HANDLERS", "prepare_lyrics", "align_lines", "ultrasinger_args", "parse_lrc", "lyrics_lines", "lrc_matches", "audio_only_copy", "to_mp3",
            "download_youtube", "download_link", "download_song_youtube", "search_youtube",
            "rank_search_results", "song_end_ms"]
@@ -288,20 +289,16 @@ def _carry_video(ctx: JobContext, job: Job, storage: Storage, old_rel: str, resu
         ctx.log(job.id, f"Предупреждение: видео прежней версии не перенесено: {e}")
 
 
-def publish_song(ctx: JobContext, job: Job, src: Job) -> None:
-    """Выложить результат generate-задания ``src`` (оно же ``job`` или источник «Выложить повторно»)."""
-    rel_dir = _song_rel_dir(src)
-    job_dir = ctx.paths.job(rel_dir, src.id)
-    result = job_dir / "result"
-    if not result.is_dir():
-        raise JobFailed("publish", "ошибка выкладки: результат задания не найден в томе")
-    _start_publish(ctx, job)
-    p = src.params
-    replaced = p.get("replace_rel_dir") if p.get("replace") else None
+class _PublishFailed(Exception):
+    """Выкладка в одно хранилище не удалась (текст — причина и судьба прежней версии)."""
+
+
+def _publish_into(ctx: JobContext, job: Job, storage: Storage, rel_dir: str, result: Path,
+                  replaced: str | None) -> bool:
+    """Выкладка ``result`` в одно хранилище по прежним правилам замены (истории 23, 34).
+    Возвращает «прежняя версия ``replaced`` ушла из этого хранилища в корзину»."""
     item = None
     try:
-        # замена — в хранилище заменяемой песни, новая песня — в основную цель
-        storage = ctx.storage(p.get("target_id") if replaced else None)
         old_here = bool(replaced) and storage.exists(replaced)
         if old_here:
             _carry_video(ctx, job, storage, replaced, result)
@@ -320,27 +317,117 @@ def publish_song(ctx: JobContext, job: Job, src: Job) -> None:
                 note = "; прежняя версия возвращена на место"
             except (StorageError, TrashError, OSError) as e2:
                 note = f"; прежняя версия осталась в корзине ({e2})"
-        raise _publish_error(ctx, e, note, target_id=p.get("target_id") if replaced else None) from None
+        raise _PublishFailed(f"{e}{note}") from None
     ctx.log(job.id, f"Выложено в «{storage.label}»: {rel_dir} ({len(written)} файлов).")
-    if old_here and replaced != rel_dir:
-        # другая папка: сначала выложена новая, теперь старая — в корзину
+    if not old_here:
+        return False
+    if replaced == rel_dir:
+        return True
+    # другая папка: сначала выложена новая, теперь старая — в корзину
+    try:
+        item = ctx.trash.move_to_trash(storage, replaced, reason="заменена новой версией")
+        ctx.log(job.id, f"Прежняя версия «{replaced}» перенесена в корзину ({item.id}).")
+        return True
+    except (StorageError, TrashError, OSError) as e:
+        ctx.log(job.id, f"Предупреждение: прежняя версия «{replaced}» не перенесена в корзину: {e}")
+        return False
+
+
+def _target_name(ctx: JobContext, target_id: str | None) -> str:
+    """Имя хранилища для сообщений (удалённое из настроек — его id)."""
+    try:
+        target = ctx.target_of(target_id)
+    except StorageError:
+        return str(target_id or "")
+    return target.name or target.label
+
+
+def _publish_ids(ctx: JobContext, p: dict, replaced: str | None) -> list[str]:
+    """Куда выкладывать новую песню (Решения §8): локальное, основная цель, а при замене —
+    ещё и хранилище заменяемой песни (история 38)."""
+    ids = [LOCAL_TARGET_ID]
+    default = ctx.settings.get_default_target_id()
+    if default not in ids:
+        ids.append(default)
+    if replaced:
         try:
-            item = ctx.trash.move_to_trash(storage, replaced, reason="заменена новой версией")
-            ctx.log(job.id, f"Прежняя версия «{replaced}» перенесена в корзину ({item.id}).")
-        except (StorageError, TrashError, OSError) as e:
-            ctx.log(job.id, f"Предупреждение: прежняя версия «{replaced}» не перенесена в корзину: {e}")
-            replaced = None
+            own = ctx.target_of(p.get("target_id")).id
+        except StorageError:
+            own = None  # хранилище заменяемой песни удалено из настроек
+        if own and own not in ids:
+            ids.append(own)
+    return ids
+
+
+def publish_song(ctx: JobContext, job: Job, src: Job) -> None:
+    """Выложить результат generate-задания ``src`` (оно же ``job`` или источник «Выложить повторно»):
+    сначала в локальное хранилище, затем в основную цель (Решения §8)."""
+    rel_dir = _song_rel_dir(src)
+    job_dir = ctx.paths.job(rel_dir, src.id)
+    result = job_dir / "result"
+    if not result.is_dir():
+        raise JobFailed("publish", "ошибка выкладки: результат задания не найден в томе")
+    _start_publish(ctx, job)
+    p = src.params
+    replaced = p.get("replace_rel_dir") if p.get("replace") else None
+    default = ctx.settings.get_default_target_id()
+    ids = _publish_ids(ctx, p, replaced)
+    published: dict[str, tuple[Storage, bool]] = {}  # id хранилища → (Storage, прежняя ушла в корзину)
+    for tid in ids:
+        try:
+            try:
+                storage = ctx.storage(tid)
+            except StorageError as e:
+                raise _PublishFailed(str(e)) from None
+            published[tid] = (storage, _publish_into(ctx, job, storage, rel_dir, result, replaced))
+        except _PublishFailed as e:
+            _reset(ctx, tid)
+            if tid == LOCAL_TARGET_ID:
+                raise JobFailed("publish", f"ошибка выкладки: {e}") from None
+            name = _target_name(ctx, tid)
+            what = f"Основная цель «{name}» недоступна" if tid == default else f"Хранилище «{name}» недоступно"
+            ctx.log(job.id, f"{what}: {e}; песня сохранена в локальном хранилище и докопируется, "
+                            "когда цель станет доступна")
     debug = job_dir / "debug"
     if debug.is_dir():  # отладка выравнивания — в папку песни тома (Решения §3)
         dest = ctx.paths.song_at(rel_dir) / "debug"
         shutil.rmtree(dest, ignore_errors=True)
         shutil.move(str(debug), str(dest))
-    own_id = _save_sources(ctx, job, src, rel_dir, replaced)
-    _index(ctx, job, storage, rel_dir, own_id, removed=replaced)
+    gone = replaced if any(removed for _, removed in published.values()) else None
+    own_id = _save_sources(ctx, job, src, rel_dir, gone)
+    for storage, removed in published.values():
+        _index(ctx, job, storage, rel_dir, own_id, removed=replaced if removed else None)
     remove_tree(job_dir)
+    local = published[LOCAL_TARGET_ID][0]
+    inst = None
     if src.type == "import" and src.params.get("instrumental"):
-        _enqueue_instrumental(ctx, job, src, storage, rel_dir)
+        # минусовка (demucs — один раз) делается в локальном хранилище, остальным её привозит
+        # «Копирование» с заменой после её окончания (R12: всегда локально + цель)
+        inst = _enqueue_instrumental(ctx, job, src, local, rel_dir)
+    for tid in ids:
+        if tid == LOCAL_TARGET_ID or (tid in published and inst is None):
+            continue
+        late = tid not in published  # цель была недоступна — песня докопируется целиком
+        _enqueue_copy_from_local(ctx, job, src, local, rel_dir, tid,
+                                 replace=bool(p.get("replace")) if late else True,
+                                 replace_rel_dir=replaced if late else None,
+                                 after_job=inst.id if inst else None)
     _done(ctx, job)
+
+
+def _enqueue_copy_from_local(ctx: JobContext, job: Job, src: Job, local: Storage, rel_dir: str, to: str, *,
+                             replace: bool, replace_rel_dir: str | None, after_job: int | None) -> None:
+    """Копирование песни из локального хранилища в ``to`` с ожиданием цели; сбой — предупреждение."""
+    try:
+        entry = local.read_song(rel_dir)
+        copy = ctx.jobs.enqueue_copy(
+            {"artist": src.artist, "title": src.title, "song_id": song_id_for(local.target_id, rel_dir)},
+            rel_dir=rel_dir, txt_name=entry.txt_name if entry else "", from_target=local.target_id,
+            to_target=to, replace=replace, wait=True, replace_rel_dir=replace_rel_dir,
+            after_job=after_job, parent_id=job.id)
+        ctx.log(job.id, f"Поставлено задание копирования в «{_target_name(ctx, to)}» #{copy.id}.")
+    except Exception as e:  # noqa: BLE001 — песня уже выложена локально
+        ctx.log(job.id, f"Предупреждение: копирование в «{_target_name(ctx, to)}» не поставлено: {e}")
 
 
 def align_lines(ctx: JobContext, job_id: int, out_dir: Path, lyrics: str) -> None:
@@ -800,7 +887,7 @@ def to_mp3(ctx: JobContext, job_id: int, src: Path, dest: Path) -> None:
         raise JobFailed("input", CONVERT_MESSAGE)
 
 
-def _enqueue_instrumental(ctx: JobContext, job: Job, src: Job, storage: Storage, rel_dir: str) -> None:
+def _enqueue_instrumental(ctx: JobContext, job: Job, src: Job, storage: Storage, rel_dir: str) -> Job | None:
     """Импорт с галочкой «Сделать минусовку» → обычное задание instrumental (история 19).
     Сбой постановки импорт не роняет — песня уже выложена."""
     try:
@@ -814,8 +901,10 @@ def _enqueue_instrumental(ctx: JobContext, job: Job, src: Job, storage: Storage,
                                                  "song_id": song_id_for(storage.target_id, rel_dir)},
                                 params, parent_id=src.id)
         ctx.log(job.id, f"Поставлено задание минусовки #{inst.id}.")
+        return inst
     except Exception as e:  # noqa: BLE001
         ctx.log(job.id, f"Предупреждение: минусовка не поставлена: {e}")
+        return None
 
 
 class ImportHandler:
@@ -1093,10 +1182,143 @@ class PublishHandler:
             raise JobFailed("input", f"Задание типа «{src.type}» нельзя выложить повторно")
 
 
+# ============================================================================ copy
+
+COPY_RETRY_S = 60  # ожидающее копирование повторяется раз в минуту (история 36)
+COPY_LOG_EVERY_S = 600  # строка «недоступно» в логе — не чаще раза в 10 минут
+
+
+def _later(seconds: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+class CopyHandler:
+    """«Копирование»: папка песни из одного хранилища в другое (Решения §9, истории 18–22, 36)."""
+    needs_gpu = False
+
+    def run(self, job: Job, ctx: JobContext) -> None:
+        p = job.params
+        rel_dir = p.get("rel_dir") or ""
+        if not rel_dir or not p.get("from_target") or not p.get("to_target"):
+            raise JobFailed("input", "Задание копирования без песни или хранилищ")
+        src_name, dst_name = _target_name(ctx, p["from_target"]), _target_name(ctx, p["to_target"])
+        ctx.check_cancel(job.id, force=True)
+        after = p.get("after_job")
+        dep = ctx.jobs.get(after) if after else None
+        if dep is not None and dep.state not in FINAL_STATES:
+            # минусовка ещё делается — копировать песню без неё нельзя
+            self._wait(ctx, job, f"Ждёт задание #{after}", f"Ждёт окончания задания #{after}.")
+            return
+        in_dir = self._download(ctx, job, rel_dir, src_name)
+        try:
+            ctx.target_of(p["to_target"])
+        except StorageError as e:
+            raise JobFailed("storage", f"Хранилище «{dst_name}»: {e}") from None
+        ctx.check_cancel(job.id, force=True)
+        ctx.jobs.update(job.id, state="running", stage=STAGE_COPY[0], percent=STAGE_COPY[1])
+        item = None
+        try:
+            target = ctx.storage(p["to_target"])
+            if target.exists(rel_dir):
+                if not p.get("replace"):
+                    ctx.log(job.id, f"Уже есть в «{dst_name}» — пропущено.")
+                    remove_tree(ctx.paths.job(rel_dir, job.id))
+                    _done(ctx, job)
+                    return
+                item = ctx.trash.move_to_trash(target, rel_dir, reason="заменена копией")
+                ctx.log(job.id, f"Прежняя версия в «{dst_name}» перенесена в корзину ({item.id}).")
+            written = target.upload_dir(in_dir, rel_dir)
+        except (StorageError, TrashError, OSError) as e:
+            note = ""
+            if item is not None:
+                try:
+                    if target.exists(rel_dir):
+                        target.delete_dir(rel_dir)
+                    ctx.trash.restore(target, item.id)
+                    note = "; прежняя версия возвращена на место"
+                except (StorageError, TrashError, OSError) as e2:
+                    note = f"; прежняя версия осталась в корзине ({e2})"
+            _reset(ctx, p["to_target"])
+            if p.get("wait"):
+                self._wait(ctx, job, f"Ждёт хранилище «{dst_name}»",
+                           f"Хранилище «{dst_name}» недоступно: {e}{note}; повтор через минуту.")
+                return
+            raise JobFailed("storage", f"Хранилище «{dst_name}» недоступно: {e}{note}") from None
+        ctx.log(job.id, f"Выложено в «{target.label}»: {rel_dir} ({len(written)} файлов).")
+        removed = self._trash_replaced(ctx, job, target, rel_dir, dst_name)
+        own = ctx.library.get(ctx.target_of(p["from_target"]).id, rel_dir)
+        _index(ctx, job, target, rel_dir, own.own_song_id if own else None, removed=removed)
+        remove_tree(ctx.paths.job(rel_dir, job.id))
+        _done(ctx, job)
+
+    @staticmethod
+    def _download(ctx: JobContext, job: Job, rel_dir: str, src_name: str) -> Path:
+        """Папка песни из источника в ``jobs/<id>/in/``; уже скачанная (restart, ожидание) — как есть."""
+        in_dir = ctx.paths.job_in(rel_dir, job.id)
+        if in_dir.is_dir():
+            return in_dir
+        prev = ctx.paths.job_in(rel_dir, job.parent_id) if job.parent_id else None
+        if prev is not None and prev.is_dir():  # «Перезапустить»: вход родителя уже скачан
+            in_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(prev), str(in_dir))
+            remove_tree(prev.parent)
+            ctx.log(job.id, "Папка песни уже скачана прежним заданием — повторно не качается.")
+            return in_dir
+        ctx.jobs.update(job.id, stage=STAGE_COPY_DOWNLOAD[0], percent=STAGE_COPY_DOWNLOAD[1])
+        ctx.log(job.id, f"Скачивание из «{src_name}»: {rel_dir}")
+        tmp = in_dir.with_name("in.part")
+        try:
+            source = ctx.storage(job.params["from_target"])
+            if source.read_song(rel_dir) is None:
+                raise JobFailed("source", f"Песни «{rel_dir}» нет в «{src_name}»")
+            shutil.rmtree(tmp, ignore_errors=True)
+            source.download_dir(rel_dir, tmp)
+            tmp.rename(in_dir)
+        except (StorageError, OSError) as e:
+            shutil.rmtree(tmp, ignore_errors=True)
+            _reset(ctx, job.params["from_target"])
+            raise JobFailed("storage", f"Хранилище-источник «{src_name}» недоступно: {e}") from None
+        except JobFailed:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        return in_dir
+
+    @staticmethod
+    def _trash_replaced(ctx: JobContext, job: Job, target: Storage, rel_dir: str, name: str) -> str | None:
+        """Замена с другой папкой (§8): прежняя версия ``replace_rel_dir`` — в корзину цели."""
+        old = job.params.get("replace_rel_dir")
+        if not old or old == rel_dir:
+            return None
+        try:
+            if not target.exists(old):
+                return None
+            item = ctx.trash.move_to_trash(target, old, reason="заменена новой версией")
+            ctx.log(job.id, f"Прежняя версия «{old}» в «{name}» перенесена в корзину ({item.id}).")
+            return old
+        except (StorageError, TrashError, OSError) as e:
+            ctx.log(job.id, f"Предупреждение: прежняя версия «{old}» в «{name}» не перенесена в корзину: {e}")
+            return None
+
+    @staticmethod
+    def _wait(ctx: JobContext, job: Job, stage: str, message: str) -> None:
+        """Копирование ждёт (цель недоступна или минусовка не готова): обратно в очередь, повтор
+        через минуту; строка лога — не чаще раза в 10 минут."""
+        ctx.check_cancel(job.id, force=True)
+        p = dict(job.params)
+        last = p.get("wait_logged_at")
+        if not last or datetime.fromisoformat(_later(0)) - datetime.fromisoformat(last) >= timedelta(
+                seconds=COPY_LOG_EVERY_S):
+            ctx.log(job.id, message)
+            p["wait_logged_at"] = now()
+        p["retry_at"] = _later(COPY_RETRY_S)
+        ctx.jobs.update(job.id, state="queued", stage=stage, params=p)
+
+
 HANDLERS: dict[str, Handler] = {
     "generate": GenerateHandler(),
     "instrumental": InstrumentalHandler(),
     "import": ImportHandler(),
     "publish": PublishHandler(),
     "video": VideoHandler(),
+    "copy": CopyHandler(),
 }

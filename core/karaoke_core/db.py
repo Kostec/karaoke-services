@@ -234,21 +234,56 @@ class Jobs:
 
     def claim_next(self, types: Iterable[str] | None = None) -> Job | None:
         """Атомарно забрать самое старое задание из очереди (queued → running).
-        ``types`` — только задания этих типов (например, без GPU — только выкладка)."""
+        ``types`` — только задания этих типов (например, без GPU — только выкладка).
+        Задание с ``params.retry_at`` в будущем (копирование ждёт хранилище) пропускается."""
+        stamp = now()
         where, args = "state='queued'", []
         if types is not None:
             args = list(types)
             if not args:
                 return None
             where += f" AND type IN ({', '.join('?' * len(args))})"
+        where += " AND (json_extract(params, '$.retry_at') IS NULL OR json_extract(params, '$.retry_at') <= ?)"
         with _tx(self.conn):
             row = self.conn.execute(
                 "UPDATE jobs SET state='running', started_at=?"
                 f" WHERE id = (SELECT id FROM jobs WHERE {where} ORDER BY id LIMIT 1)"
                 " RETURNING *",
-                (now(), *args),
+                (stamp, *args, stamp),
             ).fetchone()
         return Job.from_row(row) if row else None
+
+    def active_copy(self, rel_dir: str, from_target: str, to_target: str) -> Job | None:
+        """Незавершённое «Копирование» этой песни в эту цель (правило дубля, история 21)."""
+        for job in self.active("copy"):
+            p = job.params
+            if (p.get("rel_dir"), p.get("from_target"), p.get("to_target")) == (rel_dir, from_target, to_target):
+                return job
+        return None
+
+    def enqueue_copy(self, song_ref: Any, *, rel_dir: str, txt_name: str, from_target: str, to_target: str,
+                     replace: bool = False, wait: bool = False, replace_rel_dir: str | None = None,
+                     after_job: int | None = None, parent_id: int | None = None) -> Job:
+        """Задание «Копирование» (Решения §9) — единственная сборка его params; такое же
+        незавершённое (песня → цель) возвращается вместо нового. ``replace_rel_dir`` — прежняя
+        папка заменённой песни (уйдёт в корзину цели), ``after_job`` — ждать конца этого задания."""
+        existing = self.active_copy(rel_dir, from_target, to_target)
+        if existing is not None:
+            return existing
+        params: dict[str, Any] = {"rel_dir": rel_dir, "txt_name": txt_name, "from_target": from_target,
+                                  "to_target": to_target, "replace": bool(replace), "wait": bool(wait)}
+        if replace_rel_dir and replace_rel_dir != rel_dir:
+            params["replace_rel_dir"] = replace_rel_dir
+        if after_job:
+            params["after_job"] = after_job
+        return self.enqueue("copy", song_ref, params, parent_id=parent_id)
+
+    def active(self, type: str) -> list[Job]:
+        """Незавершённые задания типа ``type`` (queued/running/publishing), старые первыми."""
+        marks = ", ".join("?" * len(ACTIVE_STATES))
+        rows = self.conn.execute(
+            f"SELECT * FROM jobs WHERE type=? AND state IN ({marks}) ORDER BY id", (type, *ACTIVE_STATES))
+        return [Job.from_row(r) for r in rows]
 
     def get(self, id: int) -> Job | None:
         row = self.conn.execute("SELECT * FROM jobs WHERE id=?", (id,)).fetchone()
