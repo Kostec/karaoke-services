@@ -28,6 +28,7 @@ from .api_link import router as link_router
 from .api_lyrics import router as lyrics_router
 from .api_settings import router as settings_router
 from .api_songs import router as songs_router
+from .api_targets import router as targets_router
 from .api_usdb import router as usdb_router
 from .context import ApiError, AppContext
 from .params import defaults_payload
@@ -140,6 +141,7 @@ def create_app(*, data_dir: str | Path | None = None, env: dict | None = None,
     app.include_router(jobs_router)
     app.include_router(songs_router)
     app.include_router(settings_router)
+    app.include_router(targets_router)
     app.include_router(lyrics_router)
     app.include_router(usdb_router)
     app.include_router(link_router)

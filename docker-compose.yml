@@ -49,6 +49,7 @@ services:
     volumes:
       - data:/data
       - ${LOCAL_OUTPUT_ROOT:-./output}:/output
+      - ${HOST_FOLDERS_ROOT:-D:/}:/host
 
   worker:
     build:
@@ -70,6 +71,7 @@ services:
       - data:/data
       - models:/models
       - ${LOCAL_OUTPUT_ROOT:-./output}:/output
+      - ${HOST_FOLDERS_ROOT:-D:/}:/host
     deploy:
       resources:
         reservations:

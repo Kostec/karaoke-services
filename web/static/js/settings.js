@@ -1,11 +1,14 @@
-// Раздел «Настройки»: папка результата (SMB-шара или локальная папка ПК) с проверкой; учётка usdb;
-// ключ доступа Яндекс Музыки (OAuth-токен аккаунта — сервис не спрашивает логин и пароль Яндекса).
+// Раздел «Настройки»: «Куда выкладывать» — список хранилищ (локальное, SMB, папка ПК, Яндекс Диск,
+// WebDAV, Google Диск) с проверкой и основной целью; учётка usdb; ключ доступа Яндекс Музыки
+// (OAuth-токен аккаунта — сервис не спрашивает логин и пароль Яндекса).
 
-import { api } from './api.js';
+import { api, request } from './api.js';
 import { h, clear, toast, field, confirmDialog } from './ui.js';
+import { targetBody, savedBody, formKind, fieldTarget, needsLocalHint, sameAccount } from './targets-logic.js';
 import { yandexSaveAction, YM_REMOVE_CONFIRM, YM_KEPT, YM_EMPTY } from './link-logic.js';
 
-let root, hooks, f = {}, current = null, built = false;
+let root, hooks, built = false;
+const T = {}; // карточка «Куда выкладывать»: элементы, список, форма
 let u = {}, usdbCurrent = null; // карточка «usdb»
 let y = {}, ymCurrent = null; // карточка «Яндекс Музыка»: {has_token}
 
@@ -16,14 +19,7 @@ export function mount(section, ctx) {
 
 export async function show() {
   if (!built) build();
-  try {
-    current = await api.output();
-    fill(current);
-    f.loadErr.hidden = true;
-  } catch (e) {
-    f.loadErr.textContent = `Не удалось загрузить настройки: ${e.detail}`;
-    f.loadErr.hidden = false;
-  }
+  await loadTargets();
   try {
     usdbCurrent = await api.usdbAccount();
     fillUsdb(usdbCurrent);
@@ -38,46 +34,14 @@ export async function show() {
   }
 }
 
+export function hide() {
+  stopGooglePoll();
+}
+
 function build() {
   built = true;
-  f.loadErr = h('div', { class: 'banner err', hidden: true });
-  f.current = h('div', { class: 'small muted' });
-  f.kindSmb = h('input', { type: 'radio', name: 'kind', value: 'smb' });
-  f.kindLocal = h('input', { type: 'radio', name: 'kind', value: 'local' });
-  f.host = h('input', { type: 'text', autocomplete: 'off', name: 'host' });
-  f.share = h('input', { type: 'text', autocomplete: 'off', name: 'share' });
-  f.user = h('input', { type: 'text', autocomplete: 'username', name: 'user' });
-  f.pwd = h('input', { type: 'password', autocomplete: 'new-password', name: 'password' });
-  f.passHint = h('div', { class: 'small muted' });
-  f.path = h('input', { type: 'text', autocomplete: 'off', name: 'path', placeholder: 'пусто — корень' });
-  f.winPath = h('div', { class: 'small' });
-  f.result = h('div', { class: 'banner', hidden: true, role: 'status' });
-  f.test = h('button', { type: 'button', onclick: () => submit(false) }, 'Проверить');
-  f.save = h('button', { type: 'submit', class: 'primary' }, 'Сохранить');
-
-  f.smbBox = h('div', {},
-    h('div', { class: 'row2' }, field('Адрес сервера', f.host), field('Имя шары', f.share)),
-    h('div', { class: 'row2' }, field('Логин', f.user, 'пусто — гостевой доступ'),
-      h('div', {}, field('Пароль', f.pwd), f.passHint)));
-
-  const form = h('form', { class: 'card', novalidate: true },
-    h('h3', { style: 'margin-top:0' }, 'Папка результата'),
-    f.current,
-    h('fieldset', { class: 'field', style: 'border:0;padding:0;margin:12px 0' },
-      h('legend', {}, 'Куда выкладывать песни'),
-      h('div', { class: 'radio-row' },
-        h('label', {}, f.kindSmb, 'SMB-шара'),
-        h('label', {}, f.kindLocal, 'Локальная папка ПК'))),
-    f.smbBox,
-    field('Подпапка', f.path, 'внутри шары или корня локальной папки'),
-    f.winPath,
-    f.result,
-    h('div', { class: 'actions' }, f.test, f.save),
-    h('p', { class: 'small muted' }, 'Проверка записывает и удаляет пробный файл. Сохраняется только цель, прошедшая проверку.'));
-  form.addEventListener('submit', (e) => { e.preventDefault(); submit(true); });
-  for (const el of [f.kindSmb, f.kindLocal]) el.addEventListener('change', updateKind);
-  for (const el of [f.host, f.share, f.user, f.path]) el.addEventListener('input', updateKind);
-  clear(root).append(h('div', { class: 'view-head' }, h('h2', {}, 'Настройки')), f.loadErr, form, buildUsdb(), buildYandex());
+  clear(root).append(h('div', { class: 'view-head' }, h('h2', {}, 'Настройки')),
+    buildTargets(), buildUsdb(), buildYandex());
 }
 
 // ---------------------------------------------------------------- usdb
@@ -248,96 +212,482 @@ function showYandexResult(kind, text) {
   y.result.hidden = false;
 }
 
-function fill(t) {
-  f.kindSmb.checked = t.kind !== 'local';
-  f.kindLocal.checked = t.kind === 'local';
-  f.host.value = t.host || '';
-  f.share.value = t.share || '';
-  f.user.value = t.user || '';
-  f.pwd.value = '';
-  f.path.value = t.path || '';
-  f.current.textContent = `Сейчас: ${t.label || '—'}`;
-  f.result.hidden = true;
-  updateKind();
+// ---------------------------------------------------------------- Куда выкладывать
+
+const KINDS = {
+  smb: 'SMB-шара',
+  local: 'Папка ПК',
+  yandex: 'Яндекс Диск',
+  webdav: 'WebDAV',
+  gdrive: 'Google Диск',
+};
+const KIND_HINTS = {
+  smb: 'Сетевая папка (Samba), например на Raspberry Pi.',
+  local: 'Любая папка внутри «Папок ПК» или «Локального хранилища».',
+  yandex: 'Яндекс Диск по WebDAV с паролем приложения.',
+  webdav: 'Nextcloud, NAS или другой сервер WebDAV.',
+  gdrive: 'Google Диск через вход в аккаунт Google.',
+};
+const YANDEX_PASS_HELP = 'https://id.yandex.ru/security/app-passwords';
+const GOOGLE_CONSOLE = 'https://console.cloud.google.com/apis/credentials';
+const KEEP_HINT = 'сохранён — оставьте пустым, чтобы не менять';
+const GOOGLE_POLL_MS = 2000;
+const GOOGLE_POLL_MAX_MS = 10 * 60 * 1000;
+
+function buildTargets() {
+  T.loadErr = h('div', { class: 'banner err', hidden: true });
+  T.list = h('ul', { class: 'target-list' });
+  T.result = h('div', { class: 'banner', hidden: true, role: 'status' });
+  T.statuses = {};
+  T.add = h('button', { type: 'button', onclick: openKindChooser }, '+ Добавить хранилище');
+  T.chooser = h('div', { class: 'target-kinds', hidden: true },
+    h('div', { class: 'small muted' }, 'Какое хранилище добавить?'),
+    h('div', { class: 'target-kind-grid' },
+      Object.entries(KINDS).map(([kind, label]) => h('button', {
+        type: 'button', class: 'target-kind', onclick: () => openForm({ kind }),
+      }, h('b', {}, label), h('span', { class: 'small muted' }, KIND_HINTS[kind])))),
+    h('div', { class: 'actions' }, h('button', { type: 'button', onclick: closeForm }, 'Отмена')));
+  T.formBox = h('div', { hidden: true });
+  return h('section', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Куда выкладывать'),
+    h('p', { class: 'small muted' }, 'Новые песни выкладываются в «Локальное хранилище» и в основную цель. ',
+      'Переключение основной цели не меняет сами хранилища: их адреса и пароли сохраняются.'),
+    T.loadErr, T.list, T.result,
+    h('div', { class: 'actions' }, T.add),
+    T.chooser, T.formBox);
 }
 
-function kind() {
-  return f.kindLocal.checked ? 'local' : 'smb';
-}
-
-function sameAccount() {
-  return current && current.kind === 'smb' && kind() === 'smb'
-    && f.host.value.trim() === current.host && f.share.value.trim().replace(/^\/+|\/+$/g, '') === current.share
-    && f.user.value.trim() === current.user;
-}
-
-function windowsPath() {
-  const root = (current?.local_root_host || '').replace(/\//g, '\\').replace(/\\+$/, '');
-  const sub = f.path.value.trim().replace(/[\\/]+/g, '\\').replace(/^\\+|\\+$/g, '');
-  if (!root) return sub ? `…\\${sub}` : '';
-  return sub ? `${root}\\${sub}` : (root.endsWith(':') ? `${root}\\` : root);
-}
-
-function updateKind() {
-  const local = kind() === 'local';
-  f.smbBox.hidden = local;
-  f.winPath.hidden = !local;
-  f.winPath.textContent = local ? `Папка на ПК: ${windowsPath() || 'корень не задан в .env (LOCAL_OUTPUT_ROOT)'}` : '';
-  if (sameAccount() && current.has_password) {
-    f.pwd.placeholder = 'сохранён — оставьте пустым, чтобы не менять';
-    f.passHint.textContent = '';
-  } else {
-    f.pwd.placeholder = '';
-    f.passHint.textContent = f.user.value.trim() && !local ? 'Сервер, шара или логин изменились — введите пароль' : '';
-  }
-}
-
-function body() {
-  const b = { kind: kind(), path: f.path.value.trim() };
-  if (b.kind === 'smb') {
-    Object.assign(b, { host: f.host.value.trim(), share: f.share.value.trim(), user: f.user.value.trim() });
-    if (f.pwd.value) b['password'] = f.pwd.value; // пусто — «не менять»
-  }
-  return b;
-}
-
-async function submit(save) {
-  const btn = save ? f.save : f.test;
-  f.test.disabled = f.save.disabled = true;
-  const label = btn.textContent;
-  btn.textContent = save ? 'Сохранение…' : 'Проверка…';
-  f.result.hidden = true;
+async function loadTargets() {
   try {
+    const r = await request('GET', '/api/targets');
+    T.targets = r.targets;
+    T.defaultId = r.default_id;
+    T.roots = r.roots || { host: false, output: true };
+    T.loadErr.hidden = true;
+    renderTargets();
+  } catch (e) {
+    T.loadErr.textContent = `Не удалось загрузить хранилища: ${e.detail}`;
+    T.loadErr.hidden = false;
+  }
+}
+
+function renderTargets() {
+  clear(T.list);
+  for (const t of T.targets || []) {
+    const st = T.statuses[t.id];
+    const radio = h('input', { type: 'radio', name: 'default-target', value: t.id, checked: t.id === T.defaultId,
+      title: 'Основная цель', onchange: () => setDefault(t) });
+    const status = st ? h('span', { class: `tag ${st.ok ? 'on' : 'bad'}`, title: st.text },
+      st.ok ? 'доступно' : 'ошибка') : null;
+    const buttons = [h('button', { type: 'button', onclick: (e) => checkTarget(t, e.currentTarget) }, 'Проверить')];
+    if (!t.builtin) {
+      buttons.push(h('button', { type: 'button', onclick: () => openForm(t) }, 'Изменить'),
+        h('button', { type: 'button', class: 'danger', onclick: () => removeTarget(t) }, 'Удалить'));
+    }
+    const extra = t.kind === 'gdrive' ? h('span', { class: `tag ${t.connected ? 'on' : ''}` },
+      t.connected ? 'подключено' : 'не подключено') : null;
+    T.list.append(h('li', { class: `target-item${t.id === T.defaultId ? ' default' : ''}` },
+      h('label', { class: 'target-radio', title: 'Основная цель' }, radio, h('span', { class: 'small' }, 'основная')),
+      h('div', { class: 'target-main' },
+        h('div', { class: 'target-title' }, h('b', {}, t.name || t.label),
+          h('span', { class: 'tag' }, t.builtin ? 'встроенное' : (KINDS[formKind(t)] || t.kind)), extra, status),
+        h('div', { class: 'small muted target-label' }, t.label),
+        st && !st.ok ? h('div', { class: 'small target-error' }, st.text) : null),
+      h('div', { class: 'target-buttons' }, buttons)));
+  }
+}
+
+function showTargetsResult(kind, text) {
+  T.result.className = `banner ${kind}`;
+  T.result.textContent = text;
+  T.result.hidden = false;
+}
+
+async function setDefault(t) {
+  try {
+    const r = await request('PUT', '/api/targets/default', { id: t.id });
+    T.targets = r.targets;
+    T.defaultId = r.default_id;
+    renderTargets();
+    showTargetsResult('ok', `Основная цель: «${t.name || t.label}». Список песен пересканируется.`);
+    hooks?.refreshStatus?.();
+  } catch (e) {
+    showTargetsResult('err', e.detail);
+    renderTargets();
+  }
+}
+
+async function checkTarget(t, btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Проверка…';
+  try {
+    await request('POST', '/api/targets/test', savedBody(t));
+    T.statuses[t.id] = { ok: true, text: 'Проверка пройдена' };
+  } catch (e) {
+    T.statuses[t.id] = { ok: false, text: e.detail };
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+    renderTargets();
+  }
+}
+
+async function removeTarget(t) {
+  if (t.id === T.defaultId) {
+    showTargetsResult('err', 'Сначала выберите другую основную цель');
+    return;
+  }
+  const ok = await confirmDialog(`Удалить хранилище «${t.name || t.label}» из настроек? Песни в нём не удаляются, `
+    + 'но пропадут из списка «Песен».', 'Удалить', { danger: true });
+  if (!ok) return;
+  try {
+    await request('DELETE', `/api/targets/${encodeURIComponent(t.id)}`);
+    delete T.statuses[t.id];
+    if (T.form?.target?.id === t.id) closeForm();
+    await loadTargets();
+    toast('Хранилище удалено');
+  } catch (e) {
+    showTargetsResult('err', e.detail);
+  }
+}
+
+// ---- форма добавления / правки
+
+function openKindChooser() {
+  closeForm();
+  T.result.hidden = true;
+  T.chooser.hidden = false;
+  T.add.hidden = true;
+}
+
+function closeForm() {
+  stopGooglePoll();
+  T.form = null;
+  T.chooser.hidden = true;
+  clear(T.formBox).hidden = true;
+  T.add.hidden = false;
+}
+
+function input(name, attrs = {}) {
+  return h('input', { type: 'text', autocomplete: 'off', name, spellcheck: 'false', ...attrs });
+}
+
+function openForm(t) {
+  closeForm();
+  T.add.hidden = true;
+  T.result.hidden = true;
+  const kind = formKind(t);
+  const editing = Boolean(t.id);
+  const F = T.form = { kind, target: editing ? t : null, inputs: {} };
+  const I = F.inputs;
+  I.name = input('name', { placeholder: 'пусто — по адресу' });
+  I.name.value = t.name || '';
+  const rows = [field('Название', I.name)];
+
+  if (kind === 'smb') {
+    I.host = input('host', { placeholder: '192.168.0.129' });
+    I.share = input('share');
+    I.path = input('path', { placeholder: 'пусто — корень шары' });
+    I.user = input('user', { autocomplete: 'username' });
+    rows.push(h('div', { class: 'row2' }, field('Сервер (IP)', I.host), field('Имя шары', I.share)),
+      h('p', { class: 'small muted' }, 'Имена вроде pi.local внутри контейнера не работают — впишите IP-адрес.'),
+      field('Путь', I.path, 'папка внутри шары'),
+      h('div', { class: 'row2' }, field('Логин', I.user, 'пусто — гостевой доступ'), passwordField(F, 'Пароль')));
+  } else if (kind === 'yandex') {
+    I.user = input('user', { autocomplete: 'username', placeholder: 'login@yandex.ru' });
+    I.path = input('path', { placeholder: 'Караоке' });
+    rows.push(h('div', { class: 'row2' }, field('Логин Яндекса', I.user), passwordField(F, 'Пароль приложения')),
+      h('p', { class: 'small muted' }, 'Нужен не основной пароль, а пароль приложения: ',
+        h('a', { href: YANDEX_PASS_HELP, target: '_blank', rel: 'noopener' }, 'id.yandex.ru → Безопасность → Пароли приложений'),
+        ', тип «Файлы WebDAV».'),
+      field('Папка на Диске', I.path, 'пусто — корень Диска'));
+  } else if (kind === 'webdav') {
+    I.url = input('url', { type: 'url', placeholder: 'https://cloud.example.ru/remote.php/dav/files/me' });
+    I.user = input('user', { autocomplete: 'username' });
+    I.path = input('path', { placeholder: 'Karaoke' });
+    rows.push(field('Адрес WebDAV', I.url),
+      h('div', { class: 'row2' }, field('Логин', I.user, 'пусто — без входа'), passwordField(F, 'Пароль')),
+      field('Путь', I.path, 'папка на сервере'));
+  } else if (kind === 'gdrive') {
+    I.client_id = input('client_id', { placeholder: '…apps.googleusercontent.com' });
+    I.path = input('path', { placeholder: 'Karaoke' });
+    rows.push(h('p', { class: 'small muted' }, 'Нужен свой OAuth-клиент Google: ',
+      h('a', { href: GOOGLE_CONSOLE, target: '_blank', rel: 'noopener' }, 'Google Cloud Console'),
+      ' → Credentials → OAuth client ID, тип «Desktop app»; в проекте включите Google Drive API.'),
+    h('div', { class: 'row2' }, field('Client ID', I.client_id), passwordField(F, 'Client secret')),
+    field('Папка на Диске', I.path, 'пусто — корень «Мой диск»'));
+    if (needsLocalHint(location.hostname)) {
+      rows.push(h('div', { class: 'banner warn' },
+        'Подключите Google Диск с компьютера, где запущен сервис (адрес localhost): Google возвращает вход только туда.'));
+    }
+  } else if (kind === 'local') {
+    rows.push(buildBrowser(F, t.path || ''));
+  }
+
+  if (kind !== 'local') {
+    for (const key of ['host', 'share', 'path', 'user', 'url', 'client_id']) if (I[key]) I[key].value = t[key] || '';
+  }
+
+  F.result = h('div', { class: 'banner', hidden: true, role: 'status' });
+  F.test = h('button', { type: 'button', onclick: () => submitForm(false) }, 'Проверить');
+  F.save = h('button', { type: 'submit', class: 'primary' }, 'Сохранить');
+  const actions = [F.test];
+  if (kind === 'gdrive') {
+    const connected = editing && t.connected;
+    F.google = h('button', { type: 'button', class: connected ? '' : 'primary', onclick: googleLogin },
+      connected ? 'Войти через Google заново' : 'Войти через Google');
+    F.test.hidden = !connected;
+    actions.push(F.google);
+    if (connected) actions.push(F.save);
+  } else {
+    actions.push(F.save);
+  }
+  actions.push(h('button', { type: 'button', onclick: closeForm }, 'Отмена'));
+
+  const form = h('form', { class: 'target-form', novalidate: true },
+    h('h4', {}, editing ? `Изменить: ${t.name || t.label}` : `Новое хранилище: ${KINDS[kind]}`),
+    rows, F.result, h('div', { class: 'actions' }, actions),
+    h('p', { class: 'small muted' }, kind === 'gdrive'
+      ? 'Хранилище сохраняется после входа в Google и проверки доступа к папке.'
+      : 'Проверка записывает и удаляет пробный файл. Сохраняется только хранилище, прошедшее проверку.'));
+  form.addEventListener('submit', (e) => { e.preventDefault(); submitForm(true); });
+  for (const key of ['host', 'share', 'user', 'url', 'client_id']) I[key]?.addEventListener('input', () => updatePassHint(F));
+  clear(T.formBox).append(form);
+  T.formBox.hidden = false;
+  updatePassHint(F);
+  (I.host || I.user || I.url || I.client_id || I.name).focus();
+}
+
+function passwordField(F, label) {
+  F.inputs['password'] = h('input', { type: 'password', autocomplete: 'new-password', name: 'password' });
+  F.passHint = h('div', { class: 'small muted' });
+  return h('div', {}, field(label, F.inputs.password), F.passHint);
+}
+
+function updatePassHint(F) {
+  if (!F.inputs.password) return;
+  const same = sameAccount(F.kind, formValues(F), F.target);
+  F.inputs.password.placeholder = same ? KEEP_HINT : '';
+  F.passHint.textContent = F.target?.has_password && !same ? 'Адрес или логин изменились — введите пароль заново' : '';
+}
+
+/** Значения полей формы (папка «Папки ПК» — выбранный путь). */
+function formValues(F) {
+  const values = {};
+  for (const [key, el] of Object.entries(F.inputs)) if (el) values[key] = el.value;
+  if (F.kind === 'local') values.path = F.browser.chosen || '';
+  return values;
+}
+
+function formBody(F) {
+  return targetBody(F.kind, formValues(F), { id: F.target?.id });
+}
+
+function showFormResult(F, kind, text) {
+  F.result.className = `banner ${kind}`;
+  F.result.textContent = text;
+  F.result.hidden = false;
+}
+
+function setBusy(F, busy) {
+  for (const b of [F.test, F.save, F.google]) if (b) b.disabled = busy;
+}
+
+async function submitForm(save) {
+  const F = T.form;
+  if (!F) return;
+  if (F.kind === 'local' && !F.browser.chosen) {
+    showFormResult(F, 'err', 'Выберите папку: откройте нужную и нажмите «Выбрать эту папку»');
+    markField(F, 'path');
+    return;
+  }
+  if (F.kind === 'gdrive' && save && !F.target?.connected) {
+    googleLogin();
+    return;
+  }
+  const btn = save ? F.save : F.test;
+  const label = btn.textContent;
+  setBusy(F, true);
+  btn.textContent = save ? 'Сохранение…' : 'Проверка…';
+  F.result.hidden = true;
+  try {
+    const body = formBody(F);
     if (save) {
-      current = await api.saveOutput(body());
-      fill(current);
-      showResult('ok', `Сохранено: ${current.label}. Список песен пересканируется.`);
-      toast('Папка результата сохранена');
-      hooks?.refreshStatus();
+      const saved = F.target
+        ? await request('PUT', `/api/targets/${encodeURIComponent(F.target.id)}`, body)
+        : await request('POST', '/api/targets', body);
+      T.statuses[saved.id] = { ok: true, text: 'Проверка пройдена' };
+      closeForm();
+      await loadTargets();
+      showTargetsResult('ok', `Сохранено: «${saved.name}» (${saved.label})`);
+      toast('Хранилище сохранено');
+      hooks?.refreshStatus?.();
     } else {
-      const r = await api.testOutput(body());
-      showResult('ok', `Проверка пройдена: ${r.label}`);
+      const r = await request('POST', '/api/targets/test', body);
+      showFormResult(F, 'ok', `Проверка пройдена: ${r.label}`);
     }
   } catch (e) {
-    showResult('err', e.detail);
-    markField(e.data.field);
+    showFormResult(F, 'err', e.detail);
+    markField(F, e.data?.field);
   } finally {
     btn.textContent = label;
-    f.test.disabled = f.save.disabled = false;
+    setBusy(F, false);
   }
 }
 
-/** Подсветить поле по `field` из ответа сервера. */
-function markField(name) {
-  const el = name === 'password' ? f.pwd : { host: f.host, share: f.share, user: f.user, path: f.path }[name];
+/** Подсветить поле формы по `field` из ответа сервера. */
+function markField(F, name) {
+  const key = fieldTarget(name, F.kind);
+  const el = key === 'folder' ? F.browser.box : key ? F.inputs[key] : null;
   if (!el) return;
   el.classList.add('invalid');
-  el.addEventListener('input', () => el.classList.remove('invalid'), { once: true });
-  el.focus();
+  const off = () => el.classList.remove('invalid');
+  if (el.tagName === 'INPUT') {
+    el.addEventListener('input', off, { once: true });
+    el.focus();
+  } else {
+    el.addEventListener('click', off, { once: true });
+  }
 }
 
-function showResult(kind, text) {
-  f.result.className = `banner ${kind}`;
-  f.result.textContent = text;
-  f.result.hidden = false;
+// ---- «Папка ПК»: обзор каталогов
+
+const ROOT_LABELS = { host: 'Папки ПК', output: 'Локальное хранилище' };
+
+function buildBrowser(F, path) {
+  const parts = path.split('/').filter(Boolean);
+  const B = F.browser = {
+    root: parts[0] in ROOT_LABELS ? parts[0] : (T.roots?.host ? 'host' : 'output'),
+    path: parts.slice(1).join('/'),
+    chosen: path || '',
+  };
+  B.chosenEl = h('div', { class: 'small' });
+  B.crumbs = h('div', { class: 'browse-crumbs' });
+  B.list = h('ul', { class: 'browse-list' });
+  B.err = h('div', { class: 'small target-error', hidden: true });
+  const radios = Object.entries(ROOT_LABELS).map(([key, label]) => {
+    const disabled = key === 'host' && !T.roots?.host;
+    const r = h('input', { type: 'radio', name: 'browse-root', value: key, checked: B.root === key, disabled });
+    r.addEventListener('change', () => { B.root = key; B.path = ''; browseTo(F); });
+    return h('label', { title: disabled ? 'Корень не примонтирован — задайте HOST_FOLDERS_ROOT в .env' : null }, r, label);
+  });
+  const pick = h('button', { type: 'button', class: 'primary', onclick: () => {
+    B.chosen = `/${B.root}${B.path ? `/${B.path}` : ''}`;
+    updateChosen(F);
+  } }, 'Выбрать эту папку');
+  B.box = h('div', { class: 'browse' },
+    h('div', { class: 'radio-row' }, radios), B.crumbs, B.list, B.err,
+    h('div', { class: 'actions' }, pick), B.chosenEl);
+  updateChosen(F);
+  browseTo(F);
+  return h('div', { class: 'field' }, h('span', {}, 'Папка'), B.box,
+    h('p', { class: 'small muted' }, '«Папки ПК» — корень из переменной HOST_FOLDERS_ROOT в файле .env (по умолчанию D:/). ',
+      'Нужна папка на другом диске — впишите, например, HOST_FOLDERS_ROOT=E:/ и перезапустите сервис ',
+      '(./scripts/compose.ps1 up -d).'));
+}
+
+function updateChosen(F) {
+  const B = F.browser;
+  B.chosenEl.textContent = B.chosen ? `Выбрано: ${B.chosen}` : 'Папка не выбрана';
+  B.chosenEl.className = B.chosen ? 'small' : 'small muted';
+}
+
+async function browseTo(F) {
+  const B = F.browser;
+  B.err.hidden = true;
+  let r;
+  try {
+    r = await request('GET', `/api/targets/browse?root=${encodeURIComponent(B.root)}&path=${encodeURIComponent(B.path)}`);
+  } catch (e) {
+    if (T.form !== F) return;
+    if (B.path) { // папку удалили или не открыть — к корню
+      B.path = '';
+      browseTo(F);
+      return;
+    }
+    B.err.textContent = e.detail;
+    B.err.hidden = false;
+    clear(B.list);
+    clear(B.crumbs);
+    return;
+  }
+  if (T.form !== F) return;
+  const go = (path) => () => { B.path = path; browseTo(F); };
+  const parts = r.path ? r.path.split('/') : [];
+  clear(B.crumbs).append(
+    h('button', { type: 'button', class: 'link', onclick: go('') }, ROOT_LABELS[B.root]),
+    ...parts.flatMap((p, i) => [' / ', h('button', { type: 'button', class: 'link', onclick: go(parts.slice(0, i + 1).join('/')) }, p)]));
+  clear(B.list);
+  if (r.parent !== null && r.parent !== undefined) {
+    B.list.append(h('li', {}, h('button', { type: 'button', class: 'browse-item up', onclick: go(r.parent) }, '↑ Наверх')));
+  }
+  for (const d of r.dirs) {
+    B.list.append(h('li', {}, h('button', { type: 'button', class: 'browse-item', onclick: go(r.path ? `${r.path}/${d}` : d) },
+      `📁 ${d}`)));
+  }
+  if (!r.dirs.length) B.list.append(h('li', { class: 'small muted browse-empty' }, 'Подпапок нет'));
+}
+
+// ---- Google Диск: вход в новой вкладке и опрос черновика
+
+function stopGooglePoll() {
+  if (T.googleTimer) clearTimeout(T.googleTimer);
+  T.googleTimer = null;
+}
+
+async function googleLogin() {
+  const F = T.form;
+  if (!F) return;
+  stopGooglePoll();
+  F.result.hidden = true;
+  // Вкладку открываем сразу по клику — иначе браузер заблокирует всплывающее окно.
+  const tab = window.open('', '_blank');
+  setBusy(F, true);
+  let draft;
+  try {
+    ({ draft } = await request('POST', '/api/targets/gdrive/draft', formBody(F)));
+  } catch (e) {
+    tab?.close();
+    setBusy(F, false);
+    showFormResult(F, 'err', e.detail);
+    markField(F, e.data?.field);
+    return;
+  }
+  const url = `/api/targets/gdrive/auth?draft=${encodeURIComponent(draft)}`;
+  if (tab) tab.location.href = url;
+  else window.open(url, '_blank');
+  setBusy(F, false);
+  showFormResult(F, 'warn', 'Войдите в Google в открывшейся вкладке и разрешите доступ к Диску…');
+  const started = Date.now();
+  const poll = async () => {
+    if (T.form !== F) return;
+    let st;
+    try {
+      st = await request('GET', `/api/targets/gdrive/draft/${encodeURIComponent(draft)}`);
+    } catch (e) {
+      showFormResult(F, 'err', e.detail);
+      return;
+    }
+    if (T.form !== F) return;
+    if (st.state === 'connected') {
+      const t = st.target;
+      if (t) T.statuses[t.id] = { ok: true, text: 'Подключено' };
+      closeForm();
+      await loadTargets();
+      showTargetsResult('ok', `Google Диск подключён: «${t?.name || 'Google Диск'}»`);
+      toast('Google Диск подключён');
+      return;
+    }
+    if (st.state === 'error') {
+      showFormResult(F, 'err', `${st.error}. Попробуйте ещё раз той же кнопкой.`);
+      return;
+    }
+    if (Date.now() - started > GOOGLE_POLL_MAX_MS) {
+      showFormResult(F, 'err', 'Вход в Google не завершён за 10 минут — нажмите «Войти через Google» ещё раз');
+      return;
+    }
+    T.googleTimer = setTimeout(poll, GOOGLE_POLL_MS);
+  };
+  T.googleTimer = setTimeout(poll, GOOGLE_POLL_MS);
 }
