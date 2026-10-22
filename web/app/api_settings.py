@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
 
 from karaoke_core import musiclink
-from karaoke_core.db import OutputTarget, UsdbAccount
+from karaoke_core.db import OutputTarget, Target, UsdbAccount
 from karaoke_core.storage import StorageError
 
 from .api_jobs import ctx_of
@@ -50,7 +50,7 @@ def _target(ctx: AppContext, body: OutputIn) -> OutputTarget:
                        field="host" if not fields["host"] else "share")
     # Пустой пароль = «не менять» — только для той же учётки на том же сервере;
     # иначе прежний пароль ушёл бы на чужой хост.
-    current = ctx.target()
+    current = ctx.settings.get_output()
     same = (current.kind, current.host, current.share, current.user) ==         (kind, fields["host"], fields["share"], fields["user"])
     if body.password:
         fields["password"] = body.password
@@ -63,9 +63,20 @@ def _target(ctx: AppContext, body: OutputIn) -> OutputTarget:
     return OutputTarget(**fields)
 
 
+def _as_target(target: OutputTarget) -> Target:
+    """Прежняя «папка результата» как хранилище — только для проверки доступа."""
+    if target.kind == "local":
+        t = Target(id="probe", name="Папка ПК", kind="local", path=target.local_root)
+    else:
+        t = Target(id="probe", name="SMB", kind="smb", host=target.host, share=target.share,
+                   path=target.path, user=target.user)
+    t.secret = target.password
+    return t
+
+
 def _probe(ctx: AppContext, target: OutputTarget) -> None:
     try:
-        storage = ctx.storage_factory(target)
+        storage = ctx.storage_factory(_as_target(target))
     except StorageError as e:
         raise ApiError(400, f"Папка результата недоступна: {e}") from None
     try:
@@ -86,7 +97,7 @@ def _public(ctx: AppContext, target: OutputTarget) -> dict:
 @router.get("/output", summary="Текущая папка результата (без пароля)")
 def get_output(request: Request):
     ctx = ctx_of(request)
-    return _public(ctx, ctx.target())
+    return _public(ctx, ctx.settings.get_output())
 
 
 @router.put("/output", summary="Сохранить папку результата (только проверенную)")

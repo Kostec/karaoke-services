@@ -96,6 +96,7 @@ def create_app(*, data_dir: str | Path | None = None, env: dict | None = None,
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
+        ctx.migrate_targets()  # список хранилищ и корзина на их id — до первого запроса
         ctx.trash.purge()  # при старте — синхронно, до первого запроса
         purge_imports(ctx.paths)
         task = asyncio.create_task(_purge_loop(ctx))

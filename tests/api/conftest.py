@@ -49,9 +49,12 @@ class Env:
         return d
 
     def factory(self, target):
+        """``/output/…`` — временная папка ``out``, ``/host/…`` — ``tmp/host``."""
         if target.kind == "local":
-            root = self.out / target.path if target.path else self.out
-            return LocalStorage(root, target_id=target.target_id, label=target.label)
+            path = (target.path or "/output").strip("/")
+            mount, _, sub = path.partition("/")
+            base = self.out if mount == "output" else self.tmp / mount
+            return LocalStorage(base / sub if sub else base, target_id=target.id, label=target.label)
         return make_storage(target)
 
     def client(self, password: str = "", *, storage_factory=None, extra_env: dict | None = None,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -19,7 +20,8 @@ from pathlib import Path
 from typing import Iterable, Any, Callable, Iterator, Mapping
 
 __all__ = [
-    "connect", "Jobs", "Job", "Settings", "OutputTarget", "Library", "LibraryItem",
+    "connect", "Jobs", "Job", "Settings", "OutputTarget", "Target", "LOCAL_TARGET_ID",
+    "TARGET_KINDS", "legacy_target_id", "Library", "LibraryItem",
     "Songs", "OwnSong", "song_id_for", "JOB_STATES", "FINAL_STATES",
     "INTERRUPTED_MESSAGE", "ACTIVE_STATES", "STAGE_PUBLISH", "GPU_STATUS_KEY",
     "UsdbAccount", "USDB_KEY", "YANDEX_KEY",
@@ -370,6 +372,101 @@ class OutputTarget:
                           ensure_ascii=False)
 
 
+# --------------------------------------------------------------------------- хранилища
+
+LOCAL_TARGET_ID = "local"
+LOCAL_TARGET_NAME = "Локальное хранилище"
+TARGET_KINDS = ("local", "smb", "webdav", "gdrive")
+TARGETS_KEY = "targets"
+DEFAULT_TARGET_KEY = "default_target"
+# {старый target_id: новый id} — что переписала миграция (старые задания и корзина).
+TARGET_ALIASES_KEY = "target_aliases"
+NO_DEFAULT_DELETE = "Сначала выберите другую основную цель"
+
+
+@dataclass
+class Target:
+    """Хранилище песен со стабильным ``id`` (``local`` или ``t_<8 hex>``).
+
+    ``path``: у ``local`` — абсолютный путь в контейнере (``/output/…`` или ``/host/…``),
+    у прочих — папка внутри шары/диска. ``secret`` — пароль (SMB/WebDAV) или Client secret
+    (Google), ``token`` — OAuth refresh-токен Google; в API не попадают."""
+    id: str = ""
+    name: str = ""
+    kind: str = "local"  # local | smb | webdav | gdrive
+    path: str = ""
+    host: str = ""
+    share: str = ""
+    user: str = ""
+    url: str = ""
+    preset: str = ""  # webdav: "yandex" — Яндекс Диск
+    client_id: str = ""
+    secret: str | None = field(default=None, repr=False)
+    token: str | None = field(default=None, repr=False)
+
+    @property
+    def password(self) -> str | None:
+        """Пароль SMB/WebDAV (то же, что ``secret``)."""
+        return self.secret
+
+    @property
+    def builtin(self) -> bool:
+        return self.id == LOCAL_TARGET_ID
+
+    @property
+    def label(self) -> str:
+        """Адрес хранилища для сообщений и списка."""
+        if self.kind == "local":
+            return local_label(self.path or LOCAL_OUTPUT_MOUNT)
+        if self.kind == "smb":
+            return smb_label(self.host, self.share, self.path)
+        if self.kind == "webdav":
+            return f"{self.url.rstrip('/')}/{self.path.strip('/')}".rstrip("/")
+        if self.kind == "gdrive":
+            return f"Google Диск: /{self.path.strip('/')}"
+        return self.name
+
+    def public(self) -> dict:
+        """Для API: без секрета и токена, только ``has_password`` и ``connected``."""
+        return {"id": self.id, "name": self.name, "kind": self.kind, "path": self.path,
+                "host": self.host, "share": self.share, "user": self.user, "url": self.url,
+                "preset": self.preset, "client_id": self.client_id,
+                "has_password": bool(self.secret), "connected": bool(self.token),
+                "label": self.label, "builtin": self.builtin}
+
+    def _to_dict(self) -> dict:
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
+
+def builtin_local_target() -> Target:
+    return Target(id=LOCAL_TARGET_ID, name=LOCAL_TARGET_NAME, kind="local", path=LOCAL_OUTPUT_MOUNT)
+
+
+def legacy_target_id(target: Target) -> str | None:
+    """``target_id`` прежнего формата (``smb://…``, ``local:/output…``), которым это хранилище
+    было бы помечено до списка хранилищ; у WebDAV/Google Диска его не было — ``None``."""
+    if target.kind == "local":
+        return local_target_id(target.path or LOCAL_OUTPUT_MOUNT)
+    if target.kind == "smb":
+        return smb_target_id(target.host, target.share, target.path)
+    return None
+
+
+def new_target_id() -> str:
+    return f"t_{secrets.token_hex(4)}"
+
+
+def _target_from_output(target: OutputTarget) -> Target:
+    """Хранилище из прежней «папки результата» (без id)."""
+    if target.kind == "local":
+        return Target(name=f"Папка ПК: {target.path}" if target.path else LOCAL_TARGET_NAME,
+                      kind="local", path=target.local_root)
+    smb = Target(name=f"SMB {smb_label(target.host, target.share, target.path)}", kind="smb", host=target.host,
+                 share=target.share, path=target.path, user=target.user)
+    smb.secret = target.password or None
+    return smb
+
+
 @dataclass(frozen=True)
 class UsdbAccount:
     """Учётка usdb.animux.de (только из «Настроек», переменных окружения нет)."""
@@ -400,19 +497,189 @@ class Settings:
                 "INSERT INTO settings (key, value) VALUES (?, ?)"
                 " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
 
-    def get_output(self) -> OutputTarget:
-        """Текущая цель; пока не сохранена в вебе — из переменных ``OUTPUT_*``."""
-        raw = self._get("output")
+    # ------------------------------------------------------------ хранилища
+
+    def _json(self, key: str, default):
+        raw = self._get(key)
         if raw is None:
-            return OutputTarget.from_env(self.env)
-        return OutputTarget(**json.loads(raw))
+            return default
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return default
+
+    def _put_json(self, key: str, value) -> None:
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, json.dumps(value, ensure_ascii=False)))
+
+    def _stored_targets(self) -> list[Target]:
+        """Добавленные хранилища (без встроенного); при первом чтении — миграция."""
+        raw = self._get(TARGETS_KEY)
+        if raw is None:
+            self._migrate_targets()
+            raw = self._get(TARGETS_KEY) or "[]"
+        known = {f.name for f in fields(Target)}
+        out = []
+        for d in json.loads(raw):
+            if isinstance(d, dict) and d.get("id") and d.get("id") != LOCAL_TARGET_ID:
+                out.append(Target(**{k: v for k, v in d.items() if k in known}))
+        return out
+
+    def _migrate_targets(self) -> None:
+        """Прежняя «папка результата» (``settings[output]`` или ``OUTPUT_*``) → список хранилищ;
+        строки ``library`` со старым ``target_id`` — на новый id в той же транзакции.
+        Корзину переписывает ``Trash.retarget(settings.resolve_target_id)``."""
+        with _tx(self.conn):
+            if self.conn.execute("SELECT 1 FROM settings WHERE key=?", (TARGETS_KEY,)).fetchone():
+                return  # другой процесс успел раньше
+            raw = self._get("output")
+            if raw is not None:
+                known = {f.name for f in fields(OutputTarget)}
+                old = OutputTarget(**{k: v for k, v in json.loads(raw).items() if k in known})
+            else:
+                old = OutputTarget.from_env(self.env)
+            candidates = [old]
+            env_smb = OutputTarget.from_env(self.env)
+            # Сохранена локальная, а в .env есть SMB — её тоже в список (иначе шара «теряется»).
+            if old.kind != "smb" and env_smb.kind == "smb" and env_smb.host and env_smb.share \
+                    and raw is not None and (self.env if self.env is not None else os.environ).get(
+                        "OUTPUT_SMB_HOST"):
+                candidates.append(env_smb)
+            targets: list[Target] = []
+            aliases: dict[str, str] = {}
+            default = LOCAL_TARGET_ID
+            for i, o in enumerate(candidates):
+                if o.kind == "local" and not o.path:
+                    target = builtin_local_target()
+                else:
+                    target = _target_from_output(o)
+                    target.id = new_target_id()
+                    targets.append(target)
+                if i == 0:
+                    default = target.id
+                aliases[o.target_id] = target.id
+            aliases.setdefault(local_target_id(LOCAL_OUTPUT_MOUNT), LOCAL_TARGET_ID)
+            self._put_json(TARGETS_KEY, [t._to_dict() for t in targets])
+            self._put_json(DEFAULT_TARGET_KEY, default)
+            self._put_json(TARGET_ALIASES_KEY, aliases)
+            for old_id, new_id in aliases.items():
+                if old_id != new_id:
+                    self.conn.execute(
+                        "UPDATE OR IGNORE library SET target_id=? WHERE target_id=?", (new_id, old_id))
+
+    def _write_targets(self, targets: list[Target]) -> None:
+        with _tx(self.conn):
+            self._put_json(TARGETS_KEY, [t._to_dict() for t in targets if not t.builtin])
+
+    def get_targets(self) -> list[Target]:
+        """Все хранилища: встроенное «Локальное хранилище» первым, затем добавленные."""
+        return [builtin_local_target(), *self._stored_targets()]
+
+    def get_target(self, target_id: str | None) -> Target | None:
+        return next((t for t in self.get_targets() if t.id == target_id), None) if target_id else None
+
+    def save_target(self, target: Target) -> Target:
+        """Создать (пустой ``id`` → новый ``t_…``) или изменить хранилище; ``id`` не меняется.
+        ``secret``/``token`` ``None`` — оставить прежние. Встроенное не правится."""
+        if target.id == LOCAL_TARGET_ID:
+            raise ValueError("Локальное хранилище не меняется")
+        if target.kind not in TARGET_KINDS:
+            raise ValueError(f"Неизвестный тип хранилища: «{target.kind}»")
+        stored = self._stored_targets()
+        old = next((t for t in stored if t.id == target.id), None) if target.id else None
+        if target.id and old is None:
+            raise ValueError("Хранилище не найдено")
+        values = target._to_dict()
+        if not target.id:
+            values["id"] = new_target_id()
+        for key in ("secret", "token"):
+            if values[key] is None and old is not None:
+                values[key] = getattr(old, key)
+        saved = Target(**values)
+        self._write_targets([saved if t.id == saved.id else t for t in stored]
+                            + ([] if old is not None else [saved]))
+        return saved
+
+    def delete_target(self, target_id: str) -> None:
+        """Удалить хранилище из настроек и стереть его индекс песен (песни не трогаются).
+        Встроенное и основную цель удалить нельзя — ``ValueError``."""
+        if target_id == LOCAL_TARGET_ID:
+            raise ValueError("Локальное хранилище удалить нельзя")
+        if target_id == self.get_default_target_id():
+            raise ValueError(NO_DEFAULT_DELETE)
+        stored = self._stored_targets()
+        if not any(t.id == target_id for t in stored):
+            raise ValueError("Хранилище не найдено")
+        with _tx(self.conn):
+            self._put_json(TARGETS_KEY, [t._to_dict() for t in stored if t.id != target_id])
+            self.conn.execute("DELETE FROM library WHERE target_id=?", (target_id,))
+
+    def get_default_target_id(self) -> str:
+        """id основной цели; нет или удалена — ``local``."""
+        ids = {t.id for t in self.get_targets()}
+        value = self._json(DEFAULT_TARGET_KEY, None)
+        return value if isinstance(value, str) and value in ids else LOCAL_TARGET_ID
+
+    def set_default_target_id(self, target_id: str) -> None:
+        if self.get_target(target_id) is None:
+            raise ValueError("Хранилище не найдено")
+        with _tx(self.conn):
+            self._put_json(DEFAULT_TARGET_KEY, target_id)
+
+    def resolve_target_id(self, target_id: str | None) -> str | None:
+        """id хранилища по ``target_id`` любого формата (новый ``t_…``/``local`` или прежний
+        ``smb://…``/``local:/output…`` из старых заданий и корзины); не нашлось — ``None``."""
+        if not target_id:
+            return None
+        targets = self.get_targets()
+        ids = {t.id for t in targets}
+        if target_id in ids:
+            return target_id
+        for t in targets:
+            if legacy_target_id(t) == target_id:
+                return t.id
+        alias = self._json(TARGET_ALIASES_KEY, {}).get(target_id) \
+            if isinstance(self._json(TARGET_ALIASES_KEY, {}), dict) else None
+        return alias if alias in ids else None
+
+    # ------------------------------------------------------------ прежняя «папка результата»
+
+    def get_output(self) -> OutputTarget:
+        """Основная цель в прежнем формате (совместимость ``/api/settings/output``)."""
+        t = self.get_target(self.get_default_target_id()) or builtin_local_target()
+        if t.kind == "smb":
+            return OutputTarget("smb", t.host, t.share, t.path, t.user, t.secret)
+        if t.kind == "local":
+            sub = t.path[len(LOCAL_OUTPUT_MOUNT):] if (t.path + "/").startswith(LOCAL_OUTPUT_MOUNT + "/") \
+                else t.path
+            return OutputTarget(kind="local", path=sub.strip("/"), password="")
+        return OutputTarget(t.kind, "", "", t.path, t.user, t.secret)
 
     def set_output(self, target: OutputTarget) -> OutputTarget:
-        """Сохранить цель. ``password=None`` — оставить прежний пароль."""
-        if target.password is None:
-            target = OutputTarget(**{**asdict(target), "password": self.get_output().password})
-        self._set("output", target._to_json())
-        return target
+        """Прежний PUT «папки результата»: правит основную цель того же типа или находит/создаёт
+        хранилище и делает его основным. ``password=None`` — оставить прежний пароль."""
+        if target.kind == "local" and not target.path:
+            self.set_default_target_id(LOCAL_TARGET_ID)
+            return self.get_output()
+        wanted = _target_from_output(target)
+        stored = self._stored_targets()
+        current = self.get_target(self.get_default_target_id())
+        if target.kind == "smb" and current is not None and current.kind == "smb":
+            match = current
+        else:
+            match = next((t for t in stored if t.kind == wanted.kind and legacy_target_id(t)
+                          == legacy_target_id(wanted)), None)
+        values = wanted._to_dict()
+        values["id"] = match.id if match else ""
+        if match is not None and target.kind == "smb":
+            values["name"] = match.name if match.host == wanted.host and match.share == wanted.share \
+                else wanted.name
+        values["secret"] = target.password  # None — прежний (save_target)
+        saved = self.save_target(Target(**values))
+        self.set_default_target_id(saved.id)
+        return self.get_output()
 
     def get_usdb(self) -> UsdbAccount:
         raw = self._get(USDB_KEY)
@@ -556,6 +823,13 @@ class Library:
                      or needle in _fold(i.rel_dir)]
         items.sort(key=lambda i: (_fold(i.artist), _fold(i.title), i.rel_dir))
         return items
+
+    def find(self, song_id: str) -> LibraryItem | None:
+        """Песня по ``song_id`` в индексе любого хранилища."""
+        for row in self.conn.execute("SELECT * FROM library"):
+            if song_id_for(row["target_id"], row["rel_dir"]) == song_id:
+                return LibraryItem.from_row(row)
+        return None
 
     def get(self, target_id: str, rel_dir: str) -> LibraryItem | None:
         row = self.conn.execute("SELECT * FROM library WHERE target_id=? AND rel_dir=?",

@@ -234,7 +234,6 @@ def generate(request: Request,
             raise ApiError(400, "Обложка должна быть в формате jpg, png или webp", field="cover")
 
     rel_dir = naming.song_dir(artist, title)
-    storage = ctx.storage()
     staging = Staging(ctx, rel_dir)
     try:
         if link_url:
@@ -253,10 +252,10 @@ def generate(request: Request,
             if not source.audio:
                 raise ApiError(409, "Исходный mp3 не найден — загрузите файл")
             try:
-                with storage.open_read(f"{source.rel_dir}/{source.audio}") as f:
+                with ctx.storage(source.target_id).open_read(f"{source.rel_dir}/{source.audio}") as f:
                     copy_limited(f, staging.path("audio", INPUT_AUDIO), MAX_FOLDER_AUDIO_MB, "audio")
             except StorageError as e:
-                ctx.mark_output_error(e)
+                ctx.mark_output_error(e, source.target_id)
                 raise ApiError(503, f"Папка результата недоступна: {e}") from None
         staging.drop("lyrics")  # текст — всегда из формы
         if text.strip():
@@ -288,7 +287,7 @@ def generate(request: Request,
     if link_url:
         p["source"] = "link"
     p.update(rel_dir=rel_dir, replace=bool(replace_dir), replace_rel_dir=replace_dir,
-             target_id=storage.target_id)
+             target_id=replace_target_id(ctx, existing, source))
     ref_id = source.song_id if source else (existing.song_id if existing else None)
     return staging.enqueue("generate", {"artist": artist, "title": title, "song_id": ref_id}, p).to_dict()
 
@@ -316,6 +315,13 @@ def instrumental(body: InstrumentalIn, request: Request):
 
 _VIDEO_EXT_NAMES = [e.lstrip(".") for e in naming.VIDEO_EXT_ORDER]
 VIDEO_EXTS_TEXT = ", ".join(_VIDEO_EXT_NAMES[:-1]) + " или " + _VIDEO_EXT_NAMES[-1]  # из naming.VIDEO_EXT_ORDER
+
+
+def replace_target_id(ctx, existing, source) -> str:
+    """Хранилище выкладки: заменяемой песни (её копия меняется там, где лежит),
+    иначе основная цель."""
+    replaced = existing or source
+    return replaced.target_id if replaced is not None else ctx.target().id
 
 
 def video_link(url: str, field: str = "video_url") -> str:

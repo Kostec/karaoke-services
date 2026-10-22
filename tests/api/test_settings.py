@@ -1,6 +1,6 @@
 """Настройки папки результата: пароль не возвращается, пустой = не менять, проверка цели."""
 
-from karaoke_core.db import OutputTarget, Settings, connect
+from karaoke_core.db import OutputTarget, Settings, Target, connect
 
 SECRET = "pi-pass-for-test"
 
@@ -46,7 +46,7 @@ def test_put_without_password_keeps_previous(env):
 
     def fake_factory(target):
         seen.append(target.password)
-        return env.factory(OutputTarget(kind="local"))
+        return env.factory(Target(id="local", kind="local", path="/output"))
 
     with env.client(storage_factory=fake_factory) as client:
         r = client.put("/api/settings/output", json={"kind": "smb", "host": "10.0.0.9", "share": "karaoke",

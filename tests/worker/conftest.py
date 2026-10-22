@@ -59,23 +59,25 @@ class World:
         monkeypatch.setenv("ULTRASINGER_CMD", f"{py} {FIX / 'fake_ultrasinger.py'}")
         monkeypatch.setenv("DEMUCS_CMD", f"{py} {FIX / 'fake_demucs.py'}")
         monkeypatch.setenv("FFMPEG_CMD", f"{py} {FIX / 'fake_ffmpeg.py'}")
+        monkeypatch.setenv("OUTPUT_KIND", "local")  # основная цель — встроенное «local»
         self.trash = Trash(self.paths.trash, days=30)
         self.ctx = JobContext(self.paths, storage_factory=self._storage, trash=self.trash)
         self.conn = connect(self.paths.db)  # «сторона web»
         self.jobs = Jobs(self.conn)
 
-    def _storage(self, _target):
+    def _storage(self, target):
         from karaoke_core.storage import StorageError
 
         if not self.storage_ok:
             raise StorageError("Папка результата недоступна: нет связи (тест)")
+        root = self.out if target.id == "local" else self.tmp / target.id
         if self.fail_upload:
-            return _FailingUpload(self.out)
-        return LocalStorage(self.out)
+            return _FailingUpload(root, target_id=target.id, label=target.label)
+        return LocalStorage(root, target_id=target.id, label=target.label)
 
     @property
     def storage(self) -> LocalStorage:
-        return LocalStorage(self.out)
+        return LocalStorage(self.out, target_id="local", label="/output")
 
     def enqueue_generate(self, artist="Тестовая Группа", title="Песня Ёлки", *, lyrics="Ёлка\nпесня",
                          lrc: str | None = None, **extra):

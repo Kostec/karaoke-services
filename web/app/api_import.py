@@ -26,7 +26,7 @@ from karaoke_core.http import HttpError
 from karaoke_core.paths import DataPaths, INPUT_AUDIO, INPUT_COVER_STEM, INPUT_VIDEO_STEM
 
 from .api_jobs import (CHUNK, MB, Staging, copy_limited, ctx_of, download_cover, is_mp3, queue_duplicate,
-                       stage_video_file, video_choice)
+                       replace_target_id, stage_video_file, video_choice)
 from .api_usdb import usdb_api_error
 from .context import ApiError, AppContext, song_key
 from .params import max_import_mb
@@ -411,7 +411,6 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
                                            default_gap=s.get("videogap"))
 
     rel_dir = naming.song_dir(artist, title)
-    storage = ctx.storage()
     staging = Staging(ctx, rel_dir)
     try:
         shutil.copyfile(_inside(work, s["txt_rel"]), staging.path("txt", INPUT_TXT))
@@ -446,6 +445,6 @@ def import_job(request: Request, token: str = Form(...), index: int = Form(...),
     if link:
         params.update(youtube_url=link, youtube_alternatives=alternatives, youtube_from_user=from_user)
     params.update(instrumental=bool(instrumental), rel_dir=rel_dir, replace=bool(replace_dir),
-                  replace_rel_dir=replace_dir, target_id=storage.target_id)
+                  replace_rel_dir=replace_dir, target_id=replace_target_id(ctx, existing, source))
     ref_id = source.song_id if source else (existing.song_id if existing else None)
     return staging.enqueue("import", {"artist": artist, "title": title, "song_id": ref_id}, params).to_dict()

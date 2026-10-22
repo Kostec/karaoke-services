@@ -8,14 +8,14 @@ import shlex
 import sys
 import threading
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Mapping
 
 from karaoke_core import musiclink, naming
 from karaoke_core.paths import DataPaths
 from karaoke_core.http import Http
-from karaoke_core.db import Jobs, Library, LibraryItem, OutputTarget, Settings, Songs, connect, now
+from karaoke_core.db import (LOCAL_TARGET_ID, Jobs, Library, LibraryItem, Settings, Songs, Target,
+                             connect, now)
 from karaoke_core.storage import Storage, StorageError, make_storage
 from karaoke_core.trash import Trash
 
@@ -38,20 +38,20 @@ def not_found(what: str = "Не найдено") -> ApiError:
 
 class AppContext:
     def __init__(self, data_dir: str | Path, *, env: Mapping[str, str] | None = None,
-                 storage_factory: Callable[[OutputTarget], Storage] | None = None,
+                 storage_factory: Callable[[Target], Storage] | None = None,
                  trash: Trash | None = None, http: Http | None = None,
                  yandex_factory: Callable[[str], musiclink.YandexMusic] | None = None):
         self.env = dict(os.environ if env is None else env)
         self.paths = DataPaths(data_dir)
         self.data_dir = self.paths.root
-        self.storage_factory = storage_factory or make_storage
+        self.storage_factory = storage_factory or (lambda t: make_storage(t, http=self.http))
         self.trash = trash or Trash(self.paths.trash, days=self.int_env("TRASH_DAYS", 30))
         self.http = http or Http()  # исходящие запросы (LRCLIB …); в тестах — FakeHttp
         # Яндекс Музыка: фабрика клиента по токену; в тестах — фейк
         self.yandex_factory = yandex_factory or musiclink.YandexMusic
         self._local = threading.local()
         self._lock = threading.Lock()
-        self._storage: tuple[str, Storage] | None = None
+        self._storages: dict[str, tuple[tuple, Storage]] = {}  # id → (конфиг, Storage)
         self._usdb: tuple[tuple[str, str], UsdbClient] | None = None  # (учётка, UsdbClient)
         self._probe: dict[str, tuple[float, str | None]] = {}
         self._scan_lock = threading.Lock()
@@ -102,8 +102,33 @@ class AppContext:
     def settings(self) -> Settings:
         return Settings(self.conn(), self.env)
 
-    def target(self) -> OutputTarget:
-        return self.settings.get_output()
+    def targets(self) -> list[Target]:
+        return self.settings.get_targets()
+
+    def default_target(self) -> Target:
+        settings = self.settings
+        return settings.get_target(settings.get_default_target_id()) or settings.get_targets()[0]
+
+    def target(self) -> Target:
+        """Основная цель (куда выкладываются новые песни)."""
+        return self.default_target()
+
+    def target_of(self, target_id: str | None) -> Target:
+        """Хранилище по id любого формата; ``None`` — основная цель.
+        Удалено из настроек — ``StorageError``."""
+        if target_id is None:
+            return self.default_target()
+        settings = self.settings
+        target = settings.get_target(settings.resolve_target_id(target_id))
+        if target is None:
+            raise StorageError("хранилище удалено из настроек")
+        return target
+
+    def migrate_targets(self) -> None:
+        """Список хранилищ (миграция со старой «папки результата») и корзина на новые id."""
+        settings = self.settings
+        settings.get_targets()
+        self.trash.retarget(settings.resolve_target_id)
 
     def gpu_status(self) -> dict:
         raw = self.settings.get_gpu_status()
@@ -114,45 +139,62 @@ class AppContext:
 
     # ------------------------------------------------------------------ папка результата
 
-    def storage(self) -> Storage:
-        target = self.target()
-        key = tuple(asdict(target).items())
+    def storage(self, target_id: str | None = None) -> Storage:
+        """Открытое хранилище по id (``None`` — основная цель); кэш по (id, конфиг)."""
+        target = self.target_of(target_id)
+        key = tuple(sorted(target._to_dict().items()))
         with self._lock:
-            if self._storage is None or self._storage[0] != key:
-                if self._storage is not None:
-                    try:
-                        self._storage[1].close()
-                    except Exception:
-                        pass
-                self._storage = (key, self.storage_factory(target))
-            return self._storage[1]
+            cached = self._storages.get(target.id)
+            if cached is None or cached[0] != key:
+                if cached is not None:
+                    _close(cached[1])
+                cached = self._storages[target.id] = (key, self.storage_factory(target))
+            return cached[1]
 
-    def reset_storage(self) -> None:
+    def local_storage(self) -> Storage:
+        return self.storage(LOCAL_TARGET_ID)
+
+    def reset_storage(self, target_id: str | None = None) -> None:
+        """Закрыть открытые хранилища (все или одно) и забыть их статус."""
         with self._lock:
-            if self._storage is not None:
-                try:
-                    self._storage[1].close()
-                except Exception:
-                    pass
-            self._storage = None
-            self._probe.clear()
+            for tid in [target_id] if target_id else list(self._storages):
+                cached = self._storages.pop(tid, None)
+                if cached is not None:
+                    _close(cached[1])
+                self._probe.pop(tid, None)
 
-    def output_status(self, *, fresh: bool = False) -> dict:
-        """``{ok, label, error}``: доступен ли корень папки результата (кэш на STATUS_TTL)."""
-        target = self.target()
-        cached = self._probe.get(target.target_id)
+    def _status(self, target: Target, fresh: bool) -> dict:
+        cached = self._probe.get(target.id)
         if fresh or cached is None or time.monotonic() - cached[0] > STATUS_TTL:
             try:
-                st = self.storage().stat("")
-                error = None if st is not None and st.is_dir else \
-                    f"Папка результата недоступна: нет папки {target.label}"
+                st = self.storage(target.id).stat("")
+                error = None if st is not None and st.is_dir else                     f"Папка результата недоступна: нет папки {target.label}"
             except StorageError as e:
                 error = f"Папка результата недоступна: {e}"
-            cached = self._probe[target.target_id] = (time.monotonic(), error)
-        return {"ok": cached[1] is None, "label": target.label, "error": cached[1]}
+            cached = self._probe[target.id] = (time.monotonic(), error)
+        return {"ok": cached[1] is None, "label": target.label, "error": cached[1],
+                "id": target.id, "name": target.name}
 
-    def mark_output_error(self, err: Exception) -> None:
-        self._probe[self.target().target_id] = (time.monotonic(), f"Папка результата недоступна: {err}")
+    def output_status(self, *, fresh: bool = False, target_id: str | None = None) -> dict:
+        """``{ok, label, error, id, name}`` хранилища (``None`` — основная цель; кэш на
+        STATUS_TTL). Без ``target_id`` ещё ``default`` и ``local`` — оба хранилища."""
+        try:
+            target = self.target_of(target_id)
+        except StorageError as e:
+            return {"ok": False, "label": "", "error": f"Папка результата недоступна: {e}",
+                    "id": target_id, "name": ""}
+        status = self._status(target, fresh)
+        if target_id is None:
+            local = status if target.id == LOCAL_TARGET_ID else                 self._status(self.settings.get_target(LOCAL_TARGET_ID), fresh)
+            status = {**status, "default": dict(status), "local": dict(local)}
+        return status
+
+    def mark_output_error(self, err: Exception, target_id: str | None = None) -> None:
+        try:
+            tid = self.target_of(target_id).id
+        except StorageError:
+            return
+        self._probe[tid] = (time.monotonic(), f"Папка результата недоступна: {err}")
 
     # ------------------------------------------------------------------ usdb
 
@@ -204,16 +246,16 @@ class AppContext:
             state.update(scanned_at=stamp, error=None)
             self._probe.pop(storage.target_id, None)
         finally:
-            self.scan_state.get(self.target().target_id, {}).pop("running", None)
+            self.scan_state.get(self.target().id, {}).pop("running", None)
             self._scan_lock.release()
 
     def library_item(self, entry, target_id: str, stamp: str | None = None) -> LibraryItem:
         own = self.songs.by_rel_dir(entry.rel_dir)
         return entry.to_library_item(target_id, own.id if own else None, stamp or now())
 
-    def refresh_song(self, rel_dir: str) -> LibraryItem | None:
-        """Точечно обновить индекс одной папки после наших изменений."""
-        storage = self.storage()
+    def refresh_song(self, rel_dir: str, target_id: str | None = None) -> LibraryItem | None:
+        """Точечно обновить индекс одной папки хранилища после наших изменений."""
+        storage = self.storage(target_id)
         entry = storage.read_song(rel_dir)
         if entry is None:
             self.library.remove(storage.target_id, rel_dir)
@@ -227,11 +269,11 @@ class AppContext:
         return st.get("scanned_at") or max((i.scanned_at or "" for i in items), default=None) or None
 
     def find_song(self, song_id: str) -> LibraryItem:
-        target_id = self.storage().target_id
-        for item in self.library.list(target_id):
-            if item.song_id == song_id:
-                return item
-        raise not_found("Песня не найдена")
+        """Песня по id в любом хранилище из настроек."""
+        item = self.library.find(song_id)
+        if item is None or self.settings.get_target(item.target_id) is None:
+            raise not_found("Песня не найдена")
+        return item
 
     def find_by_name(self, artist: str, title: str) -> LibraryItem | None:
         key, match = song_key(artist, title), match_key(artist, title)
@@ -284,3 +326,10 @@ def song_key(artist: str, title: str) -> str:
     """Ключ сравнения песен: путь по правилам имён без учёта регистра."""
     return naming.song_dir(artist.strip(), title.strip()).casefold()
 
+
+
+def _close(storage: Storage) -> None:
+    try:
+        storage.close()
+    except Exception:  # noqa: BLE001
+        pass

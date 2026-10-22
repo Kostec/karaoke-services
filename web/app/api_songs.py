@@ -22,27 +22,33 @@ from .notes import NotesIn, apply_notes, notes_payload, read_only_reason
 router = APIRouter(prefix="/api", tags=["Песни"])
 
 
-def _storage_call(ctx: AppContext, fn, *a):
-    """Вызов папки результата: недоступна → 503 с понятной причиной."""
+def _storage_call(ctx: AppContext, fn, *a, target_id: str | None = None):
+    """Вызов хранилища ``target_id``: недоступно → 503 с понятной причиной."""
     try:
         return fn(*a)
     except StorageNotFound as e:
-        _not_found_or_unavailable(ctx, e)
+        _not_found_or_unavailable(ctx, e, target_id)
     except StorageError as e:
-        ctx.mark_output_error(e)
+        ctx.mark_output_error(e, target_id)
         raise ApiError(503, f"Папка результата недоступна: {e}") from None
 
 
-def _not_found_or_unavailable(ctx: AppContext, e: StorageNotFound):
-    """Нет файла — 404; но если пропал сам корень папки результата — 503."""
-    status = ctx.output_status(fresh=True)
+def _not_found_or_unavailable(ctx: AppContext, e: StorageNotFound, target_id: str | None = None):
+    """Нет файла — 404; но если пропал сам корень хранилища — 503."""
+    status = ctx.output_status(fresh=True, target_id=target_id)
     if not status["ok"]:
         raise ApiError(503, status["error"]) from None
     raise ApiError(404, str(e)) from None
 
 
+def _song_storage(ctx: AppContext, item):
+    """Хранилище песни (по ``target_id`` её строки индекса)."""
+    return _storage_call(ctx, ctx.storage, item.target_id, target_id=item.target_id)
+
+
 def _read_txt(ctx: AppContext, item) -> bytes:
-    return _storage_call(ctx, ctx.storage().read, f"{item.rel_dir}/{item.txt_name}")
+    return _storage_call(ctx, _song_storage(ctx, item).read, f"{item.rel_dir}/{item.txt_name}",
+                         target_id=item.target_id)
 
 
 _UNREAD = object()
@@ -141,13 +147,14 @@ def put_notes(song_id: str, body: NotesIn, request: Request):
         raise ApiError(400, f"Символ не поддерживается кодировкой файла ({song.encoding})") from None
     if data != original:
         rel = f"{item.rel_dir}/{item.txt_name}"
-        storage = ctx.storage()
+        storage = _song_storage(ctx, item)
         try:
-            _storage_call(ctx, lambda: ctx.trash.save_version(storage, rel, reason="правка нот в редакторе"))
+            _storage_call(ctx, lambda: ctx.trash.save_version(storage, rel, reason="правка нот в редакторе"),
+                          target_id=item.target_id)
         except TrashError as e:
             raise ApiError(409, str(e)) from None
-        _storage_call(ctx, storage.write_atomic, rel, data)
-        item = ctx.refresh_song(item.rel_dir) or item
+        _storage_call(ctx, storage.write_atomic, rel, data, target_id=item.target_id)
+        item = ctx.refresh_song(item.rel_dir, item.target_id) or item
     return ctx.song_dict(item)
 
 
@@ -178,11 +185,12 @@ _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 def _media(ctx: AppContext, item, name: str | None, request: Request, default_type: str):
     if not name:
         raise not_found("У песни нет такого файла")
-    storage = ctx.storage()
+    storage = _song_storage(ctx, item)
     rel = f"{item.rel_dir}/{name}"
-    st = _storage_call(ctx, storage.stat, rel)
+    st = _storage_call(ctx, storage.stat, rel, target_id=item.target_id)
     if st is None or st.is_dir:
-        _not_found_or_unavailable(ctx, StorageNotFound("Файл песни не найден в папке результата"))
+        _not_found_or_unavailable(ctx, StorageNotFound("Файл песни не найден в папке результата"),
+                                  item.target_id)
     size = st.size
     ctype = mimetypes.guess_type(name)[0] or default_type
     start, end, status = 0, size - 1, 200
@@ -200,7 +208,7 @@ def _media(ctx: AppContext, item, name: str | None, request: Request, default_ty
             return JSONResponse({"detail": "Неверный диапазон"}, status_code=416,
                                 headers={"Content-Range": f"bytes */{size}"})
         status = 206
-    f = _storage_call(ctx, storage.open_read, rel)
+    f = _storage_call(ctx, storage.open_read, rel, target_id=item.target_id)
 
     def body():
         try:
@@ -240,14 +248,16 @@ def delete_song(song_id: str, request: Request):
     ctx = ctx_of(request)
     item = ctx.find_song(song_id)
     try:
-        trash_item = ctx.trash.move_to_trash(ctx.storage(), item.rel_dir, reason="удалено из веба")
+        trash_item = ctx.trash.move_to_trash(ctx.storage(item.target_id), item.rel_dir,
+                                             reason="удалено из веба")
     except StorageNotFound as e:
-        _not_found_or_unavailable(ctx, e)
+        _not_found_or_unavailable(ctx, e, item.target_id)
     except StorageError as e:
-        ctx.mark_output_error(e)
+        ctx.mark_output_error(e, item.target_id)
         raise ApiError(503, f"Папка результата недоступна: {e}") from None
     except TrashError as e:
-        status = ctx.output_status(fresh=True)  # «песня не найдена» при пропавшем корне — это 503
+        # «песня не найдена» при пропавшем корне — это 503
+        status = ctx.output_status(fresh=True, target_id=item.target_id)
         raise ApiError(409, str(e)) if status["ok"] else ApiError(503, status["error"]) from None
     ctx.library.remove(item.target_id, item.rel_dir)
     return trash_item.to_dict(ctx.trash.days)
@@ -263,15 +273,19 @@ def list_trash(request: Request):
 def restore(item_id: str, request: Request):
     ctx = ctx_of(request)
     try:
-        ctx.trash.get(item_id)
+        entry = ctx.trash.get(item_id)
     except TrashError:
         raise not_found("Запись корзины не найдена") from None
-    storage = ctx.storage()
+    target_id = ctx.settings.resolve_target_id(entry.target_id) if entry.target_id         else ctx.target().id
+    if target_id is None:
+        raise ApiError(409, f"Хранилище «{entry.target_label or entry.target_id}» удалено из настроек")
     try:
+        storage = ctx.storage(target_id)
         item = ctx.trash.restore(storage, item_id)
     except TrashError as e:
         raise ApiError(409, str(e)) from None
     except StorageError as e:
+        ctx.mark_output_error(e, target_id)
         raise ApiError(503, f"Папка результата недоступна: {e}") from None
-    ctx.refresh_song(item.rel_dir)
+    ctx.refresh_song(item.rel_dir, target_id)
     return item.to_dict(ctx.trash.days)

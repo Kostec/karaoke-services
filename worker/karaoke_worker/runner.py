@@ -91,6 +91,7 @@ def _check_gpu(ctx: JobContext, gpu_check: Callable[[], dict]) -> bool:
 def startup(ctx: JobContext, gpu_check: Callable[[], dict] | None = None) -> bool:
     """Старт воркера: статус GPU в БД, прерванные задания → failed, уборка. Возвращает «GPU есть»."""
     gpu_ok = _check_gpu(ctx, gpu_check or _default_gpu_check)
+    ctx.migrate_targets()
     n = ctx.jobs.fail_interrupted()
     if n:
         print(f"worker: прервано перезапуском заданий: {n}", flush=True)

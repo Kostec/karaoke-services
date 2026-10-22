@@ -152,9 +152,10 @@ def audio_only_copy(ctx: JobContext, job_id: int, src: Path, dest: Path) -> None
         raise JobFailed("input", AUDIO_ONLY_MESSAGE)
 
 
-def _storage(ctx: JobContext) -> Storage:
+def _storage(ctx: JobContext, target_id: str | None = None) -> Storage:
+    """Хранилище по id (``None`` — основная цель); недоступно — ``JobFailed("storage")``."""
     try:
-        return ctx.storage()
+        return ctx.storage(target_id)
     except StorageError as e:
         ctx.reset_storage()
         raise JobFailed("storage", f"Папка результата недоступна: {e}") from None
@@ -289,8 +290,9 @@ def publish_song(ctx: JobContext, job: Job, src: Job) -> None:
     replaced = p.get("replace_rel_dir") if p.get("replace") else None
     item = None
     try:
-        storage = ctx.storage()
-        old_here = bool(replaced) and p.get("target_id") in (None, storage.target_id) and storage.exists(replaced)
+        # замена — в хранилище заменяемой песни, новая песня — в основную цель
+        storage = ctx.storage(p.get("target_id") if replaced else None)
+        old_here = bool(replaced) and storage.exists(replaced)
         if old_here:
             _carry_video(ctx, job, storage, replaced, result)
         if old_here and replaced == rel_dir:
@@ -462,7 +464,7 @@ def publish_instrumental(ctx: JobContext, job: Job, src: Job) -> None:
     _start_publish(ctx, job)
     txt_rel = f"{rel_dir}/{txt_name}"
     try:
-        storage = ctx.storage()
+        storage = ctx.storage(p.get("target_id"))
         txt = storage.read(txt_rel)
         try:
             new_txt = ultrastar.set_header_line(txt, "INSTRUMENTAL", value)
@@ -502,7 +504,7 @@ class InstrumentalHandler:
         tracker = ProgressTracker(stages=[(("demucs",), "Отделение вокала", 5),
                                           (("ffmpeg",), "Минусовка в mp3", 85)], ceiling=95)
         ctx.progress(job.id, tracker.set(*STAGE_PREPARE))
-        storage = _storage(ctx)
+        storage = _storage(ctx, p.get("target_id"))
         try:
             entry = storage.read_song(rel_dir)
             if entry is None:
@@ -993,7 +995,7 @@ def publish_video(ctx: JobContext, job: Job, src: Job) -> None:
     _start_publish(ctx, job)
     txt_rel = f"{rel_dir}/{txt_name}"
     try:
-        storage = ctx.storage()
+        storage = ctx.storage(p.get("target_id"))
         txt = storage.read(txt_rel)
         song = ultrastar.parse(txt)
         old = naming.video_file_name(song.header("VIDEO"))

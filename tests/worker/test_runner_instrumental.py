@@ -64,3 +64,37 @@ def test_existing_instrumental_goes_to_trash_before_overwrite(world):
     assert (world.out / DIR / TXT).read_bytes() == before  # строка уже была — .txt не меняется
     saved = [i for i in world.trash.list() if i.rel_file == f"{DIR}/{INST}"]
     assert len(saved) == 1
+
+
+def test_instrumental_writes_into_song_storage_not_default(world):
+    """Песня в неосновном хранилище: минусовка пишется в её копию (история 38)."""
+    from karaoke_core.db import Settings, Target
+
+    settings = Settings(world.conn)
+    other = settings.save_target(Target(name="ПК", kind="local", path="/host/pc"))
+    root = world.tmp / other.id  # фабрика World: не-local хранилище — tmp/<id>
+    d = root / DIR
+    d.mkdir(parents=True)
+    (d / TXT).write_bytes((CORE_FIX / "usdb_cp1251.txt").read_bytes())
+    (d / AUDIO).write_bytes(MP3)
+    entry = LocalStorage(root).read_song(DIR)
+    params = {"rel_dir": DIR, "txt_name": TXT, "audio": entry.audio, "instrumental": None,
+              "replace": False, "target_id": other.id}
+    job = world.jobs.enqueue("instrumental", {"artist": entry.artist, "title": entry.title}, params)
+    world.run()
+
+    assert world.jobs.get(job.id).state == "done", world.log(job.id)
+    assert (d / INST).is_file() and not (world.out / DIR).exists()
+    assert world.ctx.library.get(other.id, DIR).instrumental == INST
+
+
+def test_instrumental_with_legacy_target_id_finds_local_storage(world):
+    """Задание старого формата (``local:/output``) сопоставляется со встроенным «local»."""
+    _song(world)
+    entry = LocalStorage(world.out).read_song(DIR)
+    params = {"rel_dir": DIR, "txt_name": TXT, "audio": entry.audio, "instrumental": None,
+              "replace": False, "target_id": "local:/output"}
+    job = world.jobs.enqueue("instrumental", {"artist": entry.artist, "title": entry.title}, params)
+    world.run()
+    assert world.jobs.get(job.id).state == "done", world.log(job.id)
+    assert (world.out / DIR / INST).is_file()

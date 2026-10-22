@@ -16,7 +16,7 @@ from smbprotocol.exceptions import SMBOSError
 from smbprotocol.header import NtStatus
 
 from karaoke_core import naming
-from karaoke_core.db import OutputTarget, song_id_for
+from karaoke_core.db import OutputTarget, Target, song_id_for
 from karaoke_core.storage import (LocalStorage, SmbStorage, StorageError, StorageNotFound,
                                   make_storage)
 
@@ -335,16 +335,16 @@ def test_probe_fails_for_missing_folder(tmp_path):
 # --------------------------------------------------------------------------- make_storage
 
 @pytest.mark.parametrize("target", [
-    OutputTarget(kind="smb", host="h", share="s", path="p/q", user="u", password="pw"),
-    OutputTarget(kind="smb", host="192.168.0.129", share="karaoke"),
-    OutputTarget(kind="local", path="songs"),
-    OutputTarget(kind="local"),
+    Target(id="t_00000001", kind="smb", host="h", share="s", path="p/q", user="u", secret="pw"),
+    Target(id="t_00000002", kind="smb", host="192.168.0.129", share="karaoke"),
+    Target(id="t_00000003", kind="local", path="/output/songs"),
+    Target(id="local", kind="local", path="/output"),
 ])
-def test_make_storage_identity_comes_from_output_target(target):
+def test_make_storage_identity_comes_from_target(target):
     st = make_storage(target)
     assert isinstance(st, SmbStorage if target.kind == "smb" else LocalStorage)
-    assert (st.target_id, st.label) == (target.target_id, target.label)
-    assert song_id_for(st.target_id, "A/A - B") == song_id_for(target.target_id, "A/A - B")
+    assert (st.target_id, st.label) == (target.id, target.label)
+    assert song_id_for(st.target_id, "A/A - B") == song_id_for(target.id, "A/A - B")
 
 
 def test_storages_built_directly_share_target_format():

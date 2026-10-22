@@ -212,6 +212,19 @@ class Trash:
         except (ValueError, TypeError):
             return None
 
+    def retarget(self, resolve: Callable[[str], str | None]) -> int:
+        """Переписать ``target_id`` записей прежнего формата на id хранилища
+        (``resolve`` — ``Settings.resolve_target_id``). Повторный вызов ничего не меняет.
+        Возвращает число переписанных записей."""
+        changed = 0
+        for item in self.list():
+            new_id = resolve(item.target_id) if item.target_id else None
+            if new_id and new_id != item.target_id:
+                item.target_id = new_id
+                self._commit(Path(item.path), item)
+                changed += 1
+        return changed
+
     def get(self, item_id: str) -> TrashItem:
         for item in self.list():
             if item.id == item_id:
