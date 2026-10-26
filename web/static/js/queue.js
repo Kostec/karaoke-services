@@ -30,8 +30,7 @@ export function mount(section, ctx) {
     h('a', { class: 'btn primary', href: '#new' }, 'Добавить песню'));
   listEl = h('div', { class: 'jobs' });
   root.append(
-    h('div', { class: 'view-head' }, h('h2', {}, 'Очередь'),
-      h('a', { class: 'btn primary', href: '#new' }, '+ Новая песня')),
+    h('div', { class: 'view-head' }, h('h2', {}, 'Очередь')),
     errEl, emptyEl, listEl);
 }
 

@@ -18,10 +18,19 @@ export const CHOICES = {
   origin: ['all', 'generated', 'import', 'foreign'],
 };
 
+/** `tag`: '' — все, 'none' — без своих тегов, иначе id своего тега. */
 export const DEFAULT_FILTER = Object.freeze({
-  q: '', artist: '', instrumental: 'all', video: 'all', duet: 'all', cover: 'all', origin: 'all',
+  q: '', artist: '', instrumental: 'all', video: 'all', duet: 'all', cover: 'all', origin: 'all', tag: '',
   sort: 'artist',
 });
+
+export const NO_TAG = 'none';
+
+function hasTag(tag, tags) {
+  if (!tag) return true;
+  const list = Array.isArray(tags) ? tags : [];
+  return tag === NO_TAG ? !list.length : list.includes(tag);
+}
 
 const IMPORT_SOURCES = ['usdb', 'files', 'url'];
 const coll = new Intl.Collator('ru', { sensitivity: 'base', numeric: true });
@@ -67,7 +76,8 @@ export function filterSongs(items, f) {
     && has(f.video, s.video)
     && (f.duet === 'all' || (f.duet === 'duet') === !!s.is_duet)
     && has(f.cover, s.cover)
-    && (f.origin === 'all' || originOf(s) === f.origin));
+    && (f.origin === 'all' || originOf(s) === f.origin)
+    && hasTag(f.tag, s.tags));
   return out.sort(COMPARE[f.sort] || COMPARE.artist);
 }
 
@@ -85,7 +95,7 @@ export function artistCounts(items) {
 /** Фильтр из параметров адреса (URLSearchParams); неизвестные значения — умолчания. */
 export function parseFilter(params) {
   const get = (k) => (params && typeof params.get === 'function' ? params.get(k) : params?.[k]) ?? '';
-  const f = { ...DEFAULT_FILTER, q: String(get('q')), artist: String(get('artist')) };
+  const f = { ...DEFAULT_FILTER, q: String(get('q')), artist: String(get('artist')), tag: String(get('tag')) };
   for (const [k, values] of Object.entries(CHOICES)) {
     if (values.includes(get(k))) f[k] = get(k);
   }
@@ -105,6 +115,12 @@ export function filterParams(f) {
 /** Ничего не отфильтровано (сортировка не в счёт). */
 export function isDefaultFilter(f) {
   return Object.keys(DEFAULT_FILTER).every((k) => k === 'sort' || (f[k] ?? DEFAULT_FILTER[k]) === DEFAULT_FILTER[k]);
+}
+
+/** Сколько фильтров включено — счётчик кнопки «Фильтры (N)»; поиск и сортировка не в счёт. */
+export function activeFilterCount(f) {
+  return Object.keys(DEFAULT_FILTER)
+    .filter((k) => k !== 'q' && k !== 'sort' && (f[k] ?? DEFAULT_FILTER[k]) !== DEFAULT_FILTER[k]).length;
 }
 
 const LOCAL_ID = 'local';

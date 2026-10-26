@@ -5,12 +5,15 @@ import * as queue from './queue.js';
 import * as newSong from './new-song.js';
 import * as importView from './import.js';
 import * as songs from './songs.js';
+import * as songPage from './song-page.js';
 import * as trash from './trash.js';
 import * as settings from './settings.js';
 // Редакторы (таск 07): модуль вызывает registerSongEditor().
 import './editors/index.js';
 
-const VIEWS = { queue, new: newSong, import: importView, songs, trash, settings };
+const VIEWS = { queue, new: newSong, import: importView, songs, song: songPage, trash, settings };
+// Разделы без своей вкладки: какую вкладку подсветить.
+const TAB_OF = { song: 'songs' };
 const STATUS_EVERY_MS = 15000;
 
 let current = null;
@@ -24,12 +27,14 @@ function parseHash() {
 function route() {
   const { name, params } = parseHash();
   for (const s of document.querySelectorAll('main > section')) s.hidden = s.dataset.view !== name;
+  const tab = TAB_OF[name] || name;
   for (const a of document.querySelectorAll('nav.tabs a')) {
-    if (a.dataset.view === name) a.setAttribute('aria-current', 'page');
+    if (a.dataset.view === tab) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   }
   if (current && current !== name) VIEWS[current].hide?.();
   current = name;
+  document.getElementById('fab-new').hidden = name === 'new'; // «+» не нужна на самой форме
   VIEWS[name].show(params);
 }
 

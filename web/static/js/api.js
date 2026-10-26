@@ -131,6 +131,20 @@ export const api = {
   copySongs: (body) => request('POST', '/api/jobs/copy', body),
   targets: () => request('GET', '/api/targets'),
 
+  /** Страница песни: {song, headers, singers, media, files, copies, usdb_url}. */
+  songDetails: (id) => request('GET', `/api/songs/${encodeURIComponent(id)}/details`),
+  /** Любой файл папки песни (Range); download — с Content-Disposition: attachment. */
+  fileUrl: (id, name, { download = false } = {}) =>
+    `/api/songs/${encodeURIComponent(id)}/file?name=${encodeURIComponent(name)}${download ? '&download=1' : ''}`,
+  /** Свои теги: {tags: [{id, name, color, count}], colors, default_color}. */
+  tags: () => request('GET', '/api/tags'),
+  createTag: ({ name, color }) => request('POST', '/api/tags', { name, color }),
+  updateTag: (id, patch) => request('PUT', `/api/tags/${encodeURIComponent(id)}`, patch),
+  deleteTag: (id) => request('DELETE', `/api/tags/${encodeURIComponent(id)}`),
+  /** Набор своих тегов песни (у всех её копий) → {tags: [id]}. */
+  setSongTags: (songId, tagIds) =>
+    request('PUT', `/api/songs/${encodeURIComponent(songId)}/tags`, { tag_ids: tagIds }),
+
   lyricsSearch: (artist, title) =>
     request('GET', `/api/lyrics/search?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`),
 

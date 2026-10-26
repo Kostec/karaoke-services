@@ -3,10 +3,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   filterSongs, artistCounts, parseFilter, filterParams, isDefaultFilter, SORTS, DEFAULT_FILTER, publishLine,
+  activeFilterCount,
 } from '../../web/static/js/songs-filter.js';
 
 const S = (id, o = {}) => ({ song_id: id, artist: 'A', title: id, instrumental: null, video: null,
-  is_duet: false, cover: null, own: false, source: null, updated_at: null, ...o });
+  is_duet: false, cover: null, own: false, source: null, updated_at: null, tags: [], ...o });
 
 const items = [
   S('Ёлка', { artist: 'Ёлка', instrumental: 'x [Instrumental].mp3', cover: 'c.jpg', own: true,
@@ -16,6 +17,8 @@ const items = [
   S('Чужая', { artist: 'Пара', cover: 'c.jpg', updated_at: '2024-02-01T10:00:00+00:00' }),
   S('Архив', { artist: 'Би-2', own: true, source: 'files' }),
 ];
+items[0].tags = ['t1'];
+items[1].tags = ['t1', 't2'];
 const ids = (f) => filterSongs(items, { ...DEFAULT_FILTER, ...f }).map((s) => s.song_id);
 
 test('умолчание — все песни, по исполнителю, затем по названию', () => {
@@ -85,7 +88,7 @@ test('parseFilter: умолчания и отброс неизвестных з�
 test('filterParams: только отличное от умолчаний; круговой parseFilter(filterParams(f))', () => {
   assert.deepEqual(filterParams(DEFAULT_FILTER), {});
   const f = { q: 'а б', artist: 'Пара', instrumental: 'no', video: 'yes', duet: 'solo', cover: 'no',
-    origin: 'foreign', sort: 'date_asc' };
+    origin: 'foreign', tag: 't_1', sort: 'date_asc' };
   assert.deepEqual(parseFilter(new URLSearchParams(filterParams(f))), f);
   const one = { ...DEFAULT_FILTER, cover: 'yes' };
   assert.deepEqual(filterParams(one), { cover: 'yes' });
@@ -104,4 +107,27 @@ test('publishLine: «Локальное хранилище + «X»», если �
   assert.equal(publishLine({ targets, default_id: 't_2' }), 'Выкладка: Локальное хранилище + «smb://1.2.3.4/k»');
   assert.equal(publishLine({ targets, default_id: 'local' }), 'Выкладка: Локальное хранилище');
   assert.equal(publishLine({ targets, default_id: 't_gone' }), 'Выкладка: Локальное хранилище');
+});
+
+test('свой тег: по id, «none» — без своих тегов, пусто — все', () => {
+  assert.equal(DEFAULT_FILTER.tag, '');
+  assert.deepEqual(ids({ tag: 't1' }), ['Ёлка', 'Дуэт']);
+  assert.deepEqual(ids({ tag: 't2' }), ['Дуэт']);
+  assert.deepEqual(ids({ tag: 'none' }), ['Архив', 'Чужая']);
+  assert.deepEqual(ids({ tag: 'gone' }), []);
+  assert.deepEqual(filterSongs([{ ...S('x'), tags: undefined }], { ...DEFAULT_FILTER, tag: 'none' }).length, 1);
+});
+
+test('parseFilter: tag — строкой; в адресе tag=<id> / tag=none', () => {
+  assert.equal(parseFilter(new URLSearchParams('tag=none')).tag, 'none');
+  assert.equal(parseFilter(new URLSearchParams('tag=t_ab')).tag, 't_ab');
+  assert.deepEqual(filterParams({ ...DEFAULT_FILTER, tag: 'none' }), { tag: 'none' });
+  assert.equal(isDefaultFilter({ ...DEFAULT_FILTER, tag: 't1' }), false);
+});
+
+test('activeFilterCount: включённые фильтры без поиска и сортировки', () => {
+  assert.equal(activeFilterCount(DEFAULT_FILTER), 0);
+  assert.equal(activeFilterCount({ ...DEFAULT_FILTER, q: 'x', sort: 'title' }), 0);
+  assert.equal(activeFilterCount({ ...DEFAULT_FILTER, artist: 'Пара', video: 'yes', tag: 'none' }), 3);
+  assert.equal(activeFilterCount({ ...DEFAULT_FILTER, instrumental: 'no', duet: 'solo', cover: 'yes', origin: 'import' }), 4);
 });
