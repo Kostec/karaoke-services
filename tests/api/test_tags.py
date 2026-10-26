@@ -234,3 +234,25 @@ def test_file_range_download_and_bad_names(env, client, song):
         assert r.status_code == 404, bad
         assert r.json()["detail"] == "У песни нет такого файла"
     assert client.get("/api/songs/0000000000000000/file", params={"name": "x"}).status_code == 404
+
+
+def test_file_inline_only_media_and_nosniff(env, client, song):
+    """Чужой HTML/SVG папки песни не исполняется в адресе сервиса: отдаётся вложением."""
+    d = env.out / "Artist" / "Artist - Song"
+    (d / "evil.html").write_bytes(b"<script>alert(1)</script>")
+    (d / "evil.svg").write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')
+    (d / "back.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (d / "clip.mp4").write_bytes(b"0000")
+    url = f"/api/songs/{song['song_id']}/file"
+
+    for name in ["evil.html", "evil.svg", "Artist - Song.txt"]:
+        r = client.get(url, params={"name": name})
+        assert r.status_code == 200, name
+        assert r.headers["content-disposition"] == "attachment; filename*=UTF-8''" + quote(name), name
+        assert r.headers["x-content-type-options"] == "nosniff", name
+
+    for name in ["Artist - Song.mp3", "back.png", "clip.mp4"]:
+        r = client.get(url, params={"name": name})
+        assert r.status_code == 200, name
+        assert "content-disposition" not in r.headers, name
+        assert r.headers["x-content-type-options"] == "nosniff", name

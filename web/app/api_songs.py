@@ -352,7 +352,8 @@ def _media(ctx: AppContext, item, name: str | None, request: Request, default_ty
         finally:
             f.close()
 
-    headers = {"Accept-Ranges": "bytes", "Content-Length": str(end - start + 1)}
+    headers = {"Accept-Ranges": "bytes", "Content-Length": str(end - start + 1),
+               "X-Content-Type-Options": "nosniff"}
     if status == 206:
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
     return StreamingResponse(body(), status_code=status, media_type=ctype, headers=headers)
@@ -375,6 +376,18 @@ def get_cover(song_id: str, request: Request):
 NO_SUCH_FILE = "У песни нет такого файла"
 
 
+def _inline_safe(ctype: str | None) -> bool:
+    """Показывать в браузере можно только звук, видео и растровые картинки.
+
+    HTML, SVG и прочее из папки песни (папку наполняют импорт и сторонние архивы) иначе
+    исполнились бы в адресе сервиса — такое отдаётся только вложением.
+    """
+    ctype = (ctype or "").split(";")[0].strip().lower()
+    if ctype.startswith(("audio/", "video/")):
+        return True
+    return ctype.startswith("image/") and "svg" not in ctype
+
+
 @router.get("/songs/{song_id}/file", summary="Любой файл папки песни (Range); ?download=1 — скачать")
 def get_file(song_id: str, request: Request, name: str = "", download: bool = False):
     ctx = ctx_of(request)
@@ -387,7 +400,7 @@ def get_file(song_id: str, request: Request, name: str = "", download: bool = Fa
     if real is None:
         raise not_found(NO_SUCH_FILE)
     resp = _media(ctx, item, real, request, "application/octet-stream")
-    if download:
+    if download or not _inline_safe(resp.media_type):
         resp.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(real)}"
     return resp
 
