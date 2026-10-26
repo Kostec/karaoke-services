@@ -129,6 +129,7 @@ export const api = {
   zipUrl: (id) => `/api/songs/${encodeURIComponent(id)}/zip`,
   /** «Копировать в…»: `{song_ids, target_id, replace, only_missing}` → `{queued, skipped, errors}`. */
   copySongs: (body) => request('POST', '/api/jobs/copy', body),
+  renameSong: ({ song_id: songId, artist, title }) => request('POST', '/api/jobs/rename', { song_id: songId, artist, title }),
   targets: () => request('GET', '/api/targets'),
 
   /** Страница песни: {song, headers, singers, media, files, copies, usdb_url}. */

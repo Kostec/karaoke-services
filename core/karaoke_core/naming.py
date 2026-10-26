@@ -106,3 +106,33 @@ def song_tag_key(artist: str, title: str) -> str:
     """Ключ своих тегов песни: :func:`match_key` строкой через перевод строки —
     общий для всех копий «исполнитель — название» во всех хранилищах."""
     return "\n".join(match_key(artist, title))
+
+
+def rename_plan(names, old_bases, new_base: str, fallback=()) -> dict[str, str]:
+    """Новые имена файлов папки при переименовании песни: имя, начинающееся (без учёта регистра)
+    с прежней основы, за которой идёт ``.`` или пробел (``.txt``, `` [Instrumental].mp3``,
+    `` (duet).txt``…), получает ``new_base`` с тем же хвостом; прочие — как есть. Сначала —
+    самая длинная подходящая из ``old_bases``, только потом — из ``fallback`` (стем ``.txt``
+    пакета вроде ``song``)."""
+    groups = [sorted({b for b in bases if b}, key=len, reverse=True) for bases in (old_bases, fallback)]
+    out = {}
+    for name in names:
+        out[name] = name
+        for base in (b for group in groups for b in group):
+            rest = name[len(base):]
+            if name[:len(base)].casefold() == base.casefold() and rest[:1] in (".", " "):
+                out[name] = new_base + rest
+                break
+    return out
+
+
+def renamed_txt_name(txt_name: str, rel_dir: str, old_artist: str, old_title: str,
+                     artist: str, title: str) -> str:
+    """Новое имя ``.txt`` песни по :func:`rename_plan` — одно правило у веба и воркера."""
+    return rename_plan([txt_name], rename_bases(rel_dir, old_artist, old_title), base_name(artist, title),
+                       fallback=[PurePosixPath(txt_name).stem])[txt_name]
+
+
+def rename_bases(rel_dir: str, old_artist: str, old_title: str) -> list[str]:
+    """Прежние основы имён файлов песни: имя её папки и ``base_name`` прежнего имени."""
+    return [PurePosixPath(rel_dir).name, base_name(old_artist, old_title)]

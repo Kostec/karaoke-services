@@ -6,7 +6,10 @@ import { h, clear, runAction, fmtDate, fmtDuration, confirmDialog, toast, songNa
 const POLL_MS = 2000;
 const LOG_MAX_LINES = 5000;
 
-const TYPE_LABEL = { generate: 'Генерация', instrumental: 'Минусовка', publish: 'Выкладка', import: 'Импорт', video: 'Видео' };
+const TYPE_LABEL = {
+  generate: 'Генерация', instrumental: 'Минусовка', publish: 'Выкладка', import: 'Импорт', video: 'Видео',
+  copy: 'Копирование', rename: 'Переименование',
+};
 const STATE_LABEL = {
   queued: 'В очереди', running: 'Идёт', publishing: 'Выкладка',
   done: 'Готово', failed: 'Ошибка', cancelled: 'Отменено',

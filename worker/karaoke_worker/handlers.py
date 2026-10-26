@@ -13,15 +13,16 @@ from typing import Protocol
 from karaoke_core import linealign, musiclink, naming, postprocess, ultrastar
 from karaoke_core.db import FINAL_STATES, LOCAL_TARGET_ID, Job, instrumental_params, now, song_id_for
 from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_PARAMS, INPUT_VIDEO_STEM
-from karaoke_core.storage import Storage, StorageError
+from karaoke_core.storage import Storage, StorageError, StorageNotFound
 from karaoke_core.trash import TrashError
 
 from .base import _NETWORK_MARKERS, JobContext, JobFailed, remove_tree
 from .progress import (IMPORT_PREPARE, PUBLISH, STAGE_DOWNLOAD, STAGE_POSTPROCESS, STAGE_PREPARE,
-                       STAGE_COPY, STAGE_COPY_DOWNLOAD, STAGE_VIDEO_DOWNLOAD, DownloadTracker, ProgressTracker)
+                       STAGE_COPY, STAGE_COPY_DOWNLOAD, STAGE_RENAME, STAGE_VIDEO_DOWNLOAD, DownloadTracker, ProgressTracker)
 
 __all__ = ["Handler", "GenerateHandler", "InstrumentalHandler", "ImportHandler", "PublishHandler",
-           "VideoHandler", "CopyHandler", "COPY_RETRY_S", "download_video", "publish_video", "INPUT_VIDEO_STEM",
+           "VideoHandler", "CopyHandler", "RenameHandler", "COPY_RETRY_S", "download_song_dir", "wait_retry",
+           "rename_txt", "download_video", "publish_video", "INPUT_VIDEO_STEM",
            "HANDLERS", "prepare_lyrics", "align_lines", "ultrasinger_args", "parse_lrc", "lyrics_lines", "lrc_matches", "audio_only_copy", "to_mp3",
            "download_youtube", "download_link", "download_song_youtube", "search_youtube",
            "rank_search_results", "song_end_ms"]
@@ -1249,35 +1250,7 @@ class CopyHandler:
 
     @staticmethod
     def _download(ctx: JobContext, job: Job, rel_dir: str, src_name: str) -> Path:
-        """Папка песни из источника в ``jobs/<id>/in/``; уже скачанная (restart, ожидание) — как есть."""
-        in_dir = ctx.paths.job_in(rel_dir, job.id)
-        if in_dir.is_dir():
-            return in_dir
-        prev = ctx.paths.job_in(rel_dir, job.parent_id) if job.parent_id else None
-        if prev is not None and prev.is_dir():  # «Перезапустить»: вход родителя уже скачан
-            in_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(prev), str(in_dir))
-            remove_tree(prev.parent)
-            ctx.log(job.id, "Папка песни уже скачана прежним заданием — повторно не качается.")
-            return in_dir
-        ctx.jobs.update(job.id, stage=STAGE_COPY_DOWNLOAD[0], percent=STAGE_COPY_DOWNLOAD[1])
-        ctx.log(job.id, f"Скачивание из «{src_name}»: {rel_dir}")
-        tmp = in_dir.with_name("in.part")
-        try:
-            source = ctx.storage(job.params["from_target"])
-            if source.read_song(rel_dir) is None:
-                raise JobFailed("source", f"Песни «{rel_dir}» нет в «{src_name}»")
-            shutil.rmtree(tmp, ignore_errors=True)
-            source.download_dir(rel_dir, tmp)
-            tmp.rename(in_dir)
-        except (StorageError, OSError) as e:
-            shutil.rmtree(tmp, ignore_errors=True)
-            _reset(ctx, job.params["from_target"])
-            raise JobFailed("storage", f"Хранилище-источник «{src_name}» недоступно: {e}") from None
-        except JobFailed:
-            shutil.rmtree(tmp, ignore_errors=True)
-            raise
-        return in_dir
+        return download_song_dir(ctx, job, rel_dir, job.params["from_target"], src_name)
 
     @staticmethod
     def _trash_replaced(ctx: JobContext, job: Job, target: Storage, rel_dir: str, name: str) -> str | None:
@@ -1297,17 +1270,329 @@ class CopyHandler:
 
     @staticmethod
     def _wait(ctx: JobContext, job: Job, stage: str, message: str) -> None:
-        """Копирование ждёт (цель недоступна или минусовка не готова): обратно в очередь, повтор
-        через минуту; строка лога — не чаще раза в 10 минут."""
+        wait_retry(ctx, job, stage, message)
+
+
+def download_song_dir(ctx: JobContext, job: Job, rel_dir: str, target_id: str, name: str) -> Path:
+    """Папка песни ``rel_dir`` из хранилища ``target_id`` в ``jobs/<id>/in/`` (общее у ``copy``
+    и ``rename``); уже скачанная (ожидание) или вход родителя (restart) — повторно не качается.
+    Хранилище недоступно — ``JobFailed("storage")``, песни нет — ``JobFailed("source")``."""
+    in_dir = ctx.paths.job_in(rel_dir, job.id)
+    if in_dir.is_dir():
+        return in_dir
+    prev = ctx.paths.job_in(rel_dir, job.parent_id) if job.parent_id else None
+    if prev is not None and prev.is_dir():  # «Перезапустить»: вход родителя уже скачан
+        in_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(prev), str(in_dir))
+        remove_tree(prev.parent)
+        ctx.log(job.id, "Папка песни уже скачана прежним заданием — повторно не качается.")
+        return in_dir
+    ctx.jobs.update(job.id, stage=STAGE_COPY_DOWNLOAD[0], percent=STAGE_COPY_DOWNLOAD[1])
+    ctx.log(job.id, f"Скачивание из «{name}»: {rel_dir}")
+    tmp = in_dir.with_name("in.part")
+    try:
+        source = ctx.storage(target_id)
+        if source.read_song(rel_dir) is None:
+            raise JobFailed("source", f"Песни «{rel_dir}» нет в «{name}»")
+        shutil.rmtree(tmp, ignore_errors=True)
+        source.download_dir(rel_dir, tmp)
+        tmp.rename(in_dir)
+    except (StorageError, OSError) as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        _reset(ctx, target_id)
+        raise JobFailed("storage", f"Хранилище-источник «{name}» недоступно: {e}") from None
+    except JobFailed:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return in_dir
+
+
+def wait_retry(ctx: JobContext, job: Job, stage: str, message: str) -> None:
+    """Задание ждёт (хранилище недоступно или минусовка не готова): обратно в очередь, повтор
+    через ``COPY_RETRY_S``; строка лога — не чаще раза в ``COPY_LOG_EVERY_S``."""
+    ctx.check_cancel(job.id, force=True)
+    p = dict(job.params)
+    last = p.get("wait_logged_at")
+    if not last or datetime.fromisoformat(now()) - datetime.fromisoformat(last) >= timedelta(
+            seconds=COPY_LOG_EVERY_S):
+        ctx.log(job.id, message)
+        p["wait_logged_at"] = now()
+    p["retry_at"] = now(COPY_RETRY_S)
+    ctx.jobs.update(job.id, state="queued", stage=stage, params=p)
+
+
+# ============================================================================ rename
+
+# Заголовки .txt — ссылки на файлы папки песни: при переименовании файла меняются вместе с ним.
+RENAME_FILE_HEADERS = ("MP3", "AUDIO", "COVER", "VIDEO", "INSTRUMENTAL", "VOCALS", "BACKGROUND")
+RENAME_REASON = "переименована"
+
+
+def rename_txt(data: bytes, artist: str, title: str, renamed: dict[str, str]) -> bytes:
+    """``#ARTIST``/``#TITLE`` и заголовки-ссылки на переименованные файлы (``RENAME_FILE_HEADERS``,
+    сравнение без регистра); прочие байты не меняются. Не записать в кодировке — ``ValueError``."""
+    folded = {old.casefold(): new for old, new in renamed.items() if old != new}
+    song = ultrastar.parse(data)
+    for key in RENAME_FILE_HEADERS:
+        value = (song.header(key) or "").strip()
+        new = folded.get(value.casefold()) if value else None
+        if new is not None:
+            data = ultrastar.set_header_line(data, key, new)
+    for key, value in (("ARTIST", artist), ("TITLE", title)):
+        if (song.header(key) or "") != value:
+            data = ultrastar.set_header_line(data, key, value)
+    return data
+
+
+class _Retry(Exception):
+    """Хранилище перестало отвечать посреди переименования (``note`` — что осталось не на месте)."""
+
+    def __init__(self, error: Exception, note: str = ""):
+        super().__init__(str(error))
+        self.error, self.note = error, note
+
+
+def _alive(storage: Storage) -> bool:
+    """Отвечает ли хранилище (корень читается)."""
+    try:
+        storage.listdir("")
+        return True
+    except StorageError:
+        return False
+
+
+def _same_file(storage: Storage, rel: str, data: bytes | None) -> bool:
+    """Файл ``rel`` есть в хранилище и байт в байт равен ``data``."""
+    if data is None:
+        return False
+    try:
+        return storage.read(rel) == data
+    except StorageNotFound:
+        return False
+
+
+def _old_alive(storage: Storage, rel_dir: str, txt_name: str) -> bool:
+    """Прежняя папка песни ещё в хранилище (есть её ``.txt``)."""
+    return storage.exists(f"{rel_dir}/{txt_name}" if txt_name else rel_dir)
+
+
+class RenameHandler:
+    """«Переименование» одной копии песни в её хранилище: папка и файлы под новым
+    «Исполнитель - Название», в ``.txt`` — имя и ссылки на файлы; старая папка — в корзину (без GPU)."""
+    needs_gpu = False
+
+    def run(self, job: Job, ctx: JobContext) -> None:
+        p = job.params
+        rel_dir, new_rel = p.get("rel_dir") or "", p.get("new_rel_dir") or ""
+        target_id, artist, title = p.get("target_id"), p.get("artist") or "", p.get("title") or ""
+        if not rel_dir or not new_rel or not target_id or not artist or not title:
+            raise JobFailed("input", "Задание переименования без песни, хранилища или нового имени")
+        name = _target_name(ctx, target_id)
         ctx.check_cancel(job.id, force=True)
-        p = dict(job.params)
-        last = p.get("wait_logged_at")
-        if not last or datetime.fromisoformat(now()) - datetime.fromisoformat(last) >= timedelta(
-                seconds=COPY_LOG_EVERY_S):
-            ctx.log(job.id, message)
-            p["wait_logged_at"] = now()
-        p["retry_at"] = now(COPY_RETRY_S)
-        ctx.jobs.update(job.id, state="queued", stage=stage, params=p)
+        try:
+            ctx.target_of(target_id)
+        except StorageError as e:
+            raise JobFailed("storage", f"Хранилище «{name}»: {e}") from None
+        try:
+            in_dir = download_song_dir(ctx, job, rel_dir, target_id, name)
+        except JobFailed as e:
+            if e.reason == "storage" and p.get("wait"):
+                wait_retry(ctx, job, f"Ждёт хранилище «{name}»", f"{e.user_message}; повтор через минуту.")
+                return
+            raise
+        result, new_txt_name = self._build(ctx, job, in_dir)
+        new_txt = (result / new_txt_name).read_bytes()
+        ctx.check_cancel(job.id, force=True)
+        ctx.jobs.update(job.id, state="running", stage=STAGE_RENAME[0], percent=STAGE_RENAME[1])
+        same_dir = new_rel.casefold() == rel_dir.casefold()  # на SMB/Windows — та же папка
+        try:
+            storage = ctx.storage(target_id)
+            # своя недописанная выкладка (воркер упал после неё): .txt байт в байт как наш
+            done_before = _same_file(storage, f"{new_rel}/{new_txt_name}", new_txt)
+            old_here = _old_alive(storage, rel_dir, p.get("txt_name") or "")
+            if not same_dir and not done_before and storage.exists(new_rel):
+                if p.get("upload_started") != new_rel or storage.read_song(new_rel) is not None:
+                    raise JobFailed("conflict", f"Песня «{artist} — {title}» уже есть в «{name}»")
+                # недописанная выкладка этого задания или его родителя — заново
+                storage.delete_dir(new_rel)
+                ctx.log(job.id, f"Недописанная папка «{new_rel}» прежней попытки удалена.")
+        except StorageError as e:
+            return self._unavailable(ctx, job, name, e)
+        if done_before:
+            ctx.log(job.id, f"Папка «{new_rel}» уже выложена прежним заданием — доводятся остальные шаги.")
+        else:
+            if p.get("upload_started") != new_rel:  # переживает ожидание и «Перезапустить»
+                p = job.params = {**p, "upload_started": new_rel}
+                ctx.jobs.update(job.id, params=p)
+            try:
+                self._publish(ctx, job, storage, result, same_dir and old_here)
+            except _Retry as r:
+                return self._unavailable(ctx, job, name, r.error, r.note)
+        removed = rel_dir  # в индексе старой строки быть не должно (папки уже нет или она в корзине)
+        if not same_dir and old_here:
+            try:
+                item = ctx.trash.move_to_trash(storage, rel_dir, reason=RENAME_REASON)
+                ctx.log(job.id, f"Прежняя папка «{rel_dir}» перенесена в корзину ({item.id}).")
+            except (StorageError, TrashError, OSError) as e:
+                removed = None
+                ctx.log(job.id, f"Предупреждение: прежняя папка «{rel_dir}» не перенесена в корзину: {e}")
+        old = ctx.library.get(storage.target_id, rel_dir)
+        own_id = old.own_song_id if old else None
+        if removed:
+            ctx.library.remove(storage.target_id, removed)
+        _index(ctx, job, storage, new_rel, own_id)
+        self._rename_own(ctx, job, own_id, rel_dir, new_rel)
+        self._rename_tags(ctx, job, old)
+        remove_tree(ctx.paths.job(rel_dir, job.id))
+        _prune_song_dir(ctx, rel_dir)
+        _done(ctx, job)
+
+    @staticmethod
+    def _unavailable(ctx: JobContext, job: Job, name: str, e: Exception, note: str = "") -> None:
+        """Хранилище не отвечает: ждать (``wait``; недописанную папку повтор уберёт сам) или упасть."""
+        _reset(ctx, job.params.get("target_id"))
+        if job.params.get("wait"):
+            wait_retry(ctx, job, f"Ждёт хранилище «{name}»",
+                       f"Хранилище «{name}» недоступно: {e}{note}; повтор через минуту.")
+            return
+        raise JobFailed("storage", f"Хранилище «{name}» недоступно: {e}{note}") from None
+
+    @staticmethod
+    def _publish(ctx: JobContext, job: Job, storage: Storage, result: Path, trash_first: bool) -> None:
+        """Выкладка ``result`` в ``new_rel_dir``. ``trash_first`` (та же папка без учёта регистра) —
+        сначала старая в корзину, при сбое — откат; при сбое выкладки недописанная новая папка
+        удаляется (её до задания не было). Сбой корзины при живом хранилище — ошибка, не ожидание."""
+        p = job.params
+        rel_dir, new_rel = p["rel_dir"], p["new_rel_dir"]
+        item = None
+        if trash_first:
+            try:
+                item = ctx.trash.move_to_trash(storage, rel_dir, reason=RENAME_REASON)
+            except (StorageError, TrashError, OSError) as e:
+                if not _alive(storage):
+                    raise _Retry(e) from None
+                raise JobFailed("trash", f"Прежнюю папку «{rel_dir}» не удалось перенести в корзину: {e}") from None
+            ctx.log(job.id, f"Прежняя папка «{rel_dir}» перенесена в корзину ({item.id}).")
+        try:
+            written = storage.upload_dir(result, new_rel)
+        except (StorageError, OSError) as e:
+            note = ""
+            try:
+                if storage.exists(new_rel):
+                    storage.delete_dir(new_rel)  # недописанная — до задания её не было
+                if item is not None:
+                    ctx.trash.restore(storage, item.id)
+                    ctx.log(job.id, "Прежняя папка возвращена на место.")
+            except (StorageError, TrashError, OSError) as e2:
+                note = (f"; прежняя папка осталась в корзине ({e2})" if item is not None
+                        else f"; недописанная папка «{new_rel}» не удалена ({e2})")
+            raise _Retry(e, note) from None
+        ctx.log(job.id, f"Выложено в «{storage.label}»: {new_rel} ({len(written)} файлов).")
+
+    @classmethod
+    def _build(cls, ctx: JobContext, job: Job, in_dir: Path) -> tuple[Path, str]:
+        """``jobs/<id>/result/`` и новое имя ``.txt`` (по ``naming.rename_plan``); сбой диска — ``JobFailed``."""
+        try:
+            return cls._build_files(ctx, job, in_dir)
+        except OSError as e:
+            raise JobFailed("prepare", f"Не удалось собрать папку под новым именем: {e}") from None
+
+    @staticmethod
+    def _build_files(ctx: JobContext, job: Job, in_dir: Path) -> tuple[Path, str]:
+        """Файлы ``in/`` под новыми именами (жёсткие ссылки), ``.txt`` переписан."""
+        p = job.params
+        artist, title = p["artist"], p["title"]
+        txt_name = p.get("txt_name") or ""
+        names = sorted(f.name for f in in_dir.iterdir() if f.is_file())
+        plan = naming.rename_plan(names, naming.rename_bases(p["rel_dir"], job.artist, job.title),
+                                  naming.base_name(artist, title), fallback=[PurePosixPath(txt_name).stem])
+        if plan.get(txt_name) is None:
+            raise JobFailed("source", f"В папке песни нет «{txt_name}»")
+        seen: dict[str, str] = {}
+        for old, new in plan.items():  # SMB/Windows не различают регистр — сравнение без него
+            other = seen.setdefault(new.casefold(), old)
+            if other != old:
+                raise JobFailed("input", f"Файлы «{other}» и «{old}» получат одно имя «{new}» — "
+                                         "переименуйте или уберите лишний файл вручную")
+        result = ctx.paths.job(p["rel_dir"], job.id) / "result"
+        shutil.rmtree(result, ignore_errors=True)
+        result.mkdir(parents=True)
+        for sub in in_dir.iterdir():
+            if sub.is_dir():
+                shutil.copytree(sub, result / sub.name)
+        for old, new in plan.items():
+            if old == txt_name:
+                try:
+                    data = rename_txt((in_dir / old).read_bytes(), artist, title, plan)
+                except ValueError:
+                    raise JobFailed("input", f"Имя «{artist} — {title}» нельзя записать в кодировке "
+                                             f"файла «{txt_name}» — уберите неподдерживаемые символы") from None
+                (result / new).write_bytes(data)
+                continue
+            try:
+                os.link(in_dir / old, result / new)  # тот же том: без второй копии видео
+            except FileExistsError:  # имя занято вложенной папкой — молча не перезаписывать
+                raise JobFailed("input", f"Имя «{new}» в папке песни уже занято") from None
+            except OSError:
+                shutil.copy2(in_dir / old, result / new)
+        changed = sum(1 for o, n in plan.items() if o != n)
+        ctx.log(job.id, f"Новое имя: {p['new_rel_dir']} (переименовано файлов: {changed}).")
+        return result, plan[txt_name]
+
+    @staticmethod
+    def _rename_own(ctx: JobContext, job: Job, own_id: str | None, rel_dir: str, new_rel: str) -> None:
+        """Своя песня: строка ``songs`` и исходники ``songs/<rel_dir>/source`` — на новое имя
+        (один раз: уже перенесённую заданием другой копии не трогает)."""
+        own = ctx.songs.get(own_id) if own_id else ctx.songs.by_rel_dir(rel_dir)
+        if own is None or own.rel_dir == new_rel:
+            return
+        other = ctx.songs.by_rel_dir(new_rel)
+        if other is not None and other.id != own.id:
+            ctx.log(job.id, f"Предупреждение: исходники не перенесены — под именем «{new_rel}» уже есть другая своя песня")
+            return
+        p = job.params
+        try:
+            src, dst = ctx.paths.source(own.rel_dir), ctx.paths.source(new_rel)
+            if src.is_dir() and src != dst:
+                if dst.exists():  # чужие исходники — не трогать никогда
+                    ctx.log(job.id, f"Предупреждение: исходники не перенесены — папка «{new_rel}/source» "
+                                    "в томе data уже занята; они остались под прежним именем")
+                    return
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                _prune_song_dir(ctx, own.rel_dir)
+            ctx.songs.rename(own.id, rel_dir=new_rel, artist=p["artist"], title=p["title"])
+            ctx.log(job.id, "Исходники песни перенесены под новое имя.")
+        except Exception as e:  # noqa: BLE001 — песня уже переименована в хранилище
+            ctx.log(job.id, f"Предупреждение: исходники песни не перенесены: {e}")
+
+    @staticmethod
+    def _rename_tags(ctx: JobContext, job: Job, old) -> None:
+        artist, title = (old.artist, old.title) if old else (job.artist, job.title)
+        old_key = naming.song_tag_key(artist, title)
+        new_key = naming.song_tag_key(job.params["artist"], job.params["title"])
+        try:
+            ctx.tags.copy_key(old_key, new_key)
+            if old_key != new_key and not ctx.library.copies(artist, title):
+                ctx.tags.drop_key(old_key)  # переименована последняя копия
+        except Exception as e:  # noqa: BLE001
+            ctx.log(job.id, f"Предупреждение: теги песни не перенесены: {e}")
+
+
+def _prune_song_dir(ctx: JobContext, rel_dir: str) -> None:
+    """Пустые папки песни и исполнителя в томе data — убрать (только пустые)."""
+    try:
+        d = ctx.paths.song_at(rel_dir)
+    except ValueError:
+        return
+    songs_root = ctx.paths.root / "songs"
+    for path in (d / "jobs", d, d.parent):
+        if path == songs_root:
+            break
+        try:
+            path.rmdir()
+        except OSError:
+            pass
 
 
 HANDLERS: dict[str, Handler] = {
@@ -1317,4 +1602,5 @@ HANDLERS: dict[str, Handler] = {
     "publish": PublishHandler(),
     "video": VideoHandler(),
     "copy": CopyHandler(),
+    "rename": RenameHandler(),
 }

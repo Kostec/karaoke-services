@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from karaoke_core import musiclink, naming, ultrastar
 from karaoke_core.http import HttpError
-from karaoke_core.db import ACTIVE_STATES, FINAL_STATES, STAGE_PUBLISH, instrumental_params
+from karaoke_core.db import ACTIVE_STATES, FINAL_STATES, STAGE_PUBLISH, instrumental_params, song_id_for
 from karaoke_core.paths import INPUT_AUDIO, INPUT_COVER_STEM, INPUT_LRC, INPUT_LYRICS, INPUT_VIDEO_STEM
 from karaoke_core.storage import StorageError
 
@@ -356,6 +356,91 @@ def copy(body: CopyIn, request: Request):
     return {"queued": queued, "skipped": skipped, "errors": errors}
 
 
+class RenameIn(BaseModel):
+    song_id: str
+    artist: str = ""
+    title: str = ""
+
+
+RENAME_BUSY = "У песни есть незавершённые задания — дождитесь их"
+
+
+# Задания, которые меняют папку песни (или создают её): пока они не завершены, переименовывать нельзя.
+BUSY_TYPES = ("generate", "instrumental", "import", "publish", "video", "copy", "rename")
+
+
+def _song_busy(ctx: AppContext, copies) -> bool:
+    """Есть ли незавершённое задание у какой-то копии песни: по id копии, по имени из ref, а у
+    ``rename`` — ещё и по новому имени (``params``), чтобы ждущая копия тоже считалась."""
+    ids = {c.song_id for c in copies}
+    keys = {naming.match_key(c.artist, c.title) for c in copies}
+    dirs = {c.rel_dir.casefold() for c in copies}
+    for type_ in BUSY_TYPES:
+        for job in ctx.jobs.active(type_):
+            p = job.params
+            if job.song_id in ids or naming.match_key(job.artist, job.title) in keys:
+                return True
+            if type_ == "rename" and (
+                    naming.match_key(p.get("artist") or "", p.get("title") or "") in keys
+                    or {(p.get("rel_dir") or "").casefold(), (p.get("new_rel_dir") or "").casefold()} & dirs
+                    or (p.get("target_id") and p.get("new_rel_dir")
+                        and song_id_for(p["target_id"], p["new_rel_dir"]) in ids)):
+                return True
+    return False
+
+
+def _rename_conflict(ctx: AppContext, copies, new_rel: str, artist: str, title: str, known: dict) -> None:
+    """Новое имя занято: другая папка ``new_rel`` (без регистра) в индексе любого хранилища или
+    своя другая песня в томе data (строка ``songs`` или папка ``songs/<new_rel>/``) — 409."""
+    folded = new_rel.casefold()
+    mine = {(c.target_id, c.rel_dir) for c in copies}
+    for target in known.values():
+        for other in ctx.library.list(target.id):
+            if other.rel_dir.casefold() == folded and (target.id, other.rel_dir) not in mine:
+                raise ApiError(409, f"Песня «{artist} — {title}» уже есть в «{target.name or target.label}»",
+                               field="title")
+    own_ids = {c.own_song_id for c in copies if c.own_song_id}
+    own_dirs = {c.rel_dir.casefold() for c in copies}
+    taken = ctx.songs.by_rel_dir_folded(new_rel)
+    if (taken is not None and taken.id not in own_ids and taken.rel_dir.casefold() not in own_dirs) or (
+            folded not in own_dirs and ctx.paths.source(new_rel).exists()):
+        raise ApiError(409, f"Песня «{artist} — {title}» уже есть среди своих песен", field="title")
+
+
+@router.post("/rename", status_code=201, summary="Переименовать песню во всех хранилищах",
+             description="Задание `rename` на каждую копию песни (тот же `match_key`); ответ — "
+                         "`{jobs: [{job_id, target_id, song_id}]}`, `song_id` — новый id копии.")
+def rename(body: RenameIn, request: Request):
+    ctx = ctx_of(request)
+    item = ctx.find_song(body.song_id)
+    artist, title = body.artist.strip(), body.title.strip()
+    if not artist:
+        raise ApiError(400, "Введите исполнителя", field="artist")
+    if not title:
+        raise ApiError(400, "Введите название", field="title")
+    new_rel = naming.song_dir(artist, title)
+    if new_rel in (item.rel_dir, naming.song_dir(item.artist, item.title)):
+        raise ApiError(400, "Имя не изменилось", field="title")
+    known = {t.id: t for t in ctx.targets()}
+    copies = [c for c in ctx.library.copies(item.artist, item.title) if c.target_id in known]
+    if all(c.song_id != item.song_id for c in copies):
+        copies.append(item)
+    copies.sort(key=lambda c: (c.target_id != item.target_id, c.target_id))
+    if _song_busy(ctx, copies):
+        raise ApiError(409, RENAME_BUSY)
+    _rename_conflict(ctx, copies, new_rel, artist, title, known)
+    out = []
+    for c in copies:
+        new_txt = naming.renamed_txt_name(c.txt_name, c.rel_dir, c.artist, c.title, artist, title)
+        params = {"rel_dir": c.rel_dir, "txt_name": c.txt_name, "target_id": c.target_id,
+                  "artist": artist, "title": title, "new_rel_dir": new_rel, "new_txt_name": new_txt,
+                  "wait": True}
+        job = ctx.jobs.enqueue("rename", {"artist": c.artist, "title": c.title, "song_id": c.song_id}, params)
+        out.append({"job_id": job.id, "target_id": c.target_id,
+                    "song_id": song_id_for(c.target_id, new_rel)})
+    return {"jobs": out}
+
+
 _VIDEO_EXT_NAMES = [e.lstrip(".") for e in naming.VIDEO_EXT_ORDER]
 VIDEO_EXTS_TEXT = ", ".join(_VIDEO_EXT_NAMES[:-1]) + " или " + _VIDEO_EXT_NAMES[-1]  # из naming.VIDEO_EXT_ORDER
 
@@ -558,6 +643,12 @@ def restart(job_id: int, request: Request):
             replace=bool(p.get("replace")), wait=bool(p.get("wait")),
             replace_rel_dir=p.get("replace_rel_dir"), after_job=p.get("after_job"),
             parent_id=job.id).to_dict()
+    if job.type == "rename":  # ожидание хранилища начинается заново, вход родителя не качается
+        p = {k: v for k, v in job.params.items() if k not in ("retry_at", "wait_logged_at")}
+        for other in ctx.jobs.active("rename"):
+            if (other.params.get("rel_dir"), other.params.get("target_id")) == (p.get("rel_dir"), p.get("target_id")):
+                raise ApiError(409, "Эта песня уже в очереди")
+        return ctx.jobs.enqueue("rename", job, p, parent_id=job.id).to_dict()
     if job.type != "generate":
         return ctx.jobs.enqueue(job.type, job, job.params, parent_id=job.id).to_dict()
     queue_duplicate(ctx, "generate", key=song_key(job.artist, job.title))

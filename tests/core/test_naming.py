@@ -98,3 +98,15 @@ def test_context_match_key_is_reexport():
     from app import context
 
     assert context.match_key is naming.match_key
+
+
+def test_rename_plan_keeps_tails_and_falls_back_to_txt_stem():
+    from karaoke_core.naming import rename_plan, renamed_txt_name
+
+    plan = rename_plan(["A - T (duet).txt", "a - t [CO].jpg", "фон.jpg", "A - Tx.mp3"], ["A - T"], "B - U")
+    assert plan == {"A - T (duet).txt": "B - U (duet).txt", "a - t [CO].jpg": "B - U [CO].jpg",
+                    "фон.jpg": "фон.jpg", "A - Tx.mp3": "A - Tx.mp3"}
+    assert rename_plan(["song.txt", "song.mp3"], ["A - T"], "B - U", fallback=["song"]) == {
+        "song.txt": "B - U.txt", "song.mp3": "B - U.mp3"}
+    assert renamed_txt_name("A - T (duet).txt", "A/A - T", "A", "T", "B", "U") == "B - U (duet).txt"
+    assert renamed_txt_name("song.txt", "A/A - T", "A", "T", "B", "U") == "B - U.txt"

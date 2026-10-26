@@ -19,6 +19,7 @@ let seq = 0;
 let fromList = false; // пришли на страницу из списка «Песен» — «← Песни» делает history.back()
 let lastFrom = '';
 let trashDays = null;
+let renamed = false; // переход на новый id после переименования — «← Песни» ведёт туда же, что и раньше
 
 // Слушатель ставится при загрузке модуля — раньше роутера app.js, поэтому к show() адрес уже известен.
 window.addEventListener('hashchange', (e) => {
@@ -31,7 +32,8 @@ export function mount(section) {
 
 export function show(params) {
   const id = params?.get('id') || '';
-  if (id !== songId) fromList = /^#songs(\?|$)/.test(lastFrom);
+  if (id !== songId && !renamed) fromList = /^#songs(\?|$)/.test(lastFrom);
+  renamed = false;
   songId = id;
   load();
   getDefaults().then((d) => { trashDays = d.trash_days; }).catch(() => {});
@@ -99,6 +101,12 @@ function render(details, tags, targetsRes) {
     targets: (targetsRes?.targets || details.copies?.map((c) => ({ id: c.target_id, name: c.target_name })) || []),
     currentTargetId: song.target_id, outputOk: true, trashDays, reload,
     afterRemove: () => { location.hash = '#songs'; },
+    // прежний id исчез — заменить адрес, чтобы «Назад» не вёл на него
+    afterRename: (newId) => {
+      if (songId !== song.song_id) return; // пользователь уже ушёл со страницы
+      renamed = true;
+      location.replace(`#song?id=${encodeURIComponent(newId)}`);
+    },
   };
 
   // ---- шапка

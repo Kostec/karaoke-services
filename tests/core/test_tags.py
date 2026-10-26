@@ -100,3 +100,20 @@ def test_for_songs_many_keys(tags):
         tags.set_for_song(k, [t.id])
     got = tags.for_songs(keys)
     assert sorted(got) == sorted(keys[::100])
+
+
+def test_copy_key_without_duplicates_and_drop_key(tags):
+    from karaoke_core import naming
+
+    a, b = tags.create("Апрель"), tags.create("Баллады")
+    old, new = naming.song_tag_key("Кино", "Звезда"), naming.song_tag_key("Кино", "Звезда по имени Солнце")
+    tags.set_for_song(old, [a.id, b.id])
+    tags.set_for_song(new, [a.id])  # у нового ключа уже есть тег — дубля не будет
+    assert tags.copy_key(old, new) == 1
+    assert tags.for_songs([old, new]) == {old: [a.id, b.id], new: [a.id, b.id]}
+    assert tags.copy_key(old, new) == 0  # повтор (задание другой копии) ничего не меняет
+    assert tags.copy_key(new, new) == 0
+    assert tags.drop_key(old) == 2
+    assert tags.drop_key(old) == 0
+    assert tags.for_songs([old, new]) == {new: [a.id, b.id]}
+    assert tags.counts() == {a.id: 1, b.id: 1}

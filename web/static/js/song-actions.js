@@ -1,12 +1,14 @@
 // Действия с песней — общие для списка «Песен» (меню «…») и страницы песни:
-// перегенерация, минусовка, видео, zip, «Копировать в…», редакторы, теги, удаление.
+// перегенерация, минусовка, видео, zip, «Копировать в…», «Переименовать…», редакторы, теги, удаление.
 //
-// env = {targets, currentTargetId, outputOk, trashDays, reload, afterRemove?, tags?}
+// env = {targets, currentTargetId, outputOk, trashDays, reload, afterRemove?, afterRename?, tags?}
 //   targets — [{id, name|label}] всех хранилищ; currentTargetId — хранилище песни;
-//   reload() — перечитать то, что на экране; afterRemove() — после удаления (иначе reload).
+//   reload() — перечитать то, что на экране; afterRemove() — после удаления (иначе reload);
+//   afterRename(newSongId) — задание переименования копии из currentTargetId готово (иначе reload).
 
 import { api, getDefaults, errorText, probeDownload, JOB_FINAL } from './api.js';
-import { h, confirmDialog, runAction, toast, days, songName } from './ui.js';
+import { h, confirmDialog, runAction, toast, days, songName, field } from './ui.js';
+import { renameErrors, renameBody, ownRename } from './rename-logic.js';
 import { createVideoBlock } from './video-block.js';
 import { songEditors } from './extensions.js';
 import { openTagsDialog } from './tags-ui.js';
@@ -57,6 +59,7 @@ export function songMenuItems(song, env, { editors = true } = {}) {
       onSelect: (e) => { e.preventDefault(); downloadZip(song); } },
     { label: 'Копировать в…', disabled: off || (others.length ? false : NO_OTHERS),
       onSelect: () => openCopyDialog([song], env) },
+    { label: 'Переименовать…', disabled: off, onSelect: () => openRenameDialog(song, env) },
   ];
   if (editors) items.push(...editorItems(song, env));
   items.push(
@@ -237,4 +240,76 @@ export async function openVideoDialog(song, env) {
       'Убрать', { danger: true }))) return;
     send({ remove: true }, 'Удаление видео поставлено в очередь');
   }
+}
+
+/** Диалог «Переименовать…»: исполнитель и название; задание на каждую копию песни (POST /api/jobs/rename). */
+export function openRenameDialog(song, env) {
+  const input = (name, value) => {
+    const el = h('input', { type: 'text', name, autocomplete: 'off', maxlength: '200' });
+    el.value = value || '';
+    return el;
+  };
+  const artist = input('artist', song.artist);
+  const title = input('title', song.title);
+  const errs = { artist: h('div', { class: 'field-error', hidden: true, role: 'alert' }),
+    title: h('div', { class: 'field-error', hidden: true, role: 'alert' }) };
+  const inputs = { artist, title };
+  const errEl = h('div', { class: 'banner err', hidden: true, role: 'alert' });
+  const submit = h('button', { type: 'button', class: 'primary' }, 'Переименовать');
+  const cancel = h('button', { type: 'button', onclick: () => el.close() }, 'Отмена');
+  const el = h('dialog', { class: 'rename-dlg', 'aria-labelledby': 'rename-dlg-title' },
+    h('h3', { id: 'rename-dlg-title' }, `Переименовать «${songName(song.artist, song.title)}»`),
+    field('Исполнитель', artist), errs.artist,
+    field('Название', title), errs.title,
+    h('p', { class: 'small muted' }, 'Переименуется во всех хранилищах, где есть песня; файлы получат новое имя.'),
+    errEl,
+    h('div', { class: 'actions' }, cancel, submit));
+  el.addEventListener('close', () => el.remove());
+  document.body.append(el);
+  if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
+  title.focus();
+  title.select();
+
+  const show = (found = {}, common = '') => {
+    for (const k of ['artist', 'title']) {
+      errs[k].textContent = found[k] || '';
+      errs[k].hidden = !found[k];
+      inputs[k].classList.toggle('invalid', !!found[k]);
+    }
+    errEl.textContent = common;
+    errEl.hidden = !common;
+    const first = ['artist', 'title'].find((k) => found[k]);
+    if (first) inputs[first].focus();
+  };
+  for (const k of ['artist', 'title']) {
+    inputs[k].addEventListener('input', () => show());
+    inputs[k].addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit.click(); } });
+  }
+
+  submit.addEventListener('click', async () => {
+    const values = { artist: artist.value, title: title.value };
+    const found = renameErrors(values, song);
+    if (Object.keys(found).length) { show(found); return; }
+    show();
+    submit.disabled = true;
+    try {
+      const res = await api.renameSong(renameBody(song, values));
+      el.close();
+      toast('Переименование поставлено в очередь');
+      const own = ownRename(res, env.currentTargetId ?? song.target_id);
+      for (const j of res.jobs || []) {
+        watchJob({ id: j.job_id }, (job) => {
+          if (j === own && job.state === 'done' && env.afterRename) env.afterRename(j.song_id);
+          else env.reload?.();
+        });
+      }
+    } catch (e) {
+      const f = e?.data?.field;
+      if (f === 'artist' || f === 'title') show({ [f]: errorText(e) });
+      else show({}, errorText(e));
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  return el;
 }

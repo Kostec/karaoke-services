@@ -22,7 +22,7 @@ from collections import deque
 from pathlib import Path
 from typing import Callable, Mapping
 
-from karaoke_core.db import Jobs, Library, Settings, Songs, Target, connect
+from karaoke_core.db import Jobs, Library, Settings, Songs, Tags, Target, connect
 from karaoke_core.paths import DataPaths
 from karaoke_core.http import Http
 from karaoke_core.storage import Storage, make_storage
@@ -100,6 +100,7 @@ class JobContext:
         self.settings = Settings(self.conn, self.env)
         self.library = Library(self.conn)
         self.songs = Songs(self.conn)
+        self.tags = Tags(self.conn)
         self.trash = trash or Trash(self.paths.trash)
         self.http = Http()
         self.storage_factory = storage_factory or (lambda t: make_storage(t, http=self.http))

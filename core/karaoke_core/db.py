@@ -960,6 +960,14 @@ class Songs:
         row = self.conn.execute("SELECT * FROM songs WHERE rel_dir=?", (rel_dir,)).fetchone()
         return OwnSong.from_row(row) if row else None
 
+    def by_rel_dir_folded(self, rel_dir: str) -> OwnSong | None:
+        """Своя песня с этим ``rel_dir`` без учёта регистра (в т. ч. кириллицы)."""
+        key = rel_dir.casefold()
+        for row in self.conn.execute("SELECT * FROM songs"):
+            if row["rel_dir"].casefold() == key:
+                return OwnSong.from_row(row)
+        return None
+
     def get_many(self, ids) -> dict[str, OwnSong]:
         """Свои песни по id одним запросом: ``{id: OwnSong}`` (неизвестных id нет в ответе)."""
         ids = sorted({i for i in ids if i})
@@ -982,6 +990,14 @@ class Songs:
                  json.dumps(params or {}, ensure_ascii=False), ts, ts),
             ).fetchone()
         return OwnSong.from_row(row)
+
+    def rename(self, id: str, *, rel_dir: str, artist: str, title: str) -> OwnSong | None:
+        """Новое имя своей песни (задание ``rename``): ``rel_dir``, исполнитель, название; id прежний."""
+        with _tx(self.conn):
+            row = self.conn.execute(
+                "UPDATE songs SET rel_dir=?, artist=?, title=?, updated_at=? WHERE id=? RETURNING *",
+                (rel_dir, artist, title, now(), id)).fetchone()
+        return OwnSong.from_row(row) if row else None
 
     def delete(self, id: str) -> None:
         with _tx(self.conn):
@@ -1128,6 +1144,21 @@ class Tags:
             self.conn.executemany("INSERT INTO song_tags (song_key, tag_id) VALUES (?, ?)",
                                   [(key, i) for i in ids])
         return self.for_songs([key]).get(key, [])
+
+    def copy_key(self, old: str, new: str) -> int:
+        """Теги песни с ключа ``old`` — ещё и на ``new`` (переименование песни): без дублей, повтор
+        ничего не меняет; ``old`` остаётся (у ещё не переименованных копий). Сколько связей добавлено."""
+        if old == new:
+            return 0
+        with _tx(self.conn):
+            return self.conn.execute(
+                "INSERT OR IGNORE INTO song_tags (song_key, tag_id)"
+                " SELECT ?, tag_id FROM song_tags WHERE song_key=?", (new, old)).rowcount
+
+    def drop_key(self, key: str) -> int:
+        """Снять все теги с ключа песни (последняя копия переименована); сколько связей снято."""
+        with _tx(self.conn):
+            return self.conn.execute("DELETE FROM song_tags WHERE song_key=?", (key,)).rowcount
 
     def counts(self) -> dict[str, int]:
         """Сколько песен (ключей) у каждого тега; тегов без песен в ответе нет."""

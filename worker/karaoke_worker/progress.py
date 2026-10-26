@@ -7,7 +7,7 @@ import re
 from karaoke_core.db import STAGE_PUBLISH
 
 __all__ = ["STAGES", "STAGE_PREPARE", "STAGE_POSTPROCESS", "PUBLISH", "STAGE_DOWNLOAD",
-           "STAGE_VIDEO_DOWNLOAD", "STAGE_COPY_DOWNLOAD", "STAGE_COPY", "IMPORT_PREPARE", "ProgressTracker", "DownloadTracker", "LineSplitter", "clean_line"]
+           "STAGE_VIDEO_DOWNLOAD", "STAGE_COPY_DOWNLOAD", "STAGE_COPY", "STAGE_RENAME", "IMPORT_PREPARE", "ProgressTracker", "DownloadTracker", "LineSplitter", "clean_line"]
 
 # Маркер (подстрока строки без ANSI) → этап по-русски и минимальный процент. Порядок — как в §5.
 STAGES: list[tuple[tuple[str, ...], str, int]] = [
@@ -35,6 +35,8 @@ STAGE_VIDEO_DOWNLOAD = ("Загрузка видео", 5)
 # Задание «Копирование»: скачивание из хранилища-источника и выкладка в цель.
 STAGE_COPY_DOWNLOAD = ("Скачивание из хранилища", 10)
 STAGE_COPY = ("Копирование", 60)
+# Задание «Переименование»: скачанная папка песни выкладывается под новым именем.
+STAGE_RENAME = ("Переименование", 60)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
 _TQDM_RE = re.compile(r"(\d{1,3})%\|")
