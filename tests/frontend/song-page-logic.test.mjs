@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mediaRows, infoRows, fmtSize, originLabel, lyricsPreview,
+  mediaRows, infoRows, fmtSize, originLabel, lyricsPreview, mediaMime, browserCanPlay,
 } from '../../web/static/js/song-page-logic.js';
 
 const details = (o = {}) => ({
@@ -88,4 +88,20 @@ test('lyricsPreview: первые 12 строк и признак «есть е�
   assert.deepEqual(lyricsPreview('а\r\nб\r\nв', 2), { head: 'а\nб', more: true });
   assert.deepEqual(lyricsPreview(''), { head: '', more: false });
   assert.deepEqual(lyricsPreview(null), { head: '', more: false });
+});
+
+test('mediaMime: тип по расширению без учёта регистра, неизвестное — null', () => {
+  assert.equal(mediaMime('A - T.AVI'), 'video/x-msvideo');
+  assert.equal(mediaMime('a [Instrumental].mp3'), 'audio/mpeg');
+  assert.equal(mediaMime('clip.webm'), 'video/webm');
+  assert.equal(mediaMime('noext'), null);
+  assert.equal(mediaMime('x.xyz'), null);
+});
+
+test('browserCanPlay: пустой ответ canPlayType — не играет, неизвестный тип пробуем', () => {
+  const chrome = (mime) => (['video/mp4', 'audio/mpeg', 'video/webm'].includes(mime) ? 'maybe' : '');
+  assert.equal(browserCanPlay('a.mp4', chrome), true);
+  assert.equal(browserCanPlay('a.avi', chrome), false);
+  assert.equal(browserCanPlay('a.mpg', chrome), false);
+  assert.equal(browserCanPlay('a.xyz', chrome), true);
 });

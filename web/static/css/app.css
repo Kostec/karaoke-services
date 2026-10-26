@@ -305,15 +305,17 @@ dialog.copy-dlg fieldset[disabled] { opacity: .55; }
 }
 .tag.on { background: var(--ok-bg); color: var(--ok); }
 .tag.user { font-weight: 600; }
-/* Чип-кнопка выглядит как .tag, а зона нажатия ≥44×44: прозрачная рамка (фон — только внутри неё)
-   и такие же отрицательные поля, чтобы раскладка не изменилась; радиусы = 10px + рамка. */
+/* Чип-кнопка выглядит как .tag, а зона нажатия шире видимого чипа: прозрачная рамка (фон — только
+   внутри неё). Поля рамки выступают за место в раскладке ровно на половину зазора .tags (4px → 2px),
+   поэтому зоны соседних чипов — и в ряду, и между рядами — только соприкасаются, но не перекрываются:
+   нажатие по видимому чипу всегда попадает в него. Радиусы = 10px + рамка. */
 button.tag-btn {
-  min-height: 44px; min-width: 44px; display: inline-block; line-height: inherit; font-family: inherit;
+  min-height: 0; min-width: 0; display: inline-block; line-height: inherit; font-family: inherit;
   font-weight: 600; cursor: pointer;
-  border: solid transparent; border-width: 13px 6px; margin: -13px -6px;
-  border-radius: 16px / 23px; background-clip: padding-box;
+  border: 4px solid transparent; margin: -2px;
+  border-radius: 14px; background-clip: padding-box;
 }
-button.tag-btn:focus-visible { outline: 2px solid var(--text); outline-offset: -11px; }
+button.tag-btn:focus-visible { outline: 2px solid var(--text); outline-offset: -4px; }
 .c-blue { background: var(--tag-blue-bg); color: var(--tag-blue-fg); }
 .c-violet { background: var(--tag-violet-bg); color: var(--tag-violet-fg); }
 .c-pink { background: var(--tag-pink-bg); color: var(--tag-pink-fg); }

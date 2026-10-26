@@ -10,7 +10,7 @@ import {
 } from './song-actions.js';
 import { tagChip } from './tags-ui.js';
 import { tagsById, songTagList } from './tags-logic.js';
-import { mediaRows, infoRows, fmtSize, lyricsPreview } from './song-page-logic.js';
+import { mediaRows, infoRows, fmtSize, lyricsPreview, browserCanPlay } from './song-page-logic.js';
 import { builtinTags, songHref } from './songs.js';
 
 let root;
@@ -221,9 +221,21 @@ function mediaRow({ kind, label, name }, song, details, env, fileUrl) {
     return row;
   }
   const isVideo = kind === 'video';
-  const el = h(isVideo ? 'video' : 'audio', { controls: true, preload: 'none', src: fileUrl(name) });
+  const download = () => h('a', { href: fileUrl(name, { download: true }), download: name }, 'Скачать');
+  const el = h(isVideo ? 'video' : 'audio');
+  if (!browserCanPlay(name, (mime) => el.canPlayType(mime))) {
+    // .avi, .mpg и т. п.: браузер такое не играет — сразу говорим об этом, без пустого плеера.
+    const ext = (/\.([^.]+)$/.exec(name)?.[1] || '').toLowerCase();
+    row.append(h('div', { class: 'media-none' },
+      `Браузер не умеет воспроизводить ${ext ? `формат .${ext}` : 'этот формат'} — откройте файл в плеере.`, download()));
+    if (isVideo) row.classList.add('tall');
+    return row;
+  }
+  Object.assign(el, { controls: true, preload: 'none', src: fileUrl(name) });
   if (isVideo && song.cover) el.setAttribute('poster', api.coverUrl(song.song_id));
-  const fail = h('div', { class: 'field-error', hidden: true }, 'Файл недоступен');
+  // Ошибка — либо файл не отдался, либо браузер не справился с кодеком внутри; различить нельзя.
+  const fail = h('div', { class: 'media-none', hidden: true },
+    'Не удалось воспроизвести: файл недоступен или его формат не поддерживается браузером.', download());
   el.addEventListener('error', () => { fail.hidden = false; });
   el.addEventListener('playing', () => { fail.hidden = true; });
   soloPlayback(el);

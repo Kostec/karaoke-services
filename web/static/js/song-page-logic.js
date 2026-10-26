@@ -14,6 +14,27 @@ export function mediaRows(details) {
   return MEDIA.map(([kind, label]) => ({ kind, label, name: media[kind] || null }));
 }
 
+const MEDIA_TYPES = {
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', opus: 'audio/ogg', wav: 'audio/wav', flac: 'audio/flac',
+  mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska',
+  avi: 'video/x-msvideo', mpg: 'video/mpeg', mpeg: 'video/mpeg',
+};
+
+/** MIME-тип медиафайла по расширению (для canPlayType); неизвестное — null. */
+export function mediaMime(name) {
+  const m = /\.([a-z0-9]+)$/i.exec(name || '');
+  return (m && MEDIA_TYPES[m[1].toLowerCase()]) || null;
+}
+
+/**
+ * Сыграет ли браузер файл: canPlay(mime) — el.canPlayType; '' — точно нет.
+ * Неизвестный тип пробуем играть (решит событие error).
+ */
+export function browserCanPlay(name, canPlay) {
+  const mime = mediaMime(name);
+  return !mime || canPlay(mime) !== '';
+}
+
 const ORIGIN = { usdb: 'из usdb', files: 'импорт из файлов', url: 'импорт по ссылке' };
 
 /** Происхождение песни словами. */
