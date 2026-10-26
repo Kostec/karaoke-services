@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Макет: Песни и страница песни</title>
+<style>
+:root{color-scheme:light dark;--bg:#f4f5f7;--surface:#fff;--surface-2:#eef0f3;--text:#1b1d22;--muted:#5d6470;--border:#d5d9e0;--accent:#2f5bd3;--accent-text:#fff;--ok:#1d7a3e;--ok-bg:#e3f4e8;--warn:#8a5a00;--warn-bg:#fff4d6;--err:#b42318;--err-bg:#fde8e6;--radius:10px;--shadow:0 1px 2px rgba(0,0,0,.08);
+--tag-blue-bg:#e3ecff;--tag-blue-fg:#1f4fc4;--tag-violet-bg:#efe6ff;--tag-violet-fg:#6a32c9;--tag-pink-bg:#ffe4f1;--tag-pink-fg:#b0246b;--tag-orange-bg:#ffead9;--tag-orange-fg:#a8470b;--tag-yellow-bg:#fff3c4;--tag-yellow-fg:#7a5b00;--tag-teal-bg:#d9f5f3;--tag-teal-fg:#0d6e69;--tag-gray-bg:#e6e8ec;--tag-gray-fg:#454b55;--tag-red-bg:#fde3e1;--tag-red-fg:#b42318}
+@media (prefers-color-scheme:dark){:root{--bg:#111317;--surface:#1b1e24;--surface-2:#252932;--text:#e7e9ee;--muted:#a0a7b4;--border:#353a45;--accent:#6b8cff;--accent-text:#0d1020;--ok:#5fd28a;--ok-bg:#173022;--warn:#ffcf66;--warn-bg:#3a2f12;--err:#ff8a80;--err-bg:#3b1a19;--shadow:none;
+--tag-blue-bg:#1c2b52;--tag-blue-fg:#9db8ff;--tag-violet-bg:#2e2150;--tag-violet-fg:#c6a8ff;--tag-pink-bg:#45192f;--tag-pink-fg:#ff9cca;--tag-orange-bg:#432612;--tag-orange-fg:#ffb27a;--tag-yellow-bg:#3d3310;--tag-yellow-fg:#ffd862;--tag-teal-bg:#123634;--tag-teal-fg:#6fe0d8;--tag-gray-bg:#2c3038;--tag-gray-fg:#c3c8d1;--tag-red-bg:#45191a;--tag-red-fg:#ff9b93}}
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent)}
+.note{background:var(--warn-bg);color:var(--warn);padding:8px 12px;font-size:.9rem;text-align:center}
+.switch{display:flex;gap:8px;justify-content:center;padding:8px;flex-wrap:wrap}
+.top{background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
+.top-inner,main{max-width:960px;margin:0 auto;padding:8px 12px}
+main{padding-bottom:100px}
+.brand{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.brand h1{font-size:1.15rem;margin:0}
+.status{font-size:.85rem;color:var(--muted)}.status b{color:var(--ok);font-weight:400}
+.tabs{display:flex;gap:6px;margin-top:8px;overflow-x:auto}
+.tabs a{flex:1;text-align:center;padding:10px 12px;border-radius:8px;background:var(--surface-2);color:var(--text);text-decoration:none;white-space:nowrap;min-width:max-content}
+.tabs a.cur{background:var(--accent);color:var(--accent-text)}
+button,.btn{font:inherit;min-height:44px;min-width:44px;padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-text)}
+button.ghost{background:transparent;border-color:transparent}
+button.icon{padding:0;width:44px;font-size:1.2rem}
+input,select{font:inherit;min-height:44px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);width:100%}
+h2{margin:8px 0 12px;font-size:1.3rem}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin:10px 0;box-shadow:var(--shadow)}
+.muted{color:var(--muted)}.small{font-size:.85rem}
+/* шапка «Песен» */
+.tools{display:grid;grid-template-columns:minmax(150px,220px) 1fr auto auto;gap:8px;align-items:center}
+@media (max-width:600px){.tools{grid-template-columns:1fr auto auto}.tools .target{grid-column:1/-1}}
+.badge{background:var(--accent);color:var(--accent-text);border-radius:10px;font-size:.75rem;padding:0 7px}
+.filters{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:10px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)}
+.filters label{font-size:.8rem;color:var(--muted);display:grid;gap:2px}
+.summary{font-size:.85rem;color:var(--muted);margin:10px 0 0}
+/* карточка песни в списке */
+.song{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding:10px 12px;margin:8px 0}
+.song a.open{display:contents;color:inherit;text-decoration:none}
+.song:hover{border-color:var(--accent)}
+.cover{width:64px;height:64px;border-radius:8px;background:linear-gradient(135deg,#4b5d8f,#9a5fb4);display:flex;align-items:center;justify-content:center;color:#fff;font-size:1.4rem}
+.cover.none{background:var(--surface-2);color:var(--muted)}
+.song-title{font-weight:600}.song-artist{color:var(--muted);font-size:.9rem}
+.tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.tag{font-size:.75rem;padding:1px 8px;border-radius:10px;background:var(--surface-2);color:var(--muted);white-space:nowrap}
+.tag.on{background:var(--ok-bg);color:var(--ok)}.tag.wait{background:var(--warn-bg);color:var(--warn)}
+.tag.user{font-weight:600;cursor:pointer}
+.c-blue{background:var(--tag-blue-bg);color:var(--tag-blue-fg)}.c-violet{background:var(--tag-violet-bg);color:var(--tag-violet-fg)}.c-pink{background:var(--tag-pink-bg);color:var(--tag-pink-fg)}.c-orange{background:var(--tag-orange-bg);color:var(--tag-orange-fg)}.c-yellow{background:var(--tag-yellow-bg);color:var(--tag-yellow-fg)}.c-teal{background:var(--tag-teal-bg);color:var(--tag-teal-fg)}.c-gray{background:var(--tag-gray-bg);color:var(--tag-gray-fg)}.c-red{background:var(--tag-red-bg);color:var(--tag-red-fg)}
+.quick{display:flex;gap:4px;position:relative}
+.play{border-radius:50%;width:44px;padding:0}
+.play.on{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+/* меню */
+.menu{position:absolute;right:0;top:48px;z-index:30;min-width:230px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:6px;display:grid}
+.menu button{justify-content:flex-start;background:transparent;border:0;border-radius:6px;min-height:40px;width:100%;text-align:left}
+.menu button:hover{background:var(--surface-2)}
+.menu button.danger{color:var(--err)}
+.menu button[disabled]{color:var(--muted);opacity:.6;cursor:default}
+.menu hr{border:0;border-top:1px solid var(--border);margin:4px 0}
+/* плавающая + */
+.fab{position:fixed;right:24px;bottom:24px;z-index:40;width:60px;height:60px;border-radius:50%;background:var(--accent);color:var(--accent-text);font-size:2rem;line-height:1;display:flex;align-items:center;justify-content:center;text-decoration:none;box-shadow:0 6px 18px rgba(0,0,0,.28)}
+.fab:hover{filter:brightness(1.1)}
+/* страница песни */
+.back{display:inline-flex;align-items:center;gap:6px;margin:4px 0 8px;text-decoration:none}
+.hero{position:relative;overflow:hidden;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface)}
+.hero .bg{position:absolute;inset:0;background:linear-gradient(120deg,#20304f,#6b3f7f 60%,#c26d5a);filter:blur(0);opacity:.85}
+.hero .in{position:relative;display:grid;grid-template-columns:auto 1fr;gap:16px;padding:16px;color:#fff}
+@media (max-width:600px){.hero .in{grid-template-columns:1fr}}
+.hero .big{width:160px;height:160px;border-radius:10px;background:linear-gradient(135deg,#4b5d8f,#9a5fb4);display:flex;align-items:center;justify-content:center;font-size:3rem;box-shadow:0 6px 20px rgba(0,0,0,.35)}
+.hero h2{margin:0;font-size:1.6rem}.hero .artist{font-size:1.1rem;opacity:.9}
+.hero .tags .tag:not(.user){background:rgba(255,255,255,.18);color:#fff}
+.hero .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;position:relative}
+.hero .acts button:not(.primary){background:rgba(255,255,255,.15);color:#fff;border-color:rgba(255,255,255,.3)}
+.addtag{font-size:.75rem;padding:1px 8px;border-radius:10px;border:1px dashed rgba(255,255,255,.6);background:transparent;color:#fff;min-height:0;min-width:0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:760px){.grid2{grid-template-columns:1fr}}
+.sec h3{margin:0 0 8px;font-size:1.05rem}
+.media{display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--border)}
+.media:first-of-type{border-top:0}
+.fakeaudio{display:flex;align-items:center;gap:8px;background:var(--surface-2);border-radius:20px;padding:4px 10px;font-size:.85rem;color:var(--muted)}
+.fakeaudio .bar{flex:1;height:4px;border-radius:2px;background:var(--border)}
+.fakevideo{aspect-ratio:16/9;border-radius:8px;background:#000;color:#aaa;display:flex;align-items:center;justify-content:center;font-size:2.5rem}
+.no{color:var(--muted);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.no button{min-height:36px;font-size:.85rem;padding:4px 10px}
+.lyrics{white-space:pre-line;font-size:.95rem;line-height:1.6}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0;font-size:.92rem}dt{color:var(--muted)}dd{margin:0}
+.files div,.stores div{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--border);font-size:.9rem}
+.files div:first-child,.stores div:first-child{border-top:0}
+/* диалог тегов */
+.dlg{max-width:440px;margin:24px auto;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;box-shadow:0 12px 40px rgba(0,0,0,.25)}
+.dlg h3{margin:0 0 10px}
+.check{display:flex;align-items:center;gap:10px;min-height:40px}
+.check input{width:20px;min-height:0;height:20px}
+.palette{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.sw{width:32px;height:32px;border-radius:50%;border:2px solid transparent;cursor:pointer}
+.sw.sel{border-color:var(--text)}
+.dlg .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.err{color:var(--err);font-size:.85rem;margin-top:4px}
+.view{display:none}.view.cur{display:block}
+</style>
+</head>
+<body>
+<div class="note">Это макет для согласования, не настоящее приложение. Кнопки «…», «Фильтры», «▶» и теги — кликаются.</div>
+<div class="switch">
+  <button class="primary" data-go="list">1. Список «Песен»</button>
+  <button data-go="page">2. Страница песни</button>
+  <button data-go="tags">3. Диалог «Теги…»</button>
+</div>
+
+<header class="top"><div class="top-inner">
+  <div class="brand"><h1>Караоке</h1><span class="status">GPU: <b>NVIDIA GeForce GTX 1080 ✓</b> · Папка /output <b>✓</b></span></div>
+  <nav class="tabs"><a>Очередь</a><a>Импорт</a><a class="cur">Песни</a><a>Корзина</a><a>Настройки</a></nav>
+</div></header>
+
+<main>
+<!-- 1. Список -->
+<section class="view cur" id="v-list">
+  <h2>Песни</h2>
+  <div class="tools">
+    <select class="target"><option>Локальное хранилище</option></select>
+    <input placeholder="Поиск по исполнителю или названию">
+    <button id="fbtn">Фильтры <span class="badge">1</span></button>
+    <div class="quick"><button class="icon" data-menu="head" title="Ещё действия">…</button></div>
+  </div>
+  <div class="filters" id="filters" hidden>
+    <label>Исполнитель<select><option>все (31)</option></select></label>
+    <label>Минусовка<select><option>все</option></select></label>
+    <label>Видео<select><option>все</option></select></label>
+    <label>Дуэт<select><option>все</option></select></label>
+    <label>Обложка<select><option>все</option></select></label>
+    <label>Происхождение<select><option>все</option></select></label>
+    <label>Мой тег<select><option>Для вечеринки</option><option>все</option><option>без своих тегов</option></select></label>
+    <label>Сортировка<select><option>По исполнителю</option></select></label>
+    <button style="align-self:end">Сбросить фильтры</button>
+  </div>
+  <p class="summary">/output · просканировано 16:00 · показано 49 из 49</p>
+
+  <article class="card song">
+    <a class="open" href="#" data-go="page"><div class="cover">♪</div>
+    <div><div class="song-title">Режиссер</div><div class="song-artist">Градусы</div>
+      <div class="tags"><span class="tag on">есть минусовка</span><span class="tag on">видео</span><span class="tag user c-blue">Для вечеринки</span><span class="tag user c-orange">Разучить</span></div></div></a>
+    <div class="quick"><button class="play" title="Послушать">▶</button><button class="icon" data-menu="song" title="Ещё действия">…</button></div>
+  </article>
+
+  <article class="card song">
+    <a class="open" href="#" data-go="page"><div class="cover">♪</div>
+    <div><div class="song-title">Рюмка Водки На Столе Минус+Дуэт (Дуэт)</div><div class="song-artist">Григорий Лепс и Алёна Апина</div>
+      <div class="tags"><span class="tag on">импорт</span><span class="tag on">из usdb</span><span class="tag on">дуэт</span><span class="tag user c-violet">Дуэты с Машей</span></div></div></a>
+    <div class="quick"><button class="play" title="Послушать">▶</button><button class="icon" data-menu="song" title="Ещё действия">…</button></div>
+  </article>
+
+  <article class="card song">
+    <a class="open" href="#" data-go="page"><div class="cover none">♪</div>
+    <div><div class="song-title">Кукла колдуна</div><div class="song-artist">Король и Шут</div>
+      <div class="tags"><span class="tag on">создана сервисом</span><span class="tag wait">ждёт копирования в «Raspberry Pi»</span></div></div></a>
+    <div class="quick"><button class="play" title="Послушать">▶</button><button class="icon" data-menu="song" title="Ещё действия">…</button></div>
+  </article>
+</section>
+
+<!-- 2. Страница песни -->
+<section class="view" id="v-page">
+  <a href="#" class="back" data-go="list">← Песни</a>
+  <div class="hero">
+    <div class="bg"></div>
+    <div class="in">
+      <div class="big">♪</div>
+      <div>
+        <div class="artist">Градусы</div>
+        <h2>Режиссер</h2>
+        <div class="tags" style="margin-top:8px"><span class="tag on">есть минусовка</span><span class="tag on">видео</span><span class="tag on">создана сервисом</span><span class="tag user c-blue">Для вечеринки</span><span class="tag user c-orange">Разучить</span><button class="addtag" data-go="tags">+ тег</button></div>
+        <div class="acts"><button class="primary">Редактор нот</button><button>Править текст</button><div class="quick"><button class="icon" data-menu="song" title="Ещё действия">…</button></div></div>
+      </div>
+    </div>
+  </div>
+  <p class="small muted" style="margin:6px 2px">Фон шапки — изображение #BACKGROUND песни (размыто), без фона — обложка или нейтральная заливка.</p>
+
+  <div class="grid2">
+    <div class="card sec">
+      <h3>Слушать и смотреть</h3>
+      <div class="media"><b>Песня</b><div class="fakeaudio">▶ 0:00 <span class="bar"></span> 3:41 🔊</div></div>
+      <div class="media"><b>Минусовка</b><div class="fakeaudio">▶ 0:00 <span class="bar"></span> 3:41 🔊</div></div>
+      <div class="media"><b>Вокал</b><div class="no">нет</div></div>
+      <div class="media" style="align-items:start"><b>Видео</b><div><div class="fakevideo">▶</div><div class="small muted">смещение видео 1,25 с</div></div></div>
+      <p class="small muted">Пример «нет» с действием: <span class="no">Минусовки нет <button>Сделать минусовку</button></span></p>
+    </div>
+    <div class="card sec">
+      <h3>Текст</h3>
+      <div class="lyrics">Первая строка текста песни
+Вторая строка текста песни
+Третья строка текста песни
+… (первые 12 строк)</div>
+      <button class="ghost" style="padding-left:0;color:var(--accent)">Показать весь текст</button>
+    </div>
+    <div class="card sec">
+      <h3>Сведения</h3>
+      <dl><dt>Темп (BPM)</dt><dd>312,5</dd><dt>GAP</dt><dd>14 230 мс</dd><dt>Язык</dt><dd>Русский</dd><dt>Год</dt><dd>2010</dd><dt>Жанр</dt><dd>Поп-рок</dd><dt>Происхождение</dt><dd>создана сервисом</dd><dt>Обновлена</dt><dd>26 окт, 14:05</dd><dt>Папка</dt><dd>Градусы/Градусы - Режиссер</dd></dl>
+    </div>
+    <div class="card sec">
+      <h3>Хранилища</h3>
+      <div class="stores"><div><span>Локальное хранилище <span class="tag on">открыто</span></span><span></span></div><div><a href="#">Raspberry Pi (SMB)</a><span class="muted small">есть</span></div><div><span>Яндекс Диск</span><span class="tag wait">ждёт копирования</span></div></div>
+      <h3 style="margin-top:14px">Файлы</h3>
+      <div class="files"><div><a href="#">Градусы - Режиссер.txt</a><span class="muted">6 КБ</span></div><div><a href="#">Градусы - Режиссер.mp3</a><span class="muted">8,4 МБ</span></div><div><a href="#">Градусы - Режиссер [Instrumental].mp3</a><span class="muted">8,4 МБ</span></div><div><a href="#">Градусы - Режиссер [CO].jpg</a><span class="muted">120 КБ</span></div><div><a href="#">Градусы - Режиссер.mp4</a><span class="muted">48 МБ</span></div></div>
+      <button style="margin-top:8px">Скачать всё (.zip)</button>
+    </div>
+  </div>
+</section>
+
+<!-- 3. Диалог тегов -->
+<section class="view" id="v-tags">
+  <div class="dlg">
+    <h3>Теги песни «Градусы — Режиссер»</h3>
+    <label class="check"><input type="checkbox" checked><span class="tag user c-blue">Для вечеринки</span></label>
+    <label class="check"><input type="checkbox" checked><span class="tag user c-orange">Разучить</span></label>
+    <label class="check"><input type="checkbox"><span class="tag user c-violet">Дуэты с Машей</span></label>
+    <hr style="border:0;border-top:1px solid var(--border)">
+    <label class="small muted">Новый тег</label>
+    <input value="Медляк">
+    <div class="palette" id="pal"></div>
+    <div class="small muted">Предпросмотр: <span class="tag user c-teal" id="prev">Медляк</span></div>
+    <div class="err">Пример ошибки: «Такой тег уже есть»</div>
+    <div class="actions"><button>Отмена</button><button class="primary">Сохранить</button></div>
+  </div>
+  <p class="small muted" style="text-align:center">«Мои теги…» (в «…» раздела «Песни») — тот же вид: у каждого тега переименование, цвет и «Удалить».</p>
+</section>
+</main>
+
+<a class="fab" href="#" title="Новая песня" aria-label="Новая песня">+</a>
+
+<script>
+const menus={
+ song:['Перегенерировать','Пересоздать минусовку','Видео…','Скачать .zip','Копировать в…','Править текст','Редактор нот','Теги…','-','!Удалить'],
+ head:['Обновить','Копировать показанные (49)…','Мои теги…']};
+let open=null;
+function close(){if(open){open.remove();open=null}}
+document.addEventListener('click',e=>{
+ const go=e.target.closest('[data-go]');
+ if(go){e.preventDefault();close();show(go.dataset.go);return}
+ const mb=e.target.closest('[data-menu]');
+ if(mb){e.stopPropagation();const was=open&&open.parentNode===mb.parentNode;close();if(was)return;
+  const m=document.createElement('div');m.className='menu';
+  for(const it of menus[mb.dataset.menu]){if(it==='-'){m.append(document.createElement('hr'));continue}
+   const b=document.createElement('button');if(it[0]==='!'){b.className='danger';b.textContent=it.slice(1)}else b.textContent=it;
+   if(it==='Теги…')b.onclick=()=>show('tags');m.append(b)}
+  mb.parentNode.append(m);open=m;return}
+ if(!e.target.closest('.menu'))close();
+ const p=e.target.closest('.play');
+ if(p){document.querySelectorAll('.play').forEach(x=>{if(x!==p){x.classList.remove('on');x.textContent='▶'}});p.classList.toggle('on');p.textContent=p.classList.contains('on')?'⏸':'▶'}
+ const t=e.target.closest('.song .tag.user');
+ if(t){e.preventDefault();document.getElementById('filters').hidden=false}
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')close()});
+document.getElementById('fbtn').onclick=()=>{const f=document.getElementById('filters');f.hidden=!f.hidden};
+function show(v){document.querySelectorAll('.view').forEach(s=>s.classList.toggle('cur',s.id==='v-'+v));
+ document.querySelectorAll('.switch button').forEach(b=>b.classList.toggle('primary',b.dataset.go===v));scrollTo(0,0)}
+const pal=document.getElementById('pal'),prev=document.getElementById('prev');
+for(const c of ['blue','violet','pink','orange','yellow','teal','gray','red']){const s=document.createElement('span');s.className='sw c-'+c+(c==='teal'?' sel':'');s.title=c;
+ s.style.background=`var(--tag-${c}-fg)`;s.onclick=()=>{pal.querySelectorAll('.sw').forEach(x=>x.classList.remove('sel'));s.classList.add('sel');prev.className='tag user c-'+c};pal.append(s)}
+</script>
+</body>
+</html>
