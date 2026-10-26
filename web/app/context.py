@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from karaoke_core import musiclink, naming
+from karaoke_core.naming import match_key  # noqa: F401 — реэкспорт (ключ дубля песни)
 from karaoke_core.paths import DataPaths
 from karaoke_core.http import Http
-from karaoke_core.db import (LOCAL_TARGET_ID, Jobs, Library, LibraryItem, Settings, Songs, Target,
-                             connect, now)
+from karaoke_core.db import (LOCAL_TARGET_ID, Jobs, Library, LibraryItem, Settings, Songs, Tags,
+                             Target, connect, now)
 from karaoke_core.storage import Storage, StorageError, make_storage
 from karaoke_core.storage.registry import StorageRegistry
 from karaoke_core.trash import Trash
@@ -101,6 +102,10 @@ class AppContext:
     @property
     def songs(self) -> Songs:
         return Songs(self.conn())
+
+    @property
+    def tags(self) -> Tags:
+        return Tags(self.conn())
 
     @property
     def settings(self) -> Settings:
@@ -324,14 +329,6 @@ def link_api_error(e: musiclink.MusicLinkError, field: str = "url") -> ApiError:
             text.startswith(musiclink.MSG_YTDLP) and _NETWORK_FAILURE.search(text)):
         return ApiError(503, text)
     return ApiError(400, text, field=field)
-
-
-def match_key(artist: str, title: str) -> tuple[str, str]:
-    """Ключ «такая песня уже есть»: без учёта регистра и ё/е, запрещённые символы — как в
-    naming.safe_name; пробелы и прочая пунктуация значимы («Ма-ма» ≠ «Мама»)."""
-    def fold(s: str) -> str:
-        return naming.safe_name((s or "").strip().casefold().replace("ё", "е"))
-    return fold(artist), fold(title)
 
 
 def song_key(artist: str, title: str) -> str:

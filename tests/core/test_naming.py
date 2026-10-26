@@ -81,3 +81,20 @@ def test_video_file_name_is_file_name_with_video_extension():
     assert naming.video_file_name(r"clips\a.mp4") is None
     assert naming.video_file_name("a.txt") is None
     assert naming.video_file_name("") is None and naming.video_file_name(None) is None
+
+
+def test_match_key_ignores_case_and_yo_but_keeps_punctuation():
+    assert naming.match_key(" Ёлка ", "Прованс") == naming.match_key("елка", "ПРОВАНС")
+    assert naming.match_key("Ма-ма", "A") != naming.match_key("Мама", "A")
+    assert naming.match_key("A/B", "C?") == ("a_b", "c_")
+
+
+def test_song_tag_key_joins_match_key_with_newline():
+    assert naming.song_tag_key("Ёлка", "Прованс") == "елка\nпрованс"
+    assert naming.song_tag_key("ЁЛКА ", "прованс") == naming.song_tag_key("елка", "Прованс")
+
+
+def test_context_match_key_is_reexport():
+    from app import context
+
+    assert context.match_key is naming.match_key

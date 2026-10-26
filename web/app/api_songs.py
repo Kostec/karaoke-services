@@ -24,6 +24,7 @@ from .api_import import SOURCES as IMPORT_SOURCES
 from .api_jobs import ctx_of
 from .context import ApiError, AppContext, not_found
 from .notes import NotesIn, apply_notes, notes_payload, read_only_reason
+from .usdb import BASE_URL as USDB_URL
 
 router = APIRouter(prefix="/api", tags=["Песни"])
 log = logging.getLogger(__name__)
@@ -73,14 +74,19 @@ def _pending_copies(ctx: AppContext) -> dict[str, list[dict]]:
     return out
 
 
-def _song_out(ctx: AppContext, item, own=_UNREAD, pending=None) -> dict:
+def _song_out(ctx: AppContext, item, own=_UNREAD, pending=None, tags=None) -> dict:
     """Песня для API + ``source`` (usdb|files|url из params.json своей песни, ``generated`` —
     своя без импорта, None — чужая), ``updated_at`` (ISO из mtime ``.txt``)
-    + ``pending_copies``; ``own``/``pending`` — уже прочитанное (список читает их одним запросом)."""
+    + ``pending_copies`` + ``tags`` (id своих тегов); ``own``/``pending``/``tags`` — уже
+    прочитанное (список читает их одним запросом; ``tags`` — ``{ключ песни: [id]}``)."""
     out = ctx.song_dict(item)
     if pending is None:
         pending = _pending_copies(ctx)
     out["pending_copies"] = pending.get(item.song_id, [])
+    key = naming.song_tag_key(item.artist, item.title)
+    if tags is None:
+        tags = ctx.tags.for_songs([key])
+    out["tags"] = tags.get(key, [])
     if own is _UNREAD:
         own = ctx.songs.get(item.own_song_id) if item.own_song_id else None
     params = own.params if own and isinstance(own.params, dict) else {}
@@ -113,6 +119,7 @@ def list_songs(request: Request, background: BackgroundTasks, q: str | None = No
     items = ctx.library.list(chosen.id, q)
     own = ctx.songs.get_many(i.own_song_id for i in items)
     pending = _pending_copies(ctx)
+    tags = ctx.tags.for_songs({naming.song_tag_key(i.artist, i.title) for i in items})
     state = ctx.scan_state.get(chosen.id, {})
     if not state and not ctx.library.list(chosen.id):
         background.add_task(ctx.rescan, chosen.id)  # первый показ этой цели — просканировать
@@ -121,7 +128,7 @@ def list_songs(request: Request, background: BackgroundTasks, q: str | None = No
             "scanning": bool(state.get("running")),
             "output": output, "target": chosen.public(),
             "targets": [{"id": t.id, "name": t.name or t.label, "kind": t.kind} for t in ctx.targets()],
-            "items": [_song_out(ctx, i, own.get(i.own_song_id), pending) for i in items]}
+            "items": [_song_out(ctx, i, own.get(i.own_song_id), pending, tags) for i in items]}
 
 
 @router.post("/songs/rescan", status_code=202, summary="Пересканировать хранилище в фоне")
@@ -144,16 +151,96 @@ def _own_lyrics(ctx: AppContext, item) -> str | None:
     return path.read_text("utf-8") if item.own_song_id and path.is_file() else None
 
 
-@router.get("/songs/{song_id}", summary="Карточка песни")
-def get_song(song_id: str, request: Request):
-    ctx = ctx_of(request)
-    item = ctx.find_song(song_id)
-    own = ctx.songs.get(item.own_song_id) if item.own_song_id else None
+def _song_card(ctx: AppContext, item, own=_UNREAD) -> dict:
+    """Карточка песни: элемент списка + у своей песни ``params`` и ``lyrics``."""
+    if own is _UNREAD:
+        own = ctx.songs.get(item.own_song_id) if item.own_song_id else None
     out = _song_out(ctx, item, own)
     if item.own_song_id:
         out["params"] = own.params if own else None
         out["lyrics"] = _own_lyrics(ctx, item)
     return out
+
+
+@router.get("/songs/{song_id}", summary="Карточка песни")
+def get_song(song_id: str, request: Request):
+    ctx = ctx_of(request)
+    return _song_card(ctx, ctx.find_song(song_id))
+
+
+# Заголовки .txt для страницы песни: ключ ответа → заголовок файла.
+DETAIL_HEADERS = {"author": "AUTHOR", "bpm": "BPM", "gap": "GAP", "language": "LANGUAGE",
+                  "year": "YEAR", "genre": "GENRE", "edition": "EDITION", "creator": "CREATOR",
+                  "videogap": "VIDEOGAP"}
+
+
+def _folder_files(storage, rel_dir: str) -> list:
+    """Файлы самой папки песни (без подпапок и недописанных ``.part``) по имени."""
+    return sorted((e for e in storage.listdir(rel_dir)
+                   if not e.is_dir and not e.name.endswith(PART_SUFFIX)), key=lambda e: e.name)
+
+
+def _present(names: list[str], value: str | None) -> str | None:
+    """Имя файла из заголовка, если он лежит в папке (без учёта регистра; имя — как на диске)."""
+    value = (value or "").strip()
+    if not value or "/" in value or "\\" in value:
+        return None
+    if value in names:
+        return value
+    return next((n for n in names if n.lower() == value.lower()), None)
+
+
+def _usdb_url(own) -> str | None:
+    params = own.params if own and isinstance(own.params, dict) else {}
+    try:
+        usdb_id = int(params.get("usdb_id") or 0)
+    except (TypeError, ValueError):
+        return None
+    return f"{USDB_URL}index.php?link=detail&id={usdb_id}" if usdb_id > 0 else None
+
+
+def _copies(ctx: AppContext, item) -> list[dict]:
+    """Эта песня во всех хранилищах из настроек (по ``match_key``; только индекс)."""
+    order = {t.id: (n, t.name or t.label) for n, t in enumerate(ctx.targets())}
+    found = [i for i in ctx.library.copies(item.artist, item.title) if i.target_id in order]
+    found.sort(key=lambda i: (order[i.target_id][0], i.rel_dir))
+    return [{"song_id": i.song_id, "target_id": i.target_id, "target_name": order[i.target_id][1],
+             "current": i.song_id == item.song_id} for i in found]
+
+
+@router.get("/songs/{song_id}/details", summary="Сведения страницы песни: заголовки, медиа, файлы, копии")
+def get_details(song_id: str, request: Request):
+    ctx = ctx_of(request)
+    item = ctx.find_song(song_id)
+    storage = _song_storage(ctx, item)
+    files = _storage_call(ctx, _folder_files, storage, item.rel_dir, target_id=item.target_id)
+    song = ultrastar.parse(_read_txt(ctx, item))
+    names = [e.name for e in files]
+    base = (item.txt_name[:-len(naming.SUFFIX_TXT)]
+            if item.txt_name.lower().endswith(naming.SUFFIX_TXT) else item.txt_name)
+    headers = {}
+    for key, header in DETAIL_HEADERS.items():
+        value = (song.header(header) or "").strip()
+        if value:
+            headers[key] = value
+    singers = None
+    if song.is_duet:
+        p1, p2 = ultrastar.singer_names(song)
+        singers = {"p1": p1, "p2": p2}
+    media = {
+        "audio": _present(names, song.header("AUDIO")) or _present(names, song.header("MP3")),
+        "instrumental": _present(names, song.header("INSTRUMENTAL")),
+        "vocals": _present(names, base + naming.SUFFIX_VOCALS),
+        "video": _present(names, naming.video_file_name(song.header("VIDEO"))),
+        "cover": _present(names, song.header("COVER")),
+        "background": _present(names, song.header("BACKGROUND")),
+        "midi": next((n for n in names if n.lower().endswith(naming.SUFFIX_MIDI)), None),
+    }
+    own = ctx.songs.get(item.own_song_id) if item.own_song_id else None
+    return {"song": _song_card(ctx, item, own), "headers": headers, "singers": singers,
+            "media": media,
+            "files": [{"name": e.name, "size": e.size, "mtime": e.mtime} for e in files],
+            "copies": _copies(ctx, item), "usdb_url": _usdb_url(own)}
 
 
 @router.get("/songs/{song_id}/lyrics", summary="Текст песни: свой исходный или извлечённый из .txt")
@@ -283,6 +370,26 @@ def get_cover(song_id: str, request: Request):
     ctx = ctx_of(request)
     item = ctx.find_song(song_id)
     return _media(ctx, item, item.cover, request, "image/jpeg")
+
+
+NO_SUCH_FILE = "У песни нет такого файла"
+
+
+@router.get("/songs/{song_id}/file", summary="Любой файл папки песни (Range); ?download=1 — скачать")
+def get_file(song_id: str, request: Request, name: str = "", download: bool = False):
+    ctx = ctx_of(request)
+    item = ctx.find_song(song_id)
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        raise not_found(NO_SUCH_FILE)
+    storage = _song_storage(ctx, item)
+    files = _storage_call(ctx, _folder_files, storage, item.rel_dir, target_id=item.target_id)
+    real = _present([e.name for e in files], name)
+    if real is None:
+        raise not_found(NO_SUCH_FILE)
+    resp = _media(ctx, item, real, request, "application/octet-stream")
+    if download:
+        resp.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(real)}"
+    return resp
 
 
 class _ZipSink:

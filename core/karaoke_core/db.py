@@ -20,12 +20,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Any, Callable, Iterator, Mapping
 
+from .naming import match_key
+
 __all__ = [
     "connect", "Jobs", "Job", "Settings", "OutputTarget", "Target", "LOCAL_TARGET_ID",
     "TARGET_KINDS", "legacy_target_id", "Library", "LibraryItem",
     "Songs", "OwnSong", "song_id_for", "JOB_STATES", "FINAL_STATES",
     "INTERRUPTED_MESSAGE", "ACTIVE_STATES", "STAGE_PUBLISH", "GPU_STATUS_KEY",
     "UsdbAccount", "USDB_KEY", "YANDEX_KEY",
+    "Tags", "Tag", "TagError", "TAG_COLORS", "DEFAULT_TAG_COLOR", "TAG_NAME_MAX",
 ]
 
 JOB_STATES = ("queued", "running", "publishing", "done", "failed", "cancelled")
@@ -105,7 +108,25 @@ UPDATE library SET song_id = karaoke_song_id(target_id, rel_dir);
 CREATE INDEX library_song_id ON library(song_id)
 """
 
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3]
+# V4: свои теги пользователя и их связь с песнями по ключу «исполнитель — название»
+# (naming.song_tag_key) — общие для копий во всех хранилищах.
+_SCHEMA_V4 = """
+CREATE TABLE tags (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE,
+    color TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE song_tags (
+    song_key TEXT NOT NULL,
+    tag_id TEXT NOT NULL,
+    PRIMARY KEY (song_key, tag_id)
+);
+CREATE INDEX song_tags_tag ON song_tags(tag_id)
+"""
+
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4]
 
 
 def now(after_s: float = 0.0) -> str:
@@ -897,6 +918,12 @@ class Library:
                                 (target_id, rel_dir)).fetchone()
         return LibraryItem.from_row(row) if row else None
 
+    def copies(self, artist: str, title: str) -> list[LibraryItem]:
+        """Песни всех хранилищ с тем же ключом ``naming.match_key(artist, title)`` (только индекс)."""
+        key = match_key(artist, title)
+        rows = self.conn.execute("SELECT * FROM library")
+        return [i for i in map(LibraryItem.from_row, rows) if match_key(i.artist, i.title) == key]
+
 
 # --------------------------------------------------------------------------- свои песни
 
@@ -959,3 +986,150 @@ class Songs:
     def delete(self, id: str) -> None:
         with _tx(self.conn):
             self.conn.execute("DELETE FROM songs WHERE id=?", (id,))
+
+
+# --------------------------------------------------------------------------- свои теги
+
+TAG_COLORS = ("blue", "violet", "pink", "orange", "yellow", "teal", "gray", "red")
+DEFAULT_TAG_COLOR = "blue"
+TAG_NAME_MAX = 40
+_SQL_CHUNK = 500  # ключей в одном IN (…): с запасом до лимита переменных SQLite
+
+
+class TagError(ValueError):
+    """Неверный ввод тега: русский текст и поле формы ``field`` (``name|color``)."""
+
+    def __init__(self, message: str, field: str):
+        super().__init__(message)
+        self.field = field
+
+
+def _tag_name(name: str | None) -> str:
+    """Название тега: без пробелов по краям, внутренние пробелы схлопнуты."""
+    return " ".join((name or "").split())
+
+
+def tag_name_key(name: str | None) -> str:
+    """Ключ дубля названия: пробелы схлопнуты, без регистра, ё→е."""
+    return _tag_name(name).casefold().replace("ё", "е")
+
+
+@dataclass
+class Tag:
+    id: str
+    name: str
+    color: str
+    created_at: str
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "Tag":
+        return cls(id=row["id"], name=row["name"], color=row["color"], created_at=row["created_at"])
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "name": self.name, "color": self.color}
+
+
+class Tags:
+    """Свои теги и их связи с песнями (ключ песни — ``naming.song_tag_key``)."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    @staticmethod
+    def _check_name(name: str | None) -> str:
+        clean = _tag_name(name)
+        if not clean:
+            raise TagError("Введите название тега", "name")
+        if len(clean) > TAG_NAME_MAX:
+            raise TagError(f"Не длиннее {TAG_NAME_MAX} символов", "name")
+        return clean
+
+    @staticmethod
+    def _check_color(color: str | None) -> str:
+        if color not in TAG_COLORS:
+            raise TagError("Неизвестный цвет", "color")
+        return color
+
+    def _check_unique(self, key: str, except_id: str | None = None) -> None:
+        row = self.conn.execute("SELECT id FROM tags WHERE name_key=?", (key,)).fetchone()
+        if row is not None and row["id"] != except_id:
+            raise TagError("Такой тег уже есть", "name")
+
+    def list(self) -> list[Tag]:
+        """Все теги по названию без учёта регистра."""
+        tags = [Tag.from_row(r) for r in self.conn.execute("SELECT * FROM tags")]
+        tags.sort(key=lambda t: (tag_name_key(t.name), t.name, t.id))
+        return tags
+
+    def get(self, id: str) -> Tag | None:
+        row = self.conn.execute("SELECT * FROM tags WHERE id=?", (id,)).fetchone()
+        return Tag.from_row(row) if row else None
+
+    def create(self, name: str, color: str = DEFAULT_TAG_COLOR) -> Tag:
+        clean = self._check_name(name)
+        color = self._check_color(color)
+        key = tag_name_key(clean)
+        tag = Tag(id=uuid.uuid4().hex, name=clean, color=color, created_at=now())
+        with _tx(self.conn):
+            self._check_unique(key)
+            self.conn.execute("INSERT INTO tags (id, name, name_key, color, created_at) VALUES (?, ?, ?, ?, ?)",
+                              (tag.id, tag.name, key, tag.color, tag.created_at))
+        return tag
+
+    def update(self, id: str, *, name: str | None = None, color: str | None = None) -> Tag:
+        """Переименовать и/или сменить цвет; неизвестный id — ``KeyError``."""
+        with _tx(self.conn):
+            tag = self.get(id)
+            if tag is None:
+                raise KeyError(id)
+            if name is not None:
+                tag.name = self._check_name(name)
+            if color is not None:
+                tag.color = self._check_color(color)
+            key = tag_name_key(tag.name)
+            self._check_unique(key, except_id=id)
+            self.conn.execute("UPDATE tags SET name=?, name_key=?, color=? WHERE id=?",
+                              (tag.name, key, tag.color, id))
+        return tag
+
+    def delete(self, id: str) -> int:
+        """Удалить тег; сколько связей с песнями снято. Неизвестный id — ``KeyError``."""
+        with _tx(self.conn):
+            if self.conn.execute("DELETE FROM tags WHERE id=?", (id,)).rowcount == 0:
+                raise KeyError(id)
+            return self.conn.execute("DELETE FROM song_tags WHERE tag_id=?", (id,)).rowcount
+
+    def for_songs(self, keys: Iterable[str]) -> dict[str, list[str]]:
+        """id тегов по ключам песен (порядок — по названию тега); песен без тегов в ответе нет."""
+        keys = sorted(set(keys))
+        rows = []
+        for i in range(0, len(keys), _SQL_CHUNK):
+            part = keys[i:i + _SQL_CHUNK]
+            rows += self.conn.execute(
+                "SELECT st.song_key, t.id, t.name FROM song_tags st JOIN tags t ON t.id = st.tag_id"
+                f" WHERE st.song_key IN ({','.join('?' * len(part))})", part).fetchall()
+        rows.sort(key=lambda r: (tag_name_key(r["name"]), r["name"], r["id"]))
+        out: dict[str, list[str]] = {}
+        for r in rows:
+            out.setdefault(r["song_key"], []).append(r["id"])
+        return out
+
+    def set_for_song(self, key: str, tag_ids: list[str]) -> list[str]:
+        """Заменить набор тегов песни; неизвестный id — ``KeyError`` (ничего не меняется)."""
+        ids = list(dict.fromkeys(tag_ids))
+        with _tx(self.conn):
+            if ids:
+                known = {r["id"] for r in self.conn.execute(
+                    f"SELECT id FROM tags WHERE id IN ({','.join('?' * len(ids))})", ids)}
+                missing = [i for i in ids if i not in known]
+                if missing:
+                    raise KeyError(missing[0])
+            self.conn.execute("DELETE FROM song_tags WHERE song_key=?", (key,))
+            self.conn.executemany("INSERT INTO song_tags (song_key, tag_id) VALUES (?, ?)",
+                                  [(key, i) for i in ids])
+        return self.for_songs([key]).get(key, [])
+
+    def counts(self) -> dict[str, int]:
+        """Сколько песен (ключей) у каждого тега; тегов без песен в ответе нет."""
+        return {r[0]: r[1] for r in self.conn.execute(
+            "SELECT tag_id, COUNT(*) FROM song_tags GROUP BY tag_id")}

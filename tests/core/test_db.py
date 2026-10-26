@@ -255,3 +255,27 @@ def test_v2_database_gets_song_id_column_and_find_uses_index(path):
     lib.upsert(db.LibraryItem(target_id="t3", rel_dir="C/C - D", txt_name="C - D.txt"))
     new_id = hashlib.sha1("t3\nC/C - D".encode("utf-8")).hexdigest()[:16]
     assert lib.find(new_id).rel_dir == "C/C - D"
+
+
+def test_v3_database_gets_tags_tables_and_keeps_data(path):
+    """V4: старая БД версии 3 получает tags/song_tags, строки library и songs целы."""
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.create_function("karaoke_song_id", 2, db.song_id_for, deterministic=True)
+    conn.executescript(db._SCHEMA_V1 + ";" + db._SCHEMA_V2 + ";" + db._SCHEMA_V3
+                       + ";PRAGMA user_version = 3;")
+    conn.execute("INSERT INTO library (target_id, rel_dir, txt_name, artist, song_id)"
+                 " VALUES ('t1', 'A/A - B', 'A - B.txt', 'A', 'x')")
+    conn.execute("INSERT INTO songs (id, rel_dir, artist, title, params, created_at, updated_at)"
+                 " VALUES ('s1', 'A/A - B', 'A', 'B', '{}', 'c', 'u')")
+    conn.commit()
+    conn.close()
+    c = db.connect(path)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert db.Library(c).get("t1", "A/A - B").artist == "A"
+    assert db.Songs(c).get("s1").title == "B"
+    tags = db.Tags(c)
+    t = tags.create("Любимое")
+    assert tags.set_for_song("a\nb", [t.id]) == [t.id]
+    assert {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")} >= {"tags", "song_tags"}

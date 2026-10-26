@@ -92,3 +92,17 @@ def normalize_artist(s: str) -> str:
     s = unicodedata.normalize("NFKC", s or "").casefold()
     s = s.replace("ё", "е")
     return "".join(ch for ch in s if ch.isalnum())
+
+
+def match_key(artist: str, title: str) -> tuple[str, str]:
+    """Ключ «такая песня уже есть»: без учёта регистра и ё/е, запрещённые символы — как в
+    :func:`safe_name`; пробелы и прочая пунктуация значимы («Ма-ма» ≠ «Мама»)."""
+    def fold(s: str) -> str:
+        return safe_name((s or "").strip().casefold().replace("ё", "е"))
+    return fold(artist), fold(title)
+
+
+def song_tag_key(artist: str, title: str) -> str:
+    """Ключ своих тегов песни: :func:`match_key` строкой через перевод строки —
+    общий для всех копий «исполнитель — название» во всех хранилищах."""
+    return "\n".join(match_key(artist, title))
