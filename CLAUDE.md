@@ -11,9 +11,9 @@ Docker — только Linux-движок: `docker --context desktop-linux comp
 - Проверка GPU и правок UltraSinger: `./scripts/compose.ps1 run --rm worker gpucheck` (успех — RC=0, последняя строка `gpucheck: OK …`).
 - Только образ worker (15–30 мин с нуля): `./scripts/compose.ps1 build worker`.
 - Логи: `./scripts/compose.ps1 logs --tail 100 worker` (или `web`).
-- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 794 passed, 2 skipped (после смены зависимостей — `run --build`).
+- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 820 passed, 2 skipped (после смены зависимостей — `run --build`).
 - Подмножество: `docker --context desktop-linux compose --profile test run --rm tests pytest -q tests/worker/test_runner_queue.py`.
-- Фронт-тесты (Node 24, встроенный node:test): `node --test tests/frontend/` → 185 pass.
+- Фронт-тесты (Node 24, встроенный node:test): `node --test tests/frontend/` → 199 pass.
 - Бэкап патча UltraSinger в `patches/karaoke-local.patch`: `./scripts/export-ultrasinger-patch.ps1` (читает `D:/Projects/UltraSinger`).
 - CLI воркера внутри образа: `python -m karaoke_worker gpucheck|selfcheck|run`; entrypoint пропускает эти слова в CLI, прочее (`bash`, `python`) исполняет как есть.
 
@@ -24,7 +24,7 @@ core/karaoke_core/        общий пакет web+worker: db, paths, naming, u
 core/karaoke_core/storage/  Storage: base (интерфейс, SongEntry), local, smb (smbprotocol), webdav, gdrive; `make_storage`
 core/Dockerfile.test      образ сервиса tests (editable core+web, pytest по tests/)
 web/app/                  FastAPI: main (create_app, Basic-auth, очистка корзины), api_jobs/songs/settings/targets/import/lyrics/usdb, context, params, notes, lyrics (LRCLIB), usdb (клиент)
-web/static/js/            SPA по хэшу (#queue #new #import #songs #trash #settings), api.js, ui.js, id3.js, import.js, import-logic.js, folder-logic.js, lyrics-search.js, lyrics-dialog.js, video-block.js (блок «Видео»), songs.js (хранилище, фильтры, карточка, «Видео…», «Копировать в…», zip), songs-filter.js, settings.js («Куда выкладывать»), targets-logic.js
+web/static/js/            SPA по хэшу (#queue #new #import #songs #song?id= #trash #settings; «Новая песня» — плавающая «+» `#fab-new`, не вкладка меню), api.js, ui.js, id3.js, import.js, import-logic.js, folder-logic.js, lyrics-search.js, lyrics-dialog.js, video-block.js (блок «Видео»), songs.js (хранилище, фильтры, карточка), song-actions.js (действия песни: меню, «Видео…», «Копировать в…», zip, удаление, теги), song-page.js (раздел `song`), menu.js, player.js, tags-ui.js, tags-logic.js, song-page-logic.js, songs-filter.js, settings.js («Куда выкладывать»), targets-logic.js
 web/static/js/editors/    редакторы песни: lyrics (перегенерация с новым текстом), notes-* («Редактор нот»: таймлайн, звук, волна, панель текста), shell (общее окно)
 worker/karaoke_worker/    runner (цикл очереди), handlers, base (JobContext, процессы), progress, gpucheck, selfcheck
 worker/build/             entrypoint.sh, lock_constraints.py (uv.lock → constraints), check_torch_arch.py, link_hyphen_dir.py
@@ -41,6 +41,10 @@ patches/karaoke-local.patch  резервная копия правок форк
 - `core/karaoke_core/db.py` — схема (jobs, settings, library, songs), `Jobs/Settings/Library/Songs`, `JOB_STATES`, `STAGE_PUBLISH`, `GPU_STATUS_KEY`; `Jobs.claim_next` пропускает `params.retry_at` в будущем, `Jobs.active(type)`, `Jobs.active_copy(rel_dir, from_target, to_target)`, `Jobs.enqueue_copy(song_ref, *, rel_dir, txt_name, from_target, to_target, replace=False, wait=False, replace_rel_dir=None, after_job=None, parent_id=None)` (уже активное такое же — возвращает его) — единственное правило дубля и params copy; `Library.find(song_id)` по всем хранилищам.
 - `db.Target(id, name, kind local|smb|webdav|gdrive, path, host, share, user, url, preset, client_id, secret, token)` — хранилище: `id` `local` или `t_<8hex>` (`new_target_id`), у `local` `path` — путь в контейнере (`/output…`, `/host…`), у прочих — папка внутри; `secret` — пароль SMB/WebDAV или Client secret Google, `token` — OAuth-JSON Google; `.label`, `.builtin`, `.public()` (без секретов: `has_password`, `connected`, `label`, `builtin`); `preset=yandex` — Яндекс Диск; `LOCAL_TARGET_ID="local"`, `builtin_local_target()` (`/output`), `TARGET_KINDS`, `NO_DEFAULT_DELETE`.
 - `Settings`: `get_targets()` (local первым; первое чтение — миграция `_migrate_targets`: `settings[output]` или `OUTPUT_*` → список, строки `library` на новый id, `target_aliases`), `get_target`, `save_target(Target)` (пустой id → новый; `secret/token` None — прежние; ValueError: local/тип/id), `delete_target` (не local и не основная; стирает индекс), `get_default_target_id()` (нет/удалена → `local`)/`set_default_target_id`, `resolve_target_id(any)` — новый id или прежний `smb://…`/`local:/output…` (`legacy_target_id`, алиасы); `get_output/set_output`+`OutputTarget` — только совместимость `/api/settings/output`.
+- Свои теги песен: миграция V4 (`tags(id, name, name_key UNIQUE, color, created_at)`, `song_tags(song_key, tag_id)`), `db.Tags` (`list/get/create/update/delete/for_songs/set_for_song/counts`), `Tag`, `TagError(.field name|color)`, `TAG_COLORS` (8 цветов), `DEFAULT_TAG_COLOR`, `TAG_NAME_MAX` 40, `tag_name_key`; `AppContext.tags`. Ключ песни — `naming.song_tag_key(artist, title)` = `match_key` через `
+` (`match_key` теперь в `karaoke_core.naming`, `web/app/context.py` его реэкспортирует): теги общие у копий песни в разных хранилищах; `Library.copies(artist, title)` — копии по индексу без обхода хранилищ.
+- `web/app/api_tags.py` — `/api/tags` GET (`{tags:[{id,name,color,count}], colors, default_color}`)/POST/`PUT /{id}`/DELETE (`{ok, removed}`); в `api_songs.py`: `PUT /api/songs/{id}/tags {tag_ids}` → `{tags}` (неизвестный тег → 400 `field=tag_ids`), `GET /api/songs/{id}/details` (`song, headers, singers, media{audio,instrumental,vocals,video,cover,background,midi}, files[{name,size,mtime}], copies, usdb_url`), `GET /api/songs/{id}/file?name=&download=1` (имя — файл верхнего уровня папки песни; inline только audio/video/растровые image, остальное — attachment; `nosniff`; Range); `tags` (id) есть в элементах `GET /api/songs` и `GET /api/songs/{id}`.
+- Фронт тегов и страницы песни: `tags-logic.js` (чистый: `tagNameError` с теми же текстами, что сервер, `tagsById` → Map, `songTagList`), `tags-ui.js` (`tagChip`, `colorPicker`, `openTagsManager` «Мои теги…», `openTagsDialog`), `menu.js` (`openMenu(anchor, items)`, `menuButton`, одно открытое меню), `player.js` (`playToggle`, `soloPlayback` — один играющий плеер), `song-actions.js` (`songMenuItems(song, env)`, `editorItems`, `env = {targets, currentTargetId, outputOk, trashDays, reload, afterRemove?, tags?}`), `song-page.js` + `song-page-logic.js` (`mediaRows`, `infoRows`, `fmtSize`, `lyricsPreview`; адрес `#song?id=`, в меню подсвечивается «Песни»), `songs-filter.js` (+ `DEFAULT_FILTER.tag`, `NO_TAG='none'`, `activeFilterCount(f)`; в адресе `tag=`); `songs.js` экспортирует `builtinTags(song)`, `songHref(song)`; `api.js`: `songDetails`, `fileUrl(id, name, {download})`, `tags/createTag/updateTag/deleteTag/setSongTags`.
 - `core/karaoke_core/paths.py` — `DataPaths`: единственное место раскладки тома data; имена входов `INPUT_*`, в т.ч. `INPUT_VIDEO_STEM = "video"` (`in/video.<ext>`; `handlers.INPUT_VIDEO_STEM` — реэкспорт).
 - `core/karaoke_core/naming.py` — `safe_name`, `song_dir`, `base_name`, `song_file`, `SUFFIX_*`, `VIDEO_EXTS` (`.mp4 .m4v .mkv .webm .avi .mov .mpg .mpeg`), `VIDEO_EXT_ORDER`, `video_file_name(value)` → имя видеофайла из `#VIDEO` или None (единое правило для `Storage` и воркера), `video_suffix(ext)` → `.<ext>` в нижнем регистре; все имена файлов песен — только отсюда.
 - `core/karaoke_core/ultrastar.py` — разбор/запись `.txt` с сохранением кодировки, BOM и переводов строк; `decode`, `set_header_line`, `fix_zero_length`; дуэт: `Song.is_duet`, `Song.tracks()` → `{1: [lines], 2: [lines]}` (строка без метки `P` — певец 1, у соло только ключ 1), `singer_names(song)` → `(p1, p2)` из `#P1/#P2`, иначе `#DUETSINGERP1/2`; `set_singer_names(song, p1, p2)` пишет `#P1/#P2`, `#DUETSINGERP*` — только если уже были, пустое имя удаляет оба.
@@ -101,7 +105,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 - Раскладка тома data: `karaoke.sqlite`; `logs/<id>.log`; `songs/<A>/<A - T>/{source/,jobs/<id>/in/,debug/}`; `trash/<UTC>__<id>/{<A>/<A - T>/…, meta.json}` (без `meta.json` запись считается недописанной); `imports/<token>/{files/…, meta.json}` (токен `[A-Za-z0-9_-]{1,64}`, `DataPaths.import_dir`). Том `models` (`/models`) — кэши HF/torch/xdg/hyphen.
 - Папка песни в хранилище: `<A>/<A - T>/<A - T>{.txt,.mp3, [Vocals].mp3, [Instrumental].mp3,.mid, [CO].jpg,.<видео>}`; БД: миграция V2 `library.video` → `LibraryItem.video` (в карточке песни), `SongEntry.video` — имя файла из `#VIDEO` или None; хранилища `kind=local` — папки контейнера: `/output` (= `LOCAL_OUTPUT_ROOT`, встроенное) или `/host/…` (= `HOST_FOLDERS_ROOT`); `OUTPUT_*` читаются только первой миграцией.
 - REST: ответы JSON, ошибки `{"detail": "по-русски", "field"?}`; 422 переводится в 400; хранилище недоступно → 503; неверный Range → 416. Пароли API никогда не возвращает (`has_password`).
-- Эндпоинты: `/api/status`, `/api/defaults` (+`max_import_mb`, `max_video_mb`, `video_heights`, `default_video_height`), `/api/jobs` (`generate`, `instrumental`, `import`, `video`, `copy`, `{id}`, `cancel`, `restart`, `republish`, `log`, `log/stream`), `/api/import/inspect`, `/api/lyrics/search`, `/api/usdb/search` (по 50; без `language` — `Russian`, пустой — без фильтра), `/api/songs` (`?target=`, `rescan?target=`, `exists`, `{id}` с `source`, `lyrics`, `notes` GET/PUT, `audio` с Range, `cover`, `zip`, DELETE), `/api/trash` (+`restore`), `/api/targets` (+`test`, `default`, `browse`, `gdrive/*`), `/api/settings/output` (совместимость: основная цель в прежнем формате; новый фронт не зовёт), `/api/settings/usdb`, `/api/settings/yandex` (GET/PUT, `test`).
+- Эндпоинты: `/api/status`, `/api/defaults` (+`max_import_mb`, `max_video_mb`, `video_heights`, `default_video_height`), `/api/jobs` (`generate`, `instrumental`, `import`, `video`, `copy`, `{id}`, `cancel`, `restart`, `republish`, `log`, `log/stream`), `/api/import/inspect`, `/api/lyrics/search`, `/api/usdb/search` (по 50; без `language` — `Russian`, пустой — без фильтра), `/api/songs` (`?target=`, `rescan?target=`, `exists`, `{id}` с `source`, `lyrics`, `notes` GET/PUT, `audio` с Range, `cover`, `zip`, `details`, `file`, `tags` PUT, DELETE), `/api/tags`, `/api/trash` (+`restore`), `/api/targets` (+`test`, `default`, `browse`, `gdrive/*`), `/api/settings/output` (совместимость: основная цель в прежнем формате; новый фронт не зовёт), `/api/settings/usdb`, `/api/settings/yandex` (GET/PUT, `test`).
 - `/api/targets`: GET → `{targets:[Target.public()], default_id, roots:{host: bool, output: true}}`; POST, `PUT /{id}` `{id?, name, kind: local|smb|webdav|yandex|gdrive, path, host, share, user, url, preset, client_id, password?}` → `Target.public()` (`gdrive` через POST → 400; «Папка ПК» = `/output` → 400); `DELETE /{id}` → `{ok}` (local 400, основная 409, нет 404); `PUT /default {id}`; `POST /test` → `{ok, label}`; `GET /browse?root=host|output&path=` → `{root, root_name, path, abs, parent, dirs}`; Google: `POST /gdrive/draft` → `{draft}`, `GET /gdrive/auth?draft=` → 302, `/gdrive/callback` → HTML (обмен кода, проверка, сохранение), `GET /gdrive/draft/{d}` → `{state: pending|connected|error, error?, target?}`.
 - «Песни»: `GET /api/songs?target=` (нет — основная; неизвестный → 400 `field=target`) → +`targets:[{id,name,kind}]`, `target: Target.public()`, `output` — статус выбранного; у песни `updated_at` (ISO UTC по mtime `.txt`), `source: usdb|files|url|generated|null`, `pending_copies:[{target_id, name, job_id}]`; `POST /api/songs/rescan?target=` → 202; `GET /api/songs/{id}/zip` — потоковый zip `<A - T>/…`, `filename*=UTF-8''<A - T>.zip`, `?check=1` → `{ok, files}`; `POST /api/jobs/copy` `{song_ids, target_id, replace=false, only_missing=true}` → 201 `{queued, skipped, errors:[{song_id, detail}]}` (больше `MAX_COPY_SONGS`=1000 → 400 `field=song_ids`).
 - `import_router` подключается раньше `jobs_router` (`web/app/main.py`), иначе `POST /api/jobs/import` уйдёт в маршруты `/api/jobs/{id}`.
@@ -145,6 +149,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 - Хранилища: `tests/core/test_targets.py` (Target, миграция), `tests/core/test_storage_webdav.py`/`test_storage_gdrive.py` через `FakeWebDav(http, base_url, root, user, pw)` (`.fail`) и `FakeDrive(http, root, client_id=, client_key=, refresh=, page_size=)` (`.expire()`, `.revoked`, `.codes`) из `tests/fakes_http.py`; `tests/api/test_targets.py`, `tests/api/test_copy.py`, `tests/worker/test_runner_copy.py`; фронт — `songs-filter.test.mjs`, `targets-logic.test.mjs`; экран «Настроек» и «Песен» — вручную.
 - 2 skipped — `tests/core/test_storage_smb_integration.py` без `TEST_SMB_HOST/TEST_SMB_SHARE` (передавать `-e TEST_SMB_…` в `run`).
 - `tests/core/test_repo_config.py` сканирует весь репозиторий (кроме `tests/`, `.autopilot/`, `.env`), включая этот файл, на `PASSWORD|SECRET|TOKEN` со значением после `=`/`:`.
+- Теги и страница песни: `tests/core/test_tags.py` (`Tags`), миграция V3 → V4 в `tests/core/test_db.py`, `tests/api/test_tags.py` (REST тегов, `details`, `file`), `tests/frontend/tags-logic.test.mjs`, `song-page-logic.test.mjs`, фильтр `tag` в `songs-filter.test.mjs`; экран «Песен», страница песни, меню и «+» — вручную в браузере.
 - Дуэты: `tests/worker/test_runner_duet.py` (импорт дуэта доезжает до результата), фикстура `tests/core/fixtures/duet.txt`; видео: `tests/api/test_video.py`, `tests/worker/test_runner_video.py`, `tests/frontend/video-block.test.mjs`; `fake_ytdlp.py` в видеорежиме (без `-x`, с `-f`) пишет `.mp4`.
 - Настоящий GPU проверяется только `gpucheck` и реальной генерацией.
 - Редактор нот: швы — `PUT/GET /api/songs/{id}/notes` в `tests/api/test_songs.py` и чистые модули (`notes-model`, `syllables`, `timeline`, `notes-panel` `*.test.mjs`); экран (`notes-editor.js`, плагины) — только вручную в браузере.
@@ -175,14 +180,48 @@ patches/karaoke-local.patch  резервная копия правок форк
 - curl из Git Bash портит кириллицу в аргументах — тестовые данные с русским текстом слать из браузера или из UTF-8 файла (`--data-binary @file`).
 - `ImportHandler` всегда снимает `#VIDEO/#BACKGROUND/#VIDEOGAP` из `.txt` пакета; видео возвращает только `finalize` по выбору блока «Видео» (`chosen_video`); сбой скачивания видео задание не валит.
 - Общий `state.notes` дуэта — слияние партий по времени, порядок осмыслен только внутри партии: живая нота — `noteAt(voiceNotes(state, v), beat)` по каждому певцу, индексы перетаскивания слога — из `voiceNotes`, подсветка строки — `lineAt(lines, beat, v)`.
+- Свои теги держатся за ключ «исполнитель — название» (`song_tag_key`), а не за папку: при переименовании песни (другие артист/название) теги не переезжают.
+- Браузер не проигрывает видео `.avi` (и часть `.mkv/.mpg`): на странице песни это выглядит как «Файл недоступен», хотя файл есть и скачивается.
+- `GET /api/songs/{id}/file` отдаёт только файлы верхнего уровня папки песни (подпапки — 404).
 - Шара отдаёт 503 при параллельном чтении одного файла (`<audio>` и волна одновременно) — `loadPeaks` повторяет до 3 раз через 1,5 с.
 
 ## Как здесь работает Autopilot
 
 Сборка ведётся навыком `/autopilot`. Требования, спецификация и таски — в `.autopilot/`.
-Прогресс — `.autopilot/dashboard.html`. Правило: требование из `manifest.md`
-может снять только пользователь.
+Прогресс — `.autopilot/dashboard.html`. Требование из `manifest.md` может снять
+только пользователь. Прерванную сборку продолжает «продолжи автопилот».
 
-Если работа продолжается — скажи «продолжи автопилот»: состояние поднимется
-из `.autopilot/state.js`, переспрашивать ничего не нужно.
+### Правка без автопилота
+
+Мелкий баг или доводка после сборки — обычная сессия, без прогона.
+
+Сначала прочитай:
+1. `.autopilot/PROGRESS.md` — что не доделано, известные баги, о чём договорились с пользователем.
+2. Что правили после последней сборки — первая строка таблицы в «История git».
+3. Только если правка их касается: почему сделано так — `docs/adr/`; что именно просили — `manifest.md` в папке сборки (указана в начале `PROGRESS.md`).
+
+После правки:
+- коммит — по правилам из «История git»;
+- строка в «Правки без автопилота» в `PROGRESS.md`: дата — что — почему;
+- починенный пункт из «Не доделано» или «Известные баги» — удали;
+- договорились с пользователем о том, что следующая сборка не должна пересматривать, — строка в «Договорились», его словами.
+
+### История git
+
+Целиком не читай — бери срез под вопрос:
+
+| Вопрос | Команда |
+|---|---|
+| что правили после последней сборки | `git log --oneline "$(git log -1 --format=%h --grep='^Autopilot: сборка сдана')"..HEAD -- . ':(exclude).autopilot'` |
+| всё, что делали ради требования | `git log --oneline --grep="R02"` |
+| история файла | `git log --oneline -10 -- <файл>` |
+| когда появился или исчез код | `git log --oneline -S "<фрагмент>"` |
+| почему строка такая | `git blame -L <с>,<по> <файл>`, затем `git show <sha>` |
+| что внутри коммита | `git show --stat <sha>` |
+
+Срез длиннее ~30 коммитов — отдай его субагенту и возьми выжимку в десять строк.
+
+Коммит: заголовок — что (`fix: даты в одном формате`), тело — почему, трейлер
+`--trailer "Requirements: R02"`, если правка касается требования из `manifest.md`.
+Заголовок `Autopilot: сборка сдана` пишет только автопилот — по нему находят последнюю сборку.
 <!-- autopilot:end -->

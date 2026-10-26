@@ -55,3 +55,17 @@
 - `tests/api/test_tags.py` — REST тегов, `tags` в списке, общий тег у копии во втором хранилище, `details` (vocals/mid/background/headers/files/copies), `file` (Range, чужое имя → 404, `..` → 404, `download=1`).
 - `tests/frontend/tags-logic.test.mjs`, `song-page-logic.test.mjs`, дополнения в `songs-filter.test.mjs` (тег, `none`, `activeFilterCount`).
 - Экран (меню, «+», страница, плееры) — вручную в браузере.
+
+## Что построили таски
+
+### 01 — теги, сведения, файлы (сервер)
+- Всё по контракту выше; сверх него: `Library.copies(artist, title) -> list[LibraryItem]` (по `match_key`, только индекс), `AppContext.tags`, `db.tag_name_key(name)`.
+- `details.files[].mtime` — число (Unix-секунды), не ISO; `files` и `/file` — только верхний уровень папки песни.
+- `PUT /api/songs/{id}/tags` с неизвестным тегом → 400 «Такого тега нет — обновите страницу», `field=tag_ids`.
+
+### 02 — «+», меню «…», теги, страница песни (фронт)
+- `menu.js`: `openMenu(anchor, items) -> {close}`, `menuButton(itemsFn, {label, title, className})`, `closeMenu()`.
+- `player.js`: `playToggle(button, url)`, `adoptPlayButton(button, url)`, `soloPlayback(el)`, `pausePlayers()`.
+- `song-actions.js`: по контракту + `editorItems(song, env)`, `songMenuItems(song, env, {editors=true})`; `downloadZip(song)`.
+- `songs-filter.js`: `DEFAULT_FILTER.tag=''`, `NO_TAG='none'`, `activeFilterCount(f)`; `songs.js` экспортирует `builtinTags(song)`, `songHref(song)`.
+- `song-page-logic.js`: `infoRows(details, {date}) -> [[label, value, href?]]`; `tags-logic.tagsById -> Map`.
