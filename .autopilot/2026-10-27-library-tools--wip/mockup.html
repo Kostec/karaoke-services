@@ -1,0 +1,664 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Макет: инструменты библиотеки</title>
+<style>
+:root{color-scheme:light;--bg:#f4f5f7;--surface:#fff;--surface-2:#eef0f3;--text:#1b1d22;--muted:#5d6470;--border:#d5d9e0;--accent:#2f5bd3;--accent-text:#fff;--ok:#1d7a3e;--ok-bg:#e3f4e8;--warn:#8a5a00;--warn-bg:#fff4d6;--err:#b42318;--err-bg:#fde8e6;--radius:10px;--shadow:0 1px 2px rgba(0,0,0,.08);--page:#e2e5ea;
+--tag-blue-bg:#e3ecff;--tag-blue-fg:#1f4fc4;--tag-violet-bg:#efe6ff;--tag-violet-fg:#6a32c9;--tag-pink-bg:#ffe4f1;--tag-pink-fg:#b0246b;--tag-orange-bg:#ffead9;--tag-orange-fg:#a8470b;--tag-yellow-bg:#fff3c4;--tag-yellow-fg:#7a5b00;--tag-teal-bg:#d9f5f3;--tag-teal-fg:#0d6e69;--tag-gray-bg:#e6e8ec;--tag-gray-fg:#454b55}
+html[data-theme=dark]{color-scheme:dark;--bg:#111317;--surface:#1b1e24;--surface-2:#252932;--text:#e7e9ee;--muted:#a0a7b4;--border:#353a45;--accent:#6b8cff;--accent-text:#0d1020;--ok:#5fd28a;--ok-bg:#173022;--warn:#ffcf66;--warn-bg:#3a2f12;--err:#ff8a80;--err-bg:#3b1a19;--shadow:none;--page:#0a0b0e;
+--tag-blue-bg:#1c2b52;--tag-blue-fg:#9db8ff;--tag-violet-bg:#2e2150;--tag-violet-fg:#c6a8ff;--tag-pink-bg:#45192f;--tag-pink-fg:#ff9cca;--tag-orange-bg:#432612;--tag-orange-fg:#ffb27a;--tag-yellow-bg:#3d3310;--tag-yellow-fg:#ffd862;--tag-teal-bg:#123634;--tag-teal-fg:#6fe0d8;--tag-gray-bg:#2c3038;--tag-gray-fg:#c3c8d1}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--text);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow-wrap:anywhere}
+a{color:var(--accent)}
+/* ---- оболочка макета ---- */
+.note{background:var(--warn-bg);color:var(--warn);padding:8px 12px;font-size:.9rem;text-align:center;position:sticky;top:0;z-index:100;display:flex;gap:12px;justify-content:center;align-items:center;flex-wrap:wrap}
+.note button{min-height:32px;padding:0 12px}
+.toc{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;padding:10px}
+.toc a{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:.85rem;text-decoration:none;color:var(--text)}
+.shot{max-width:1560px;margin:0 auto;padding:12px 16px 28px}
+.shot>h2{font-size:1.2rem;margin:20px 0 4px}.shot>p.cap{margin:0 0 10px;color:var(--muted);font-size:.9rem}
+.pair{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.lbl{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:0 0 4px}
+.frame{background:var(--bg);border:1px solid var(--border);border-radius:12px;overflow:hidden;position:relative;container-type:inline-size;box-shadow:0 4px 18px rgba(0,0,0,.12)}
+.frame.pc{width:1100px;max-width:100%}
+.frame.ph{width:375px;max-width:100%}
+.frame .scroll{max-height:none}
+/* ---- стили приложения ---- */
+.top{background:var(--surface);border-bottom:1px solid var(--border)}
+.top-inner,main{max-width:960px;margin:0 auto;padding:8px 12px}
+main{padding-bottom:20px}
+.brand{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px}.brand h1{font-size:1.15rem;margin:0}
+.status{font-size:.85rem;color:var(--muted)}.status .ok{color:var(--ok)}
+nav.tabs{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+nav.tabs a{flex:1 1 auto;min-height:44px;display:flex;align-items:center;justify-content:center;padding:0 10px;border-radius:8px;text-decoration:none;color:var(--text);background:var(--surface-2);font-size:.95rem;white-space:nowrap}
+nav.tabs a.cur{background:var(--accent);color:var(--accent-text)}
+.badge-count{margin-left:6px;min-width:1.4em;padding:0 5px;border-radius:9px;background:var(--warn-bg);color:var(--warn);font-size:.8rem;text-align:center}
+h2.h{font-size:1.25rem;margin:12px 0}
+h3{margin:0 0 8px;font-size:1.05rem}
+.view-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:12px;margin:10px 0;min-width:0}
+.muted{color:var(--muted)}.small{font-size:.85rem}
+button,.btn{font:inherit;min-height:44px;min-width:44px;padding:0 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);cursor:default;display:inline-flex;align-items:center;justify-content:center;gap:6px;text-decoration:none;max-width:100%}
+button.primary{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+button.danger{color:var(--err);border-color:var(--err);background:transparent}
+button.sm{min-height:36px;font-size:.85rem;padding:0 10px}
+button:disabled,button.off{opacity:.5}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.banner{border-radius:var(--radius);padding:10px 12px;margin:10px 0;border:1px solid transparent}
+.banner.err{background:var(--err-bg);color:var(--err);border-color:var(--err)}
+.banner.warn{background:var(--warn-bg);color:var(--warn);border-color:var(--warn)}
+.banner.ok{background:var(--ok-bg);color:var(--ok);border-color:var(--ok)}
+.field{display:block;margin:10px 0}.field>span{display:block;font-weight:600;margin-bottom:4px}.field .hint{font-weight:400;color:var(--muted);font-size:.85rem}
+input[type=text],input[type=search],input[type=password],input[type=time],select{font:inherit;width:100%;min-height:44px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text)}
+input.invalid{border-color:var(--err);outline:2px solid var(--err);outline-offset:-1px}
+.field-error{color:var(--err);font-size:.9rem;margin-top:4px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+.check{display:flex;align-items:center;gap:10px;min-height:44px}.check input{width:22px;height:22px;flex:none}
+.radio-row{display:flex;flex-wrap:wrap;gap:8px}
+.radio-row label{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 12px;border:1px solid var(--border);border-radius:8px}
+.radio-row label.sel{border-color:var(--accent);outline:1px solid var(--accent)}
+.job-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px}
+.job-title{font-weight:600}.job-meta{font-size:.85rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:2px 12px}
+.state{font-size:.85rem;font-weight:600;padding:2px 8px;border-radius:6px;background:var(--surface-2);white-space:nowrap}
+.state.running{background:var(--warn-bg);color:var(--warn)}.state.done{background:var(--ok-bg);color:var(--ok)}
+.state.later{background:var(--tag-violet-bg);color:var(--tag-violet-fg)}
+.progress{height:8px;background:var(--surface-2);border-radius:4px;overflow:hidden;margin:8px 0 4px}.progress>div{height:100%;background:var(--accent)}
+.songs-tools{display:grid;grid-template-columns:minmax(150px,220px) 1fr auto auto auto;gap:8px;align-items:center}
+.songs-tools>*{min-width:0}
+.badge{background:var(--accent);color:var(--accent-text);border-radius:10px;font-size:.75rem;padding:0 7px}
+.summary{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin:10px 0 4px;font-size:.85rem;color:var(--muted)}
+.song{display:grid;grid-template-columns:auto auto 1fr auto;gap:12px;align-items:center;padding:10px 12px;margin:8px 0}
+.song.sel{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 7%,var(--surface))}
+.song.plain{grid-template-columns:auto 1fr auto}
+.pick{width:26px;height:26px;border:2px solid var(--border);border-radius:6px;background:var(--surface);display:flex;align-items:center;justify-content:center;font-size:1rem;color:var(--accent-text);flex:none}
+.pick.on{background:var(--accent);border-color:var(--accent)}
+.cover{width:64px;height:64px;border-radius:8px;background:linear-gradient(135deg,#4b5d8f,#9a5fb4);display:flex;align-items:center;justify-content:center;color:#fff;font-size:1.5rem;flex:none}
+.cover.g2{background:linear-gradient(135deg,#8f4b4b,#d29a4b)}.cover.g3{background:linear-gradient(135deg,#2f7a6d,#5b9bd1)}.cover.none{background:var(--surface-2);color:var(--muted)}
+.song-title{font-weight:600}.song-artist{color:var(--muted);font-size:.9rem}
+.tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.tag{font-size:.75rem;padding:1px 8px;border-radius:10px;background:var(--surface-2);color:var(--muted);white-space:nowrap}
+.tag.on{background:var(--ok-bg);color:var(--ok)}.tag.wait{background:var(--warn-bg);color:var(--warn)}.tag.user{font-weight:600}
+.c-blue{background:var(--tag-blue-bg);color:var(--tag-blue-fg)}.c-violet{background:var(--tag-violet-bg);color:var(--tag-violet-fg)}.c-orange{background:var(--tag-orange-bg);color:var(--tag-orange-fg)}.c-teal{background:var(--tag-teal-bg);color:var(--tag-teal-fg)}.c-pink{background:var(--tag-pink-bg);color:var(--tag-pink-fg)}.c-yellow{background:var(--tag-yellow-bg);color:var(--tag-yellow-fg)}
+.play{border-radius:50%;width:44px;padding:0}
+.menu-btn{width:44px;padding:0;font-size:1.2rem}
+.quick{display:flex;gap:4px}
+.menu{background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:6px;display:grid;min-width:230px}
+.menu div{display:flex;align-items:center;min-height:40px;padding:0 12px;border-radius:6px}.menu div.dis{color:var(--muted);opacity:.6}.menu hr{border:0;border-top:1px solid var(--border);margin:4px 0}
+/* нижняя панель выбора */
+.bulk-bar{position:sticky;bottom:0;z-index:5;background:var(--surface);border-top:1px solid var(--border);box-shadow:0 -4px 16px rgba(0,0,0,.14);padding:8px 12px}
+.bulk-in{max-width:960px;margin:0 auto;display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center}
+.bulk-in .cnt{font-weight:600;margin-right:4px}.bulk-in .cnt small{display:block;font-weight:400;color:var(--muted);font-size:.8rem}
+.bulk-in .sp{flex:1}
+@container (max-width:600px){
+ .songs-tools{grid-template-columns:1fr auto auto}.songs-tools .t{grid-column:1/-1}
+ .bulk-in{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}.bulk-in button{flex:none}
+ .bulk-in .cnt{flex:none}.bulk-in .sp{display:none}
+ .row2{grid-template-columns:1fr}
+ .grid2{grid-template-columns:1fr!important}
+}
+/* диалоги */
+.dim{background:rgba(10,12,18,.5);padding:22px 12px;display:flex;justify-content:center}
+.dlg{width:100%;max-width:560px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;box-shadow:0 12px 40px rgba(0,0,0,.3)}
+.dlg h3{font-size:1.15rem;margin:0 0 10px}.dlg .actions{justify-content:flex-end}
+.reasons{max-height:230px;overflow:auto;border:1px solid var(--border);border-radius:8px}
+.reasons div{display:grid;grid-template-columns:1fr auto;gap:8px;padding:7px 10px;border-top:1px solid var(--border);font-size:.9rem}
+.reasons div:first-child{border-top:0}.reasons b{font-weight:600}.reasons span{color:var(--muted);text-align:right}
+/* страница песни */
+.back{display:inline-flex;align-items:center;gap:6px;min-height:44px;text-decoration:none}
+.hero{position:relative;overflow:hidden;border-radius:var(--radius);border:1px solid var(--border);background:#2b3348}
+.hero .bg{position:absolute;inset:0;background:linear-gradient(120deg,#20304f,#6b3f7f 60%,#c26d5a);opacity:.9}
+.hero .in{position:relative;display:grid;grid-template-columns:auto 1fr;gap:16px;padding:16px;color:#fff}
+.hero .big{width:160px;height:160px;border-radius:10px;background:linear-gradient(135deg,#4b5d8f,#9a5fb4);display:flex;align-items:center;justify-content:center;font-size:3rem;box-shadow:0 6px 20px rgba(0,0,0,.35)}
+.hero h2{margin:0;font-size:1.6rem}.hero .artist{font-size:1.1rem;opacity:.9}
+.hero .tags .tag:not(.user){background:rgba(255,255,255,.18);color:#fff}
+.hero .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.hero .acts button:not(.primary){background:rgba(255,255,255,.15);color:#fff;border-color:rgba(255,255,255,.3)}
+.hero .acts button.off{opacity:.45}
+@container (max-width:600px){.hero .in{grid-template-columns:1fr}.hero .big{width:120px;height:120px}}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.media{display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--border)}
+.media:first-of-type{border-top:0}
+.fakeaudio{display:flex;align-items:center;gap:8px;background:var(--surface-2);border-radius:20px;padding:4px 10px;font-size:.85rem;color:var(--muted)}.fakeaudio .bar{flex:1;height:4px;border-radius:2px;background:var(--border)}
+.thumb{width:56px;height:56px;border-radius:6px;background:linear-gradient(135deg,#4b5d8f,#9a5fb4);flex:none}.thumb.wide{width:96px;height:54px;background:linear-gradient(135deg,#1e3a5f,#c26d5a)}
+.mrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0;font-size:.92rem}dt{color:var(--muted)}dd{margin:0}
+/* варианты обложек */
+.hits{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:10px 0}
+@container (max-width:600px){.hits{grid-template-columns:repeat(2,1fr)}}
+.hit{border:1px solid var(--border);border-radius:10px;padding:6px;background:var(--surface);text-align:left}
+.hit.sel{border-color:var(--accent);outline:2px solid var(--accent)}
+.hit .img{aspect-ratio:1;border-radius:6px;display:flex;align-items:flex-end;justify-content:flex-end;padding:4px;color:#fff;font-size:.7rem}
+.hit .src{display:inline-block;font-size:.7rem;padding:0 6px;border-radius:8px;background:var(--surface-2);color:var(--muted);margin-top:6px}
+.hit .al{font-size:.82rem;font-weight:600;line-height:1.25;margin-top:2px}.hit .sz{font-size:.75rem;color:var(--muted)}
+.i1{background:linear-gradient(135deg,#4b5d8f,#9a5fb4)}.i2{background:linear-gradient(135deg,#8f4b4b,#d29a4b)}.i3{background:linear-gradient(135deg,#2f7a6d,#5b9bd1)}.i4{background:linear-gradient(135deg,#444,#999)}.i5{background:linear-gradient(135deg,#7a2f6d,#d15b8b)}.i6{background:linear-gradient(135deg,#3a5f2f,#b3d15b)}
+.tabsx{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.tabsx span{padding:8px 12px;border:1px solid var(--border);border-radius:8px;min-height:40px;display:flex;align-items:center}.tabsx span.cur{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+.drop{border:2px dashed var(--border);border-radius:10px;padding:16px;text-align:center;color:var(--muted)}
+.bgprev{aspect-ratio:16/9;border-radius:8px;background:linear-gradient(120deg,#1e3a5f,#6b3f7f 60%,#c26d5a);display:flex;align-items:center;justify-content:center;color:#fff;max-width:320px}
+/* проверка */
+.grp{padding:0;overflow:hidden}
+.grp>summary{list-style:none;display:flex;align-items:center;gap:10px;min-height:48px;padding:6px 12px;font-weight:600}
+.grp>summary::-webkit-details-marker{display:none}.grp>summary .n{margin-left:auto;background:var(--warn-bg);color:var(--warn);padding:0 9px;border-radius:10px;font-size:.85rem}
+.grp>summary:before{content:"▾";color:var(--muted)}
+.find{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center;padding:8px 12px;border-top:1px solid var(--border)}
+.find .why{font-size:.85rem;color:var(--muted)}
+.find .fx{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.find.fixed{background:var(--ok-bg)}.find.fixed .st{color:var(--ok);font-weight:600;font-size:.9rem}
+.diff{font-size:.85rem;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}.diff s{color:var(--err)}.diff b{color:var(--ok)}
+@container (max-width:600px){.find{grid-template-columns:1fr}.find .fx{justify-content:flex-start}}
+.stores-pick{display:flex;gap:8px;flex-wrap:wrap}
+/* очередь */
+.qcard .qact{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center}
+.pos{display:inline-flex;gap:2px}.pos button{padding:0;width:44px}
+/* настройки */
+.sw{display:flex;gap:10px;align-items:flex-start;min-height:44px}
+.test-ok{color:var(--ok);font-size:.9rem}
+.mir-list{border:1px solid var(--border);border-radius:8px;margin-top:8px}
+.mir-list div{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 10px;border-top:1px solid var(--border);font-size:.9rem}.mir-list div:first-child{border-top:0}
+.plan{margin:6px 0 0;padding-left:20px}
+/* прогон и редактор */
+.dark{--surface:#1b1e24;--surface-2:#252932;--text:#e7e9ee;--muted:#a0a7b4;--border:#353a45;--accent:#6b8cff;--accent-text:#0d1020;--bg:#0c0e13;color:var(--text)}
+.play-view{background:radial-gradient(ellipse at 30% 20%,#2a2f55 0%,#0c0e13 70%);color:#e7e9ee;min-height:520px;display:flex;flex-direction:column;position:relative;padding:12px 16px}
+.play-view:before{content:"";position:absolute;inset:0;background:linear-gradient(120deg,rgba(30,58,95,.5),rgba(107,63,127,.4) 60%,rgba(194,109,90,.35));filter:blur(20px);pointer-events:none}
+.play-view>*{position:relative}
+.ptop{display:flex;align-items:center;gap:10px}.ptop .tt{flex:1;min-width:0}.ptop b{display:block;line-height:1.2}.ptop span{font-size:.85rem;opacity:.75}
+.ptop button{background:rgba(255,255,255,.12);color:#fff;border-color:rgba(255,255,255,.25)}
+.lane{position:relative;height:170px;margin:12px 0 4px;border-radius:10px;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.12);overflow:hidden}
+.lane.half{height:110px;margin-top:6px}
+.lane .grid{position:absolute;left:0;right:0;border-top:1px dashed rgba(255,255,255,.08)}
+.lane .nt{position:absolute;height:12px;border-radius:6px;background:#8fb0ff;box-shadow:0 0 0 1px rgba(0,0,0,.25)}
+.lane .nt.done{background:#ffd862;box-shadow:0 0 10px rgba(255,216,98,.7)}
+.lane .nt.p2{background:#ff9cca}.lane .nt.p2.done{background:#ffe08a}
+.lane .nt.free{background:#6fe0d8;opacity:.6}
+.lane .now{position:absolute;top:0;bottom:0;width:2px;background:#fff;box-shadow:0 0 8px #fff}
+.lane .sg{position:absolute;top:4px;left:8px;font-size:.75rem;padding:1px 8px;border-radius:10px}
+.sg1{background:#1c2b52;color:#9db8ff}.sg2{background:#45192f;color:#ff9cca}
+.lyr{text-align:center;margin:14px 0 6px}.lyr .cur{font-size:2.1rem;font-weight:700;line-height:1.25;letter-spacing:.01em}
+.lyr .cur .s{color:#ffd862}.lyr .cur .r{color:#fff;opacity:.9}.lyr .nx{font-size:1.1rem;opacity:.6;margin-top:6px}
+.lyr.duet{display:grid;grid-template-columns:1fr 1fr;gap:16px;text-align:left}.lyr.duet .cur{font-size:1.5rem}.lyr.duet .who{font-size:.8rem;margin-bottom:2px}
+.lyr.duet .c1 .s{color:#9db8ff}.lyr.duet .c2 .s{color:#ff9cca}
+.ctl{margin-top:auto;background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:8px 12px;display:flex;flex-direction:column;gap:6px}
+.ctl .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ctl button{background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.2)}
+.ctl .big{width:52px;height:52px;border-radius:50%;background:var(--accent);color:#0d1020;font-size:1.3rem;border-color:var(--accent)}
+.ctl .seek{flex:1;min-width:120px;height:6px;border-radius:3px;background:rgba(255,255,255,.2);position:relative}.ctl .seek i{position:absolute;left:0;top:0;bottom:0;width:38%;background:var(--accent);border-radius:3px}.ctl .seek i:after{content:"";position:absolute;right:-7px;top:-5px;width:16px;height:16px;border-radius:50%;background:#fff}
+.ctl .tm{font-variant-numeric:tabular-nums;font-size:.9rem;opacity:.85}
+.ctl label.tg{display:flex;align-items:center;gap:8px;font-size:.9rem;min-height:44px}
+.tgl{width:42px;height:24px;border-radius:12px;background:var(--accent);position:relative;flex:none}.tgl:after{content:"";position:absolute;right:3px;top:3px;width:18px;height:18px;border-radius:50%;background:#0d1020}
+.tgl.offx{background:rgba(255,255,255,.25)}.tgl.offx:after{right:auto;left:3px;background:#fff}
+@container (max-width:600px){.lyr .cur{font-size:1.45rem}.lane{height:140px}.lyr.duet{grid-template-columns:1fr}.play-view{min-height:600px}}
+/* редактор нот */
+.ne{background:var(--surface);}
+.ne-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border)}
+.ne-bar button{min-height:40px}
+.ne-bar .sus{border-color:var(--warn);color:var(--warn);background:var(--warn-bg)}
+.ne-bar .sep{width:1px;align-self:stretch;background:var(--border);margin:0 2px}
+.ne-lane{position:relative;height:190px;margin:0;background:var(--surface-2);overflow:hidden}
+.ne-lane .grid{position:absolute;left:0;right:0;border-top:1px solid var(--border);opacity:.6}
+.ne-note{position:absolute;height:14px;border-radius:4px;background:var(--accent);color:var(--accent-text);font-size:.6rem;overflow:visible;border:1px solid rgba(0,0,0,.2)}
+.ne-note.sel{outline:2px solid var(--text)}
+.ne-note.suspect{background:#f5c518;color:#3a2f00;box-shadow:0 0 0 2px rgba(245,197,24,.45)}
+.ne-chip{position:absolute;top:-17px;left:0;font-size:.7rem;color:var(--text);white-space:nowrap}
+.tip{position:absolute;z-index:3;background:#1b1d22;color:#fff;padding:6px 10px;border-radius:8px;font-size:.8rem;box-shadow:0 6px 18px rgba(0,0,0,.35);max-width:260px}
+.tip:after{content:"";position:absolute;left:18px;bottom:-5px;width:10px;height:10px;background:#1b1d22;transform:rotate(45deg)}
+.legend{display:flex;gap:12px;flex-wrap:wrap;padding:8px 12px;font-size:.85rem;color:var(--muted)}.legend i{display:inline-block;width:14px;height:10px;border-radius:3px;margin-right:4px;vertical-align:middle}
+.ne-bar .sp{flex:1}
+</style>
+</head>
+<body>
+<div class="note">Макет для согласования — не настоящее приложение, ничего не нажимается. Каждый экран показан в ширину ПК (1100 px) и на телефоне (375 px).
+ <button id="theme">Тёмная тема</button></div>
+<div class="toc">
+ <a href="#s1">1. Песни: выбор</a><a href="#s2">2. Страница песни</a><a href="#s3">3. Обложка и фон</a><a href="#s4">4. Проверка библиотеки</a><a href="#s5">5. Очередь</a><a href="#s6">6. Прогон</a><a href="#s7">7. Редактор нот</a><a href="#s8">8. Настройки</a>
+</div>
+
+<!-- ============ 1 ============ -->
+<div class="shot" id="s1">
+<h2>1. «Песни» в режиме выбора</h2>
+<p class="cap">Кнопка «Выбрать» включает чекбоксы; «Все показанные» отмечает всё, что видно под фильтром; нижняя панель закреплена. Отмеченные, скрытые фильтром, остаются в выборе и считаются отдельно.</p>
+<div class="pair">
+ <div><p class="lbl">ПК</p>
+ <div class="frame pc"><div data-head="Песни"></div>
+ <main>
+  <div class="view-head"><h2 class="h">Песни</h2></div>
+  <div class="songs-tools">
+   <select class="t"><option>Локальное хранилище</option></select>
+   <input type="search" placeholder="Поиск по исполнителю или названию" value="а">
+   <button>Фильтры <span class="badge">1</span></button>
+   <button class="primary">Выбрать ✓</button>
+   <button class="menu-btn" title="Ещё действия">…</button>
+  </div>
+  <div class="summary"><span>/output · просканировано 16:00 · показано 5 из 49</span>
+   <label class="check" style="min-height:36px"><span class="pick on" style="width:22px;height:22px;font-size:.8rem">✓</span> Все показанные (5)</label></div>
+  <article class="card song sel"><span class="pick on">✓</span><div class="cover">♪</div><div><div class="song-title">Режиссёр</div><div class="song-artist">Градусы</div><div class="tags"><span class="tag on">есть минусовка</span><span class="tag on">видео</span><span class="tag user c-blue">Для вечеринки</span></div></div><div class="quick"><button class="play">▶</button><button class="menu-btn">…</button></div></article>
+  <article class="card song sel"><span class="pick on">✓</span><div class="cover g2">♪</div><div><div class="song-title">Кукла колдуна</div><div class="song-artist">Король и Шут</div><div class="tags"><span class="tag on">создана сервисом</span><span class="tag wait">ждёт копирования в «Pi»</span></div></div><div class="quick"><button class="play">▶</button><button class="menu-btn">…</button></div></article>
+  <article class="card song sel"><span class="pick on">✓</span><div class="cover g3">♪</div><div><div class="song-title">Bohemian Rhapsody</div><div class="song-artist">Queen</div><div class="tags"><span class="tag on">дуэт</span><span class="tag user c-violet">Разучить</span></div></div><div class="quick"><button class="play">▶</button><button class="menu-btn">…</button></div></article>
+  <article class="card song"><span class="pick"></span><div class="cover none">♪</div><div><div class="song-title">Звезда по имени Солнце</div><div class="song-artist">Кино</div><div class="tags"><span class="tag on">импорт</span></div></div><div class="quick"><button class="play">▶</button><button class="menu-btn">…</button></div></article>
+  <article class="card song sel"><span class="pick on">✓</span><div class="cover g2">♪</div><div><div class="song-title">Hotel California</div><div class="song-artist">Eagles</div><div class="tags"><span class="tag on">есть минусовка</span></div></div><div class="quick"><button class="play">▶</button><button class="menu-btn">…</button></div></article>
+ </main>
+ <div class="bulk-bar"><div class="bulk-in">
+  <div class="cnt">Выбрано 5<small>ещё 2 скрыты фильтром</small></div>
+  <button>Теги…</button><button>Копировать…</button><button>Скачать zip</button><button>Минусовка</button><button class="danger">Удалить</button><span class="sp"></span><button title="Снять выбор">✕</button>
+ </div></div>
+ </div></div>
+
+ <div><p class="lbl">Телефон</p>
+ <div class="frame ph"><div data-head="Песни"></div>
+ <main>
+  <h2 class="h">Песни</h2>
+  <div class="songs-tools"><select class="t"><option>Локальное хранилище</option></select><input type="search" value="а"><button>⚙ <span class="badge">1</span></button><button class="primary">✓</button></div>
+  <div class="summary"><span>показано 5 из 49</span><label class="check" style="min-height:36px"><span class="pick on" style="width:22px;height:22px;font-size:.8rem">✓</span> Все (5)</label></div>
+  <article class="card song sel" style="grid-template-columns:auto auto 1fr"><span class="pick on">✓</span><div class="cover" style="width:52px;height:52px">♪</div><div><div class="song-title">Режиссёр</div><div class="song-artist">Градусы</div><div class="tags"><span class="tag user c-blue">Для вечеринки</span></div></div></article>
+  <article class="card song sel" style="grid-template-columns:auto auto 1fr"><span class="pick on">✓</span><div class="cover g2" style="width:52px;height:52px">♪</div><div><div class="song-title">Кукла колдуна</div><div class="song-artist">Король и Шут</div></div></article>
+  <article class="card song" style="grid-template-columns:auto auto 1fr"><span class="pick"></span><div class="cover none" style="width:52px;height:52px">♪</div><div><div class="song-title">Звезда по имени Солнце</div><div class="song-artist">Кино</div></div></article>
+ </main>
+ <div class="bulk-bar"><div class="bulk-in"><div class="cnt">Выбрано 5<small>ещё 2 скрыты</small></div><button>Теги…</button><button>Копировать…</button><button>Скачать zip</button><button>Минусовка</button><button class="danger">Удалить</button><button>✕</button></div></div>
+ </div></div>
+</div>
+
+<p class="lbl" style="margin-top:18px">Диалог итога после массовой операции</p>
+<div class="pair">
+ <div class="frame pc" style="width:620px"><div class="dim"><div class="dlg">
+  <h3>Минусовка</h3>
+  <div class="banner warn" style="margin-top:0"><b>Готово: 12. Пропущено: 3</b></div>
+  <div class="reasons">
+   <div><b>Кино — Группа крови</b><span>минусовка уже есть</span></div>
+   <div><b>Queen — Bohemian Rhapsody</b><span>уже в очереди</span></div>
+   <div><b>Градусы — Режиссёр</b><span>нет звука</span></div>
+  </div>
+  <div class="actions"><button>К очереди</button><button class="primary">Закрыть</button></div>
+ </div></div></div>
+ <div class="frame ph"><div class="dim"><div class="dlg">
+  <h3>Копирование в «Pi»</h3>
+  <div class="banner warn" style="margin-top:0"><b>Готово: 4. Пропущено: 1</b></div>
+  <div class="reasons"><div><b>Eagles — Hotel California</b><span>хранилище недоступно</span></div></div>
+  <div class="actions"><button class="primary">Закрыть</button></div>
+ </div></div></div>
+</div>
+</div>
+
+<!-- ============ 2 ============ -->
+<div class="shot" id="s2">
+<h2>2. Страница песни</h2>
+<p class="cap">Хранилище «Pi» отвалилось после открытия страницы: сверху баннер, редакторы и пункты «…» погашены, «▶ Прогон» читает файлы песни, поэтому гаснет вместе с ними. В «Медиа» — «Обложка» и «Фон».</p>
+<div class="pair">
+ <div><p class="lbl">ПК</p>
+ <div class="frame pc"><div data-head="Песни"></div>
+ <main>
+  <a class="back">← Песни</a>
+  <div class="banner err" style="margin:0 0 10px"><b>Хранилище «Pi» недоступно — действия с файлами отключены.</b> <span class="small">Проверка раз в 15 с; когда оно вернётся, всё включится само.</span></div>
+  <div class="hero"><div class="bg"></div><div class="in"><div class="big">♪</div><div>
+   <div class="artist">Градусы</div><h2>Режиссёр</h2>
+   <div class="tags" style="margin-top:8px"><span class="tag">есть минусовка</span><span class="tag">видео</span><span class="tag user c-blue">Для вечеринки</span><span class="tag user c-orange">Разучить</span></div>
+   <div class="acts"><button class="primary off">Редактор нот</button><button class="off">Править текст</button><button class="off">▶ Прогон</button><button class="menu-btn">…</button></div>
+  </div></div></div>
+  <div class="grid2" style="margin-top:10px">
+   <div class="card"><h3>Медиа</h3>
+    <div class="media"><b>Песня</b><div class="fakeaudio">▶ 0:00 <span class="bar"></span> 3:41 🔊</div></div>
+    <div class="media"><b>Минусовка</b><div class="fakeaudio">▶ 0:00 <span class="bar"></span> 3:41 🔊</div></div>
+    <div class="media"><b>Обложка</b><div class="mrow"><div class="thumb"></div><div class="small muted">Градусы - Режиссёр [CO].jpg<br>1000×1000 · 120 КБ</div><button class="sm off">Заменить…</button></div></div>
+    <div class="media"><b>Фон</b><div class="mrow"><span class="muted">не задан</span><button class="sm off">Поставить…</button></div></div>
+    <div class="media"><b>Видео</b><div class="mrow"><div class="thumb wide"></div><span class="small muted">смещение 1,25 с</span></div></div>
+   </div>
+   <div class="card"><h3>Хранилища</h3>
+    <div class="small" style="display:grid;gap:6px"><div style="display:flex;justify-content:space-between"><span>Локальное хранилище <span class="tag on">открыто</span></span><span class="muted">есть</span></div><div style="display:flex;justify-content:space-between"><span>Raspberry Pi (SMB) <span class="tag" style="background:var(--err-bg);color:var(--err)">недоступно</span></span><span class="muted">есть</span></div></div>
+   </div>
+  </div>
+ </main></div></div>
+
+ <div><p class="lbl">Телефон (хранилище в порядке)</p>
+ <div class="frame ph"><div data-head="Песни"></div>
+ <main>
+  <a class="back">← Песни</a>
+  <div class="hero"><div class="bg"></div><div class="in"><div class="big">♪</div><div>
+   <div class="artist">Градусы</div><h2>Режиссёр</h2>
+   <div class="tags"><span class="tag user c-blue">Для вечеринки</span></div>
+   <div class="acts"><button class="primary">Редактор нот</button><button>▶ Прогон</button><button>Править текст</button><button class="menu-btn">…</button></div>
+  </div></div></div>
+  <div class="card" style="margin-top:10px"><h3>Медиа</h3>
+   <div class="media" style="grid-template-columns:70px 1fr"><b>Обложка</b><div class="mrow"><div class="thumb"></div><button class="sm">Заменить…</button></div></div>
+   <div class="media" style="grid-template-columns:70px 1fr"><b>Фон</b><div class="mrow"><span class="muted">не задан</span><button class="sm">Поставить…</button></div></div>
+  </div>
+ </main></div></div>
+</div>
+</div>
+
+<!-- ============ 3 ============ -->
+<div class="shot" id="s3">
+<h2>3. Диалоги «Обложка…» и «Фон…»</h2>
+<p class="cap">Поиск идёт сразу в iTunes, Deezer и MusicBrainz; сбой одного сервиса остальным не мешает. Выбранное ставится заданием «Обложка» в очереди (без GPU).</p>
+<div class="pair">
+ <div><p class="lbl">ПК · Обложка…</p>
+ <div class="frame pc" style="width:700px"><div class="dim"><div class="dlg" style="max-width:640px">
+  <h3>Обложка — Градусы · Режиссёр</h3>
+  <div class="tabsx"><span class="cur">Найти в сети</span><span>Свой файл…</span><span>По ссылке</span></div>
+  <div class="row2"><label class="field"><span>Исполнитель</span><input type="text" value="Градусы"></label><label class="field"><span>Название</span><input type="text" value="Режиссёр"></label></div>
+  <button class="primary">Найти</button>
+  <div class="hits">
+   <div class="hit sel"><div class="img i1">1000×1000</div><span class="src">iTunes</span><div class="al">Режиссёр (Single)</div><div class="sz">1000×1000</div></div>
+   <div class="hit"><div class="img i2"></div><span class="src">Deezer</span><div class="al">Режиссёр</div><div class="sz">1000×1000</div></div>
+   <div class="hit"><div class="img i3"></div><span class="src">iTunes</span><div class="al">Лучшее 2010–2020</div><div class="sz">1000×1000</div></div>
+   <div class="hit"><div class="img i4"></div><span class="src">MusicBrainz</span><div class="al">Режиссёр</div><div class="sz">500×500</div></div>
+  </div>
+  <p class="small muted" style="margin:0">Показано 4 из 12 · MusicBrainz: ответил медленно, часть вариантов могла не попасть.</p>
+  <div class="actions"><button>Отмена</button><button class="primary">Поставить</button></div>
+ </div></div></div></div>
+
+ <div><p class="lbl">Телефон · Обложка…</p>
+ <div class="frame ph"><div class="dim"><div class="dlg">
+  <h3>Обложка</h3>
+  <div class="tabsx"><span class="cur">Найти</span><span>Файл</span><span>Ссылка</span></div>
+  <label class="field"><span>Исполнитель</span><input type="text" value="Queen"></label>
+  <label class="field"><span>Название</span><input type="text" value="Bohemian Rhapsody"></label>
+  <button class="primary" style="width:100%">Найти</button>
+  <div class="hits"><div class="hit sel"><div class="img i5"></div><span class="src">Deezer</span><div class="al">A Night at the Opera</div><div class="sz">1000×1000</div></div><div class="hit"><div class="img i6"></div><span class="src">iTunes</span><div class="al">Greatest Hits</div><div class="sz">1000×1000</div></div></div>
+  <div class="actions"><button style="flex:1">Отмена</button><button class="primary" style="flex:1">Поставить</button></div>
+ </div></div></div></div>
+</div>
+
+<div class="pair" style="margin-top:16px">
+ <div><p class="lbl">Состояния диалога обложки</p>
+ <div class="frame pc" style="width:520px"><div class="dim"><div class="dlg">
+  <h3>Обложка — «Свой файл…» и «По ссылке»</h3>
+  <div class="tabsx"><span>Найти в сети</span><span class="cur">Свой файл…</span><span>По ссылке</span></div>
+  <div class="drop">Выберите jpg, png или webp до 10 МБ<br><button class="sm" style="margin-top:8px">Выбрать файл…</button></div>
+  <label class="field"><span>…или адрес картинки</span><input type="text" class="invalid" value="http://192.168.1.5/cover.jpg"><div class="field-error">Адрес указывает в домашнюю сеть</div></label>
+  <div class="banner warn">Ничего не нашлось — уточните название или загрузите свой файл.</div>
+  <div class="banner err">Сервисы обложек недоступны, попробуйте позже.</div>
+ </div></div></div></div>
+
+ <div><p class="lbl">ПК · Фон…</p>
+ <div class="frame pc" style="width:520px"><div class="dim"><div class="dlg">
+  <h3>Фон — Градусы · Режиссёр</h3>
+  <p class="small muted" style="margin-top:0">Картинка пишется в <code>#BACKGROUND</code> и показывается за текстом в UltraStar и в шапке песни.</p>
+  <div class="mrow" style="margin-bottom:8px"><div class="bgprev" style="width:160px">Сейчас</div><span class="small muted">Градусы - Режиссёр [BG].jpg<br>1920×1080</span></div>
+  <div class="tabsx"><span class="cur">Свой файл…</span><span>По ссылке</span></div>
+  <div class="drop">Выберите jpg, png или webp<br><button class="sm" style="margin-top:8px">Выбрать файл…</button></div>
+  <div class="field-error">Это не картинка (нужны jpg, png или webp)</div>
+  <div class="actions" style="justify-content:space-between"><button class="danger">Убрать фон</button><span style="display:flex;gap:8px"><button>Отмена</button><button class="primary">Поставить</button></span></div>
+ </div></div></div></div>
+</div>
+</div>
+
+<!-- ============ 4 ============ -->
+<div class="shot" id="s4">
+<h2>4. «Проверка библиотеки» (#check)</h2>
+<p class="cap">Открывается из меню «…» раздела «Песни» → «Проверить библиотеку». Результат последней проверки хранится и показывается при входе. Каждая находка — со своей кнопкой исправления.</p>
+<div class="pair">
+ <div><p class="lbl">ПК · результат</p>
+ <div class="frame pc"><div data-head="Песни"></div>
+ <main>
+  <a class="back">← Песни</a>
+  <h2 class="h" style="margin-top:0">Проверка библиотеки</h2>
+  <div class="card">
+   <div class="stores-pick"><label class="check"><input type="checkbox" checked> Локальное хранилище</label><label class="check"><input type="checkbox" checked> Raspberry Pi</label><label class="check"><input type="checkbox"> Яндекс Диск</label></div>
+   <div class="actions" style="align-items:center"><button class="primary">Проверить</button><span class="muted small">Последняя проверка: сегодня 14:02 · просмотрено 318 песен</span></div>
+   <div class="banner warn" style="margin-bottom:0">Хранилище «Яндекс Диск» недоступно — пропущено.</div>
+  </div>
+
+  <details class="card grp" open><summary>Без звука <span class="n">3</span></summary>
+   <div class="find"><div><b>Кино — Группа крови</b> <span class="muted">· Pi</span><div class="why">в папке нет аудиофайла из #MP3</div></div><div class="fx"><button class="sm">Взять из копии в «ПК»</button><button class="sm danger">В корзину</button></div></div>
+   <div class="find"><div><b>Король и Шут — Лесник</b> <span class="muted">· ПК</span><div class="why">#VIDEO — ссылка на YouTube</div></div><div class="fx"><button class="sm">Скачать звук по ссылке #VIDEO</button><button class="sm danger">В корзину</button></div></div>
+   <div class="find fixed"><div><b>Nirvana — Smells Like Teen Spirit</b> <span class="muted">· ПК</span><div class="why">звук взят из копии в «Pi»</div></div><div class="fx"><span class="st">Исправление поставлено</span></div></div>
+  </details>
+  <details class="card grp" open><summary>Без обложки <span class="n">12</span></summary>
+   <div class="find"><div><b>Алла Пугачёва — Арлекино</b> <span class="muted">· ПК</span></div><div class="fx"><button class="sm">Найти обложку…</button></div></div>
+   <div class="find"><div><b>Queen — Don't Stop Me Now</b> <span class="muted">· ПК</span></div><div class="fx"><button class="sm">Найти обложку…</button></div></div>
+   <div class="find"><div class="muted small">…и ещё 10 <u>показать все</u></div><div></div></div>
+  </details>
+  <details class="card grp" open><summary>Битая ссылка #VIDEO <span class="n">2</span></summary>
+   <div class="find"><div><b>Градусы — Режиссёр</b> <span class="muted">· ПК</span><div class="why">файла «Градусы - Режиссёр.mp4» нет в папке</div></div><div class="fx"><button class="sm">Убрать ссылку</button></div></div>
+  </details>
+  <details class="card grp" open><summary>Кодировка <span class="n">1</span></summary>
+   <div class="find"><div><b>Ленинград — Экспонат</b> <span class="muted">· Pi</span><div class="diff"><s>Ð›ÐµÐ½Ð¸Ð½Ð³Ñ€Ð°Ð´ - Ð­ÐºÑÐ¿Ð¾Ð½Ð°Ñ‚</s> → <b>Ленинград - Экспонат</b></div><div class="why">.txt прочитан как latin-1: найдена UTF-8 в cp1251</div></div><div class="fx"><button class="sm">Исправить кодировку</button></div></div>
+  </details>
+  <details class="card grp" open><summary>Дубли <span class="n">2 пары</span></summary>
+   <div class="find"><div><b>Агата Кристи — Ночной Сталкер</b> <span class="muted">· Pi</span><div class="why">совпадает с «Агата Кристи — Ночной сталкер»</div></div><div class="fx"><button class="sm">Оставить эту</button></div></div>
+   <div class="find"><div><b>Агата Кристи — Ночной сталкер</b> <span class="muted">· Pi</span></div><div class="fx"><button class="sm">Оставить эту</button></div></div>
+  </details>
+  <details class="card grp" open><summary>Разошлись копии <span class="n">4</span></summary>
+   <div class="find"><div><b>Eagles — Hotel California</b><div class="why">«ПК»: 5 файлов · «Pi»: 4 файла — нет [Instrumental].mp3</div></div><div class="fx"><button class="sm">Сделать как в «ПК»</button><button class="sm">Сделать как в «Pi»</button></div></div>
+   <div class="find fixed"><div><b>Queen — Bohemian Rhapsody</b><div class="why">размер .txt: 6 КБ → 7 КБ</div></div><div class="fx"><span class="st">Исправлено</span></div></div>
+  </details>
+ </main></div></div>
+
+ <div><p class="lbl">Телефон · идёт проверка</p>
+ <div class="frame ph"><div data-head="Песни"></div>
+ <main>
+  <a class="back">← Песни</a>
+  <h2 class="h" style="margin-top:0">Проверка библиотеки</h2>
+  <div class="card">
+   <div class="stores-pick" style="flex-direction:column;gap:0"><label class="check"><input type="checkbox" checked> Локальное хранилище</label><label class="check"><input type="checkbox" checked> Raspberry Pi</label></div>
+   <div class="actions"><button class="primary off" style="flex:1">Проверяется…</button></div>
+   <div class="progress"><div style="width:62%"></div></div>
+   <div class="small muted">Raspberry Pi · 62% · найдено 9</div>
+  </div>
+  <details class="card grp" open><summary>Кодировка <span class="n">1</span></summary>
+   <div class="find"><div><b>Ленинград — Экспонат</b><div class="diff"><s>Ð›ÐµÐ½Ð¸Ð½Ð³Ñ€Ð°Ð´</s> → <b>Ленинград</b></div></div><div class="fx"><button class="sm">Исправить кодировку</button></div></div>
+  </details>
+  <details class="card grp" open><summary>Без звука <span class="n">3</span></summary>
+   <div class="find"><div><b>Кино — Группа крови</b><div class="why">Pi · нет аудиофайла</div></div><div class="fx"><button class="sm">Взять из копии в «ПК»</button><button class="sm danger">В корзину</button></div></div>
+  </details>
+ </main></div>
+ <p class="lbl" style="margin-top:14px">Пустое состояние</p>
+ <div class="frame ph"><main><div class="card empty" style="text-align:center;padding:24px 12px"><div style="font-size:2rem">✓</div><p style="margin:6px 0"><b>Проблем не найдено</b></p><p class="muted small" style="margin:0 0 12px">Проверено 318 песен · сегодня 14:02</p><button class="primary">Проверить снова</button></div>
+ <div class="card" style="text-align:center"><p class="muted small" style="margin:0 0 8px">До первого запуска: проверка найдёт песни без звука и обложки, битые ссылки, кодировку, дубли и разошедшиеся копии.</p><button class="primary">Проверить</button></div></main></div>
+ </div>
+</div>
+</div>
+
+<!-- ============ 5 ============ -->
+<div class="shot" id="s5">
+<h2>5. «Очередь»: порядок и отложенный запуск</h2>
+<p class="cap">Стрелки и «Первым» доступны только у ожидающих. «Отложить…» ставит время старта; пока оно не пришло, задание не берётся, но его можно отменить.</p>
+<div class="pair">
+ <div><p class="lbl">ПК</p>
+ <div class="frame pc"><div data-head="Очередь"></div>
+ <main>
+  <div class="view-head"><h2 class="h">Очередь</h2><button>Отложить все ожидающие…</button></div>
+  <div class="card"><div class="job-head"><span class="job-title">Генерация · Король и Шут — Кукла колдуна</span><span class="state running">Идёт</span></div><div class="job-meta"><span>Распознавание вокала</span><span>#241</span></div><div class="progress"><div style="width:48%"></div></div></div>
+
+  <div class="card qcard"><div class="job-head"><span class="job-title">Генерация · Queen — Bohemian Rhapsody</span><span class="state">Ожидает · 1-е</span></div><div class="job-meta"><span>#242</span><span>создано 14:21</span></div>
+   <div class="qact"><span class="pos"><button title="Выше" class="off">↑</button><button title="Ниже">↓</button></span><button>Первым</button><button>Отложить…</button><button class="danger">Отменить</button></div></div>
+  <div class="card qcard"><div class="job-head"><span class="job-title">Минусовка · Eagles — Hotel California</span><span class="state">Ожидает · 2-е</span></div><div class="job-meta"><span>#243</span></div>
+   <div class="qact"><span class="pos"><button title="Выше">↑</button><button title="Ниже">↓</button></span><button>Первым</button><button>Отложить…</button><button class="danger">Отменить</button></div></div>
+  <div class="card qcard"><div class="job-head"><span class="job-title">Генерация · Кино — Группа крови</span><span class="state later">Отложено</span></div><div class="job-meta"><span>#244</span><span><b>Начнётся сегодня в 01:00</b></span></div>
+   <div class="qact"><button class="primary">Запустить сейчас</button><button>Изменить время…</button><button class="danger">Отменить</button></div></div>
+  <div class="card qcard"><div class="job-head"><span class="job-title">Видео · Градусы — Режиссёр</span><span class="state later">Отложено</span></div><div class="job-meta"><span>#245</span><span><b>Начнётся завтра в 14:30</b></span></div>
+   <div class="qact"><button class="primary">Запустить сейчас</button><button>Изменить время…</button><button class="danger">Отменить</button></div></div>
+ </main></div>
+
+ <p class="lbl" style="margin-top:14px">Диалог «Отложить»</p>
+ <div class="frame pc" style="width:560px"><div class="dim"><div class="dlg">
+  <h3>Отложить «Queen — Bohemian Rhapsody»</h3>
+  <div class="radio-row" style="flex-direction:column">
+   <label class="sel"><input type="radio" checked> Сегодня ночью (01:00)</label>
+   <label><input type="radio"> Своё время <input type="time" value="22:30" style="width:120px;min-height:36px;margin-left:auto"></label>
+  </div>
+  <label class="check"><input type="checkbox"> Отложить все ожидающие (3)</label>
+  <div class="field-error" style="display:none">Время уже прошло</div>
+  <div class="actions"><button>Отмена</button><button class="primary">Отложить</button></div>
+ </div></div></div>
+ </div>
+
+ <div><p class="lbl">Телефон</p>
+ <div class="frame ph"><div data-head="Очередь"></div>
+ <main>
+  <h2 class="h">Очередь</h2>
+  <button style="width:100%">Отложить все ожидающие…</button>
+  <div class="card qcard"><div class="job-head"><span class="job-title">Генерация · Queen — Bohemian Rhapsody</span><span class="state">1-е</span></div><div class="job-meta"><span>#242</span></div>
+   <div class="qact"><span class="pos"><button class="off">↑</button><button>↓</button></span><button>Первым</button><button>Отложить…</button></div></div>
+  <div class="card qcard"><div class="job-head"><span class="job-title">Генерация · Кино — Группа крови</span><span class="state later">Отложено</span></div><div class="job-meta"><b>Начнётся сегодня в 01:00</b></div>
+   <div class="qact"><button class="primary" style="flex:1">Запустить сейчас</button><button>…</button></div></div>
+ </main></div>
+ <p class="lbl" style="margin-top:14px">Диалог «Отложить»</p>
+ <div class="frame ph"><div class="dim"><div class="dlg"><h3>Отложить</h3>
+  <div class="radio-row" style="flex-direction:column"><label class="sel"><input type="radio" checked> Сегодня ночью (01:00)</label><label><input type="radio"> Своё время <input type="time" value="22:30" style="width:110px;min-height:36px;margin-left:auto"></label></div>
+  <label class="check"><input type="checkbox" checked> Все ожидающие (3)</label>
+  <div class="actions"><button style="flex:1">Отмена</button><button class="primary" style="flex:1">Отложить</button></div></div></div></div>
+ </div>
+</div>
+</div>
+
+<!-- ============ 6 ============ -->
+<div class="shot" id="s6">
+<h2>6. «Прогон» (#play)</h2>
+<p class="cap">Тёмный полноэкранный вид поверх фона песни (размытый #BACKGROUND). Сверху — дорожка нот по высоте, ноты бегут к вертикальной линии «сейчас» (в макете сдвиг слева направо заменён статичной картинкой); спетые слоги жёлтые. Ниже — крупно текущая строка, мельче следующая. Микрофона нет.</p>
+<div class="pair">
+ <div><p class="lbl">ПК · соло</p>
+ <div class="frame pc dark"><div class="play-view" style="min-height:560px">
+  <div class="ptop"><button>← Назад</button><div class="tt"><b>Режиссёр</b><span>Градусы</span></div><button>⛶</button></div>
+  <div class="lane" id="lane1"></div>
+  <div class="lyr"><div class="cur"><span class="s">Здесь бе</span><span class="s">жит </span><span class="r">текст те</span><span class="r">кущей строки</span></div><div class="nx">А здесь — следующая строка песни</div></div>
+  <div class="ctl"><div class="row"><button class="big">❚❚</button><button>−5 с</button><button>+5 с</button><span class="tm">1:24</span><div class="seek"><i></i></div><span class="tm">3:41</span></div>
+   <div class="row"><label class="tg"><span class="tgl"></span> Мелодия нот</label><span class="small" style="opacity:.7">ноты звучат тем же синтезатором, что кнопка «♪» в редакторе</span></div></div>
+ </div></div>
+
+ <p class="lbl" style="margin-top:14px">ПК · дуэт: две дорожки двумя цветами</p>
+ <div class="frame pc dark"><div class="play-view" style="min-height:600px">
+  <div class="ptop"><button>← Назад</button><div class="tt"><b>Рюмка водки на столе</b><span>Григорий Лепс и Алёна Апина</span></div></div>
+  <div class="lane half" id="lane2a"><span class="sg sg1">Певец 1 · Григорий</span></div>
+  <div class="lane half" id="lane2b" style="margin-top:6px"><span class="sg sg2">Певец 2 · Алёна</span></div>
+  <div class="lyr duet"><div class="c1"><div class="who" style="color:#9db8ff">Григорий</div><div class="cur"><span class="s">Строка пер</span><span class="r">вого певца</span></div></div><div class="c2"><div class="who" style="color:#ff9cca">Алёна</div><div class="cur"><span class="r" style="opacity:.55">Строка второго певца</span></div></div></div>
+  <div class="ctl"><div class="row"><button class="big">❚❚</button><button>−5 с</button><button>+5 с</button><span class="tm">0:52</span><div class="seek"><i style="width:22%"></i></div><span class="tm">4:06</span></div><div class="row"><label class="tg"><span class="tgl offx"></span> Мелодия нот</label></div></div>
+ </div></div></div>
+
+ <div><p class="lbl">Телефон</p>
+ <div class="frame ph dark"><div class="play-view">
+  <div class="ptop"><button>←</button><div class="tt"><b>Hotel California</b><span>Eagles</span></div></div>
+  <div class="lane" id="lane3"></div>
+  <div class="lyr"><div class="cur"><span class="s">Текст теку</span><span class="r">щей строки</span></div><div class="nx">Следующая строка</div></div>
+  <div class="ctl"><div class="row"><span class="tm">1:24</span><div class="seek"><i></i></div><span class="tm">6:30</span></div>
+   <div class="row" style="justify-content:space-between"><button>−5 с</button><button class="big">❚❚</button><button>+5 с</button></div>
+   <div class="row"><label class="tg"><span class="tgl offx"></span> Мелодия нот</label></div></div>
+ </div>
+ <p class="lbl" style="margin-top:14px">Нельзя запустить</p>
+ <div class="frame ph"><main><a class="back">← Назад</a><div class="banner warn">Прогон недоступен: у песни нет #BPM — не из чего построить ноты. Откройте «Редактор нот» или переимпортируйте песню.</div></main></div>
+ </div></div>
+</div>
+</div>
+
+<!-- ============ 7 ============ -->
+<div class="shot" id="s7">
+<h2>7. «Редактор нот»: подозрительные места и «♪»</h2>
+<p class="cap">Фрагмент панели инструментов и дорожки. Жёлтым подсвечены ноты короче 60 мс, длиннее 5 с, скачок больше октавы и строки, не совпавшие с исходным текстом. Подсказка — по наведению или выбору.</p>
+<div class="frame pc ne"><div class="ne-bar">
+ <button>▶ Играть</button><button>♪</button><span class="sep"></span><button>✂ Разрезать</button><button>⛓ Слить</button><button>↵ Строка</button><button>Строки как в тексте</button><span class="sep"></span>
+ <button class="sus">Подозрительных: 5 ▸</button><label class="check" style="min-height:40px"><input type="checkbox" checked> подсветка</label><span class="sp"></span><button class="primary">Сохранить</button>
+</div>
+<div class="ne-lane" id="ne"><div class="tip" style="left:480px;top:20px">Нота короче 60 мс (40 мс) — возможно, лишняя</div></div>
+<div class="legend"><span><i style="background:var(--accent)"></i>обычная</span><span><i style="background:#f5c518"></i>подозрительная</span><span>Клавиши: <b>!</b> — к следующей · <b>P</b> — проиграть высотой · <b>N</b> — новая нота</span></div>
+</div>
+<div class="pair" style="margin-top:12px">
+ <div class="frame ph ne"><div class="ne-bar"><button>▶</button><button>♪</button><button>✂</button><button class="sus" style="flex:1">Подозрительных: 5 ▸</button></div><div class="ne-lane" id="ne2" style="height:150px"></div></div>
+ <div class="card" style="max-width:520px"><h3>Причины в подсказке</h3><div class="small" style="display:grid;gap:4px"><div>• «Нота короче 60 мс (40 мс)»</div><div>• «Нота длиннее 5 с (6,2 с)»</div><div>• «Скачок на 14 полутонов от предыдущей ноты»</div><div>• «Строка 7 не совпала с исходным текстом»</div><div class="muted">У дуэта и без исходного текста проверка строк не работает — сверху пояснение. Ноты F/R по высоте не проверяются.</div></div></div>
+</div>
+</div>
+
+<!-- ============ 8 ============ -->
+<div class="shot" id="s8">
+<h2>8. «Настройки»: уведомления, зеркала, резервная копия</h2>
+<p class="cap">Три новые карточки в конце раздела. Токен бота — поле пароля, назад не возвращается.</p>
+<div class="pair">
+ <div><p class="lbl">ПК</p>
+ <div class="frame pc"><div data-head="Настройки"></div>
+ <main>
+  <div class="card"><h3>Уведомления</h3>
+   <p class="muted small" style="margin-top:0">Telegram работает с любого устройства. Сообщение приходит, когда задание готово или упало.</p>
+   <div class="row2">
+    <label class="field"><span>Токен бота</span><input type="password" value="••••••••••••••••" placeholder="123456:ABC…"><div class="hint">сохранён, нового ввода не требуется</div></label>
+    <label class="field"><span>Chat id</span><div style="display:flex;gap:8px"><input type="text" value="248019337"><button>Найти чат</button></div><div class="hint">сначала напишите боту любое сообщение</div></label>
+   </div>
+   <div class="radio-row"><label class="check" style="padding:0 12px;border:1px solid var(--border);border-radius:8px"><input type="checkbox" checked> Готово</label><label class="check" style="padding:0 12px;border:1px solid var(--border);border-radius:8px"><input type="checkbox" checked> Сбой</label><label class="check" style="padding:0 12px;border:1px solid var(--border);border-radius:8px"><input type="checkbox"> Очередь опустела</label></div>
+   <div class="actions" style="align-items:center"><button>Проверить</button><button class="primary">Сохранить</button><span class="test-ok">✓ Тестовое сообщение отправлено</span></div>
+   <hr style="border:0;border-top:1px solid var(--border);margin:14px 0">
+   <h3 style="font-size:1rem">Уведомления в этом браузере</h3>
+   <label class="check" style="opacity:.55"><input type="checkbox" disabled> Показывать, пока вкладка открыта</label>
+   <div class="banner warn" style="margin:4px 0 0">Браузер разрешает уведомления только на localhost или https — используйте Telegram.</div>
+  </div>
+
+  <div class="card"><h3>Зеркала</h3>
+   <p class="muted small" style="margin-top:0">Зеркало добавляет новые песни и обновляет изменённые. Само ничего не удаляет.</p>
+   <div class="card" style="margin:0"><div class="job-head"><span class="job-title">Локальное хранилище → Raspberry Pi</span><label class="check" style="min-height:32px"><input type="checkbox" checked> включено</label></div>
+    <div class="small muted">Последний прогон: сегодня 14:30 — добавлено 3, обновлено 1, только в цели 2 <u>▸</u></div>
+    <div class="mir-list"><div><span>Звери — Районы-кварталы</span><button class="sm danger">Убрать в корзину</button></div><div><span>Pink Floyd — Wish You Were Here</span><button class="sm danger">Убрать в корзину</button></div></div>
+    <div class="actions"><button class="primary">Синхронизировать сейчас</button><button>Убрать зеркало</button></div>
+   </div>
+   <div class="card" style="margin:8px 0 0"><div class="job-head"><span class="job-title">Локальное хранилище → Яндекс Диск</span><label class="check" style="min-height:32px"><input type="checkbox" checked> включено</label></div>
+    <div class="small" style="color:var(--warn)">Ждёт хранилище «Яндекс Диск»</div><div class="small muted">Прошлый прогон: вчера 23:10 — добавлено 0, обновлено 0, только в цели 0</div></div>
+   <div class="actions"><button>+ Зеркало</button></div>
+   <div class="row2" style="margin-top:8px"><label class="field"><span>Откуда</span><select><option>Локальное хранилище</option></select></label><label class="field"><span>Куда</span><select><option>Raspberry Pi</option></select><div class="field-error">Хранилище не может быть зеркалом самого себя</div></label></div>
+  </div>
+
+  <div class="card"><h3>Резервная копия</h3>
+   <p class="muted small" style="margin-top:0">Теги со связями, хранилища, основная цель, логин usdb, уведомления и зеркала — одним файлом. Пароли и токены в файл не попадают.</p>
+   <div class="actions" style="margin-top:0"><button>Скачать настройки</button><button>Загрузить…</button></div>
+   <div class="banner ok" style="margin-bottom:0"><b>karaoke-settings-2026-10-27.json — что изменится:</b>
+    <ul class="plan"><li>Будет добавлено: 3 тега, 1 хранилище</li><li>Теги песен: 41 связь</li><li>Нужен пароль: Pi</li><li>Ничего не удаляется</li></ul>
+    <div class="actions"><button class="primary">Применить</button><button>Отмена</button></div></div>
+  </div>
+ </main></div></div>
+
+ <div><p class="lbl">Телефон</p>
+ <div class="frame ph"><div data-head="Настройки"></div>
+ <main>
+  <div class="card"><h3>Уведомления</h3>
+   <label class="field"><span>Токен бота</span><input type="password" value="••••••••••••••••"></label>
+   <label class="field"><span>Chat id</span><input type="text" value="248019337"></label><button style="width:100%">Найти чат</button>
+   <label class="check"><input type="checkbox" checked> Готово</label><label class="check"><input type="checkbox" checked> Сбой</label><label class="check"><input type="checkbox"> Очередь опустела</label>
+   <div class="actions"><button style="flex:1">Проверить</button><button class="primary" style="flex:1">Сохранить</button></div>
+   <hr style="border:0;border-top:1px solid var(--border);margin:14px 0">
+   <h3 style="font-size:1rem">В этом браузере</h3>
+   <label class="check" style="opacity:.55"><input type="checkbox" disabled> Показывать уведомления</label>
+   <div class="banner warn" style="margin:4px 0 0">Только localhost или https — используйте Telegram.</div>
+  </div>
+  <div class="card"><h3>Зеркала</h3>
+   <div class="job-title">Локальное → Raspberry Pi</div><label class="check"><input type="checkbox" checked> включено</label>
+   <div class="small muted">Последний прогон: сегодня 14:30 — добавлено 3, обновлено 1, только в цели 2 ▸</div>
+   <div class="actions"><button class="primary" style="flex:1">Синхронизировать</button></div><div class="actions"><button style="flex:1">+ Зеркало</button></div>
+  </div>
+  <div class="card"><h3>Резервная копия</h3>
+   <div class="actions"><button style="flex:1">Скачать настройки</button><button style="flex:1">Загрузить…</button></div>
+   <div class="banner ok"><b>Будет добавлено: 3 тега, 1 хранилище</b><br>Нужен пароль: Pi</div>
+  </div>
+ </main></div></div>
+</div>
+</div>
+
+<script>
+const root=document.documentElement,btn=document.getElementById('theme');
+const dark=matchMedia('(prefers-color-scheme: dark)').matches;
+function setTheme(d){root.dataset.theme=d?'dark':'light';btn.textContent=d?'Светлая тема':'Тёмная тема'}
+setTheme(dark);btn.onclick=()=>setTheme(root.dataset.theme!=='dark');
+/* шапка приложения */
+document.querySelectorAll('[data-head]').forEach(h=>{
+ const cur=h.dataset.head,tabs=['Очередь','Импорт','Песни','Корзина','Настройки'];
+ h.className='top';
+ h.innerHTML='<div class="top-inner"><div class="brand"><h1>Караоке</h1><span class="status">GPU: <span class="ok">GTX 1080 ✓</span> · /output <span class="ok">✓</span></span></div><nav class="tabs">'+
+ tabs.map(t=>'<a class="'+(t===cur?'cur':'')+'">'+t+(t==='Очередь'?'<span class="badge-count">4</span>':'')+'</a>').join('')+'</nav></div>';
+});
+/* дорожки прогона: [старт%, длина%, высота 0..1, спето] */
+function lane(id,notes,cls,nowPct){
+ const el=document.getElementById(id);if(!el)return;
+ for(let i=0;i<5;i++){const g=document.createElement('div');g.className='grid';g.style.top=(i*25)+'%';el.appendChild(g)}
+ notes.forEach(([s,l,p,d])=>{const n=document.createElement('div');n.className='nt'+(d?' done':'')+(cls?' '+cls:'');n.style.left=s+'%';n.style.width=l+'%';n.style.top=(8+(1-p)*80)+'%';el.appendChild(n)});
+ const now=document.createElement('div');now.className='now';now.style.left=nowPct+'%';el.appendChild(now);
+}
+const A=[[6,5,.45,1],[12,4,.5,1],[17,6,.62,1],[24,4,.7,1],[30,5,.55,1],[40,6,.48,0],[47,4,.66,0],[52,5,.74,0],[59,7,.6,0],[68,4,.5,0],[74,6,.42,0],[82,5,.58,0],[89,6,.7,0]];
+lane('lane1',A.map((n,i)=>[n[0],n[1],n[2],i<5||i===5?1:0]).map((n,i)=>{if(i===5){n[3]=0}return n}),'',36);
+const B1=[[8,7,.7,1],[18,6,.55,1],[30,8,.62,0],[44,6,.5,0],[56,7,.66,0],[70,6,.45,0],[82,8,.6,0]];
+const B2=[[26,5,.4,0],[38,6,.52,0],[50,5,.6,0],[63,7,.45,0],[76,5,.55,0],[88,6,.5,0]];
+lane('lane2a',B1,'',30);lane('lane2b',B2,'p2',30);
+lane('lane3',A.slice(0,9),'',36);
+/* редактор нот */
+function ne(id,w){
+ const el=document.getElementById(id);if(!el)return;
+ for(let i=0;i<7;i++){const g=document.createElement('div');g.className='grid';g.style.top=(i*14.3)+'%';el.appendChild(g)}
+ const N=[[3,10,.4,''],[15,9,.5,''],[26,12,.6,''],[40,.8,.55,'suspect'],[43,9,.52,''],[54,5,.9,'suspect'],[62,10,.38,''],[75,23,.5,'suspect'],[3,1,0,'x']].slice(0,8);
+ N.forEach(([s,l,p,c])=>{const n=document.createElement('div');n.className='ne-note '+c+(s===15?' sel':'');n.style.left=s+'%';n.style.width=l+'%';n.style.top=(10+(1-p)*75)+'%';el.appendChild(n)});
+}
+ne('ne');ne('ne2');
+</script>
+</body>
+</html>
