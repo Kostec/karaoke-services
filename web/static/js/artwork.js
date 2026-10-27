@@ -164,7 +164,9 @@ async function openArtworkDialog(song, env, kind) {
     ? [{ id: 'search', label: 'Найти в сети' }, { id: 'file', label: 'Свой файл…' }, { id: 'url', label: 'По ссылке' }]
     : [{ id: 'file', label: 'Свой файл…' }, { id: 'url', label: 'По ссылке' }];
   const submit = h('button', { type: 'button', class: 'primary' }, 'Поставить');
-  const t = tabs(list, () => syncSubmit());
+  // tabs() сразу выбирает первую вкладку и зовёт onChange — до присваивания t и search
+  let ready = false;
+  const t = tabs(list, () => { if (ready) syncSubmit(); });
   const search = isCover ? coverSearch({ artist: song.artist, title: song.title }, (hit, now) => {
     syncSubmit();
     if (hit && now) submit.click();
@@ -191,6 +193,7 @@ async function openArtworkDialog(song, env, kind) {
   function syncSubmit() {
     submit.disabled = t.current() === 'search' && !search?.picked();
   }
+  ready = true;
   syncSubmit();
   if (search) search.run();
 
