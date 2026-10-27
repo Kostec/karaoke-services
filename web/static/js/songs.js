@@ -243,6 +243,7 @@ function sectionMenuItems() {
     { label: `Копировать показанные (${shown.length})…`, disabled: copyOff,
       onSelect: () => openCopyDialog(shown, env(), { bulk: true }) },
     { label: 'Мои теги…', onSelect: () => openTagsManager({ onChanged: reloadVisible }) },
+    { label: 'Проверить библиотеку', href: '#check' },
   ];
 }
 
