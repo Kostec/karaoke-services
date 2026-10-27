@@ -17,7 +17,7 @@ from typing import Callable
 from karaoke_core import naming
 from karaoke_core.db import Job
 
-from . import notify
+from . import mirror, notify
 from .base import JobCancelled, JobContext, JobFailed, remove_tree
 from .handlers import HANDLERS, Handler
 
@@ -164,12 +164,25 @@ def run_forever(ctx: JobContext | None = None, *, gpu_check: Callable[[], dict] 
     return 0
 
 
+def _schedule_mirrors(ctx: JobContext) -> None:
+    """Планировщик зеркал (истории 44–48); сбой не роняет цикл очереди."""
+    try:
+        for job in mirror.schedule_mirrors(ctx):
+            print(f"worker: зеркало — задание #{job.id}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"worker: планировщик зеркал: {e}", flush=True)
+
+
 def _loop(ctx: JobContext, gpu_ok: bool, gpu_check, poll: float, until) -> None:
     last_gpu_check = time.monotonic()
+    last_mirror_check: float | None = None
     while until is None or not until():
         if not gpu_ok and time.monotonic() - last_gpu_check > GPU_RECHECK_S:
             gpu_ok = _check_gpu(ctx, gpu_check)
             last_gpu_check = time.monotonic()
+        if last_mirror_check is None or time.monotonic() - last_mirror_check >= mirror.MIRROR_CHECK_S:
+            _schedule_mirrors(ctx)
+            last_mirror_check = time.monotonic()
         job = _claim(ctx, gpu_ok)
         if job is None:
             time.sleep(poll)

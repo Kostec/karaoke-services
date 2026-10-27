@@ -1,19 +1,23 @@
 // Раздел «Настройки»: «Куда выкладывать» — список хранилищ (локальное, SMB, папка ПК, Яндекс Диск,
 // WebDAV, Google Диск) с проверкой и основной целью; учётка usdb; ключ доступа Яндекс Музыки
 // (OAuth-токен аккаунта — сервис не спрашивает логин и пароль Яндекса); «Уведомления» — Telegram-бот
-// (токен назад не отдаётся) и уведомления в этом браузере.
+// (токен назад не отдаётся) и уведомления в этом браузере; «Зеркала» — одно хранилище копией другого.
 
-import { api, request } from './api.js';
+import { api, request, getDefaults } from './api.js';
 import { h, clear, toast, field, confirmDialog } from './ui.js';
 import { targetBody, savedBody, formKind, fieldTarget, needsLocalHint, sameAccount } from './targets-logic.js';
 import { yandexSaveAction, YM_REMOVE_CONFIRM, YM_KEPT, YM_EMPTY } from './link-logic.js';
 import { notifyEnabled, notifyState, setNotifyEnabled } from './notify.js';
+import { mirrorError, mirrorSummary, mirrorStatus, onlyInTarget, MIRROR_TRASH_HINT } from './mirror-logic.js';
+import { bulkDelete } from './song-actions.js';
 
 let root, hooks, built = false;
 const T = {}; // карточка «Куда выкладывать»: элементы, список, форма
 let u = {}, usdbCurrent = null; // карточка «usdb»
 let y = {}, ymCurrent = null; // карточка «Яндекс Музыка»: {has_token}
 let n = {}, tgCurrent = null; // карточка «Уведомления»: {has_token, chat_id, on_done, on_failed, on_queue_empty}
+// карточка «Зеркала»: элементы, список, раскрытые «только в цели», убранные в корзину, опрос
+const M = { mirrors: [], open: new Set(), removed: new Set(), timer: null, visible: false, trashDays: null };
 
 export function mount(section, ctx) {
   root = section;
@@ -22,6 +26,8 @@ export function mount(section, ctx) {
 
 export async function show() {
   if (!built) build();
+  M.visible = true;
+  getDefaults().then((d) => { M.trashDays = d.trash_days; }).catch(() => {});
   await loadTargets();
   try {
     usdbCurrent = await api.usdbAccount();
@@ -46,12 +52,14 @@ export async function show() {
 
 export function hide() {
   stopGooglePoll();
+  M.visible = false;
+  clearTimeout(M.timer);
 }
 
 function build() {
   built = true;
   clear(root).append(h('div', { class: 'view-head' }, h('h2', {}, 'Настройки')),
-    buildTargets(), buildUsdb(), buildYandex(), buildNotify());
+    buildTargets(), buildUsdb(), buildYandex(), buildNotify(), buildMirrors());
 }
 
 // ---------------------------------------------------------------- usdb
@@ -367,6 +375,183 @@ async function toggleBrowserNotify() {
 
 // ---------------------------------------------------------------- Куда выкладывать
 
+// ---------------------------------------------------------------- зеркала (library-tools 09)
+
+const MIRROR_POLL_MS = 3000;
+
+function buildMirrors() {
+  M.list = h('div');
+  M.loadErr = h('div', { class: 'banner err', hidden: true });
+  M.add = h('button', { type: 'button', onclick: openMirrorForm }, '+ Зеркало');
+  M.from = h('select', { name: 'mirror-from', onchange: checkMirrorForm });
+  M.to = h('select', { name: 'mirror-to', onchange: checkMirrorForm });
+  M.fromErr = h('div', { class: 'field-error', hidden: true });
+  M.toErr = h('div', { class: 'field-error', hidden: true });
+  M.submit = h('button', { type: 'button', class: 'primary', onclick: submitMirror }, 'Добавить');
+  M.form = h('div', { hidden: true },
+    h('div', { class: 'mirror-form' },
+      h('div', {}, field('Откуда', M.from), M.fromErr),
+      h('div', {}, field('Куда', M.to), M.toErr)),
+    h('div', { class: 'actions' },
+      h('button', { type: 'button', onclick: closeMirrorForm }, 'Отмена'), M.submit));
+  return h('section', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Зеркала'),
+    h('p', { class: 'small muted', style: 'margin-top:0' },
+      'Зеркало добавляет новые песни и обновляет изменённые — раз в 30 минут и по кнопке. Само ничего не удаляет.'),
+    M.loadErr, M.list,
+    h('div', { class: 'actions' }, M.add),
+    M.form);
+}
+
+async function loadMirrors() {
+  clearTimeout(M.timer);
+  try {
+    M.mirrors = (await api.mirrors()).mirrors;
+    M.loadErr.hidden = true;
+  } catch (e) {
+    M.loadErr.textContent = `Не удалось загрузить зеркала: ${e.detail}`;
+    M.loadErr.hidden = false;
+    return;
+  }
+  renderMirrors();
+  // пока идёт синхронизация — обновлять состояние, пока раздел открыт
+  if (M.visible && M.mirrors.some((m) => m.job)) M.timer = setTimeout(loadMirrors, MIRROR_POLL_MS);
+}
+
+function renderMirrors() {
+  clear(M.list);
+  if (!M.mirrors.length) {
+    M.list.append(h('div', { class: 'small muted' }, 'Зеркал пока нет.'));
+    return;
+  }
+  for (const m of M.mirrors) M.list.append(mirrorCard(m));
+}
+
+function mirrorCard(m) {
+  const enabled = h('input', { type: 'checkbox', checked: m.enabled, disabled: m.missing,
+    onchange: (e) => toggleMirror(m, e.currentTarget) });
+  const status = mirrorStatus(m);
+  const only = onlyInTarget(m, M.removed);
+  const open = M.open.has(m.id) && only.length > 0;
+  const more = only.length ? h('button', {
+    type: 'button', class: 'mirror-more', 'aria-expanded': String(open),
+    title: open ? 'Скрыть песни только в цели' : 'Показать песни только в цели',
+    onclick: () => { if (open) M.open.delete(m.id); else M.open.add(m.id); renderMirrors(); },
+  }, open ? '▾' : '▸') : null;
+  const sync = h('button', { type: 'button', class: 'primary', disabled: Boolean(m.job) || m.missing,
+    onclick: (e) => runMirror(m, e.currentTarget) }, m.job ? 'Синхронизируется…' : 'Синхронизировать сейчас');
+  return h('div', { class: 'card mirror' },
+    h('div', { class: 'job-head' },
+      h('span', { class: 'job-title' }, `${m.from_name} → ${m.to_name}`),
+      h('label', { class: 'check' }, enabled, 'включено')),
+    status ? h('div', { class: `mirror-status ${status.kind}` }, status.text) : null,
+    h('div', { class: 'small muted' }, mirrorSummary(m), more),
+    open ? h('div', { class: 'small muted', style: 'margin-top:6px' }, MIRROR_TRASH_HINT) : null,
+    open ? h('div', { class: 'mir-list' }, only.map((s) => h('div', {},
+      h('span', {}, s.label),
+      h('button', { type: 'button', class: 'danger', onclick: () => trashOnlyInTarget(s) }, 'Убрать в корзину')))) : null,
+    h('div', { class: 'actions' }, sync,
+      h('button', { type: 'button', onclick: () => removeMirror(m) }, 'Убрать зеркало')));
+}
+
+async function toggleMirror(m, box) {
+  box.disabled = true;
+  try {
+    await api.saveMirror({ id: m.id, enabled: box.checked });
+    toast(box.checked ? 'Зеркало включено' : 'Зеркало выключено');
+  } catch (e) {
+    toast(e.detail, 'err');
+  }
+  await loadMirrors();
+}
+
+async function runMirror(m, btn) {
+  btn.disabled = true;
+  try {
+    await api.runMirror(m.id);
+    toast('Синхронизация поставлена в очередь');
+  } catch (e) {
+    toast(e.detail, 'err');
+  }
+  await loadMirrors();
+}
+
+async function removeMirror(m) {
+  const ok = await confirmDialog(`Убрать зеркало «${m.from_name} → ${m.to_name}»? Песни в хранилищах не трогаются.`,
+    'Убрать', { danger: true });
+  if (!ok) return;
+  try {
+    await api.deleteMirror(m.id);
+    toast('Зеркало убрано');
+  } catch (e) {
+    toast(e.detail, 'err');
+  }
+  await loadMirrors();
+}
+
+/** Песня есть только в цели: в корзину цели — только по кнопке, после подтверждения. */
+function trashOnlyInTarget(song) {
+  bulkDelete([song], {
+    trashDays: M.trashDays,
+    afterBulk: (res) => {
+      for (const id of res?.removed || []) M.removed.add(id);
+      renderMirrors();
+    },
+  });
+}
+
+function targetOptions(select, value) {
+  clear(select).append(h('option', { value: '' }, '— выберите —'),
+    ...(T.targets || []).map((t) => h('option', { value: t.id, selected: t.id === value }, t.name || t.label)));
+}
+
+function openMirrorForm() {
+  const targets = T.targets || [];
+  const from = targets[0]?.id || '';
+  const to = targets.find((t) => t.id !== from && !M.mirrors.some((m) =>
+    (m.from_target === from && m.to_target === t.id) || (m.from_target === t.id && m.to_target === from)))?.id || '';
+  targetOptions(M.from, from);
+  targetOptions(M.to, to);
+  M.form.hidden = false;
+  M.add.hidden = true;
+  checkMirrorForm();
+  M.from.focus();
+}
+
+function closeMirrorForm() {
+  M.form.hidden = true;
+  M.add.hidden = false;
+}
+
+function showMirrorError(err) {
+  for (const [name, el] of [['from_target', M.fromErr], ['to_target', M.toErr]]) {
+    el.textContent = err?.field === name ? err.text : '';
+    el.hidden = err?.field !== name;
+  }
+}
+
+function checkMirrorForm() {
+  const err = mirrorError(M.from.value, M.to.value, M.mirrors);
+  showMirrorError(err);
+  M.submit.disabled = Boolean(err);
+  return err;
+}
+
+async function submitMirror() {
+  if (checkMirrorForm()) return;
+  M.submit.disabled = true;
+  try {
+    await api.saveMirror({ from_target: M.from.value, to_target: M.to.value, enabled: true });
+    closeMirrorForm();
+    toast('Зеркало добавлено — первая синхронизация в ближайшую минуту');
+    await loadMirrors();
+  } catch (e) {
+    showMirrorError({ field: e.data?.field === 'from_target' ? 'from_target' : 'to_target', text: e.detail });
+  } finally {
+    M.submit.disabled = false;
+  }
+}
+
 const KINDS = {
   smb: 'SMB-шара',
   local: 'Папка ПК',
@@ -418,6 +603,7 @@ async function loadTargets() {
     T.roots = r.roots || { host: false, output: true };
     T.loadErr.hidden = true;
     renderTargets();
+    loadMirrors();
   } catch (e) {
     T.loadErr.textContent = `Не удалось загрузить хранилища: ${e.detail}`;
     T.loadErr.hidden = false;

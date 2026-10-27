@@ -14,6 +14,7 @@ from typing import Callable, Mapping
 from karaoke_core import musiclink, naming
 from karaoke_core.naming import match_key  # noqa: F401 — реэкспорт (ключ дубля песни)
 from karaoke_core.paths import DataPaths
+from karaoke_core.scan import library_item, scan_target
 from karaoke_core.http import Http
 from karaoke_core.db import (LOCAL_TARGET_ID, Jobs, Library, LibraryItem, Settings, Songs, Tags,
                              Target, connect, now)
@@ -251,14 +252,12 @@ class AppContext:
                 return  # удалили из настроек, пока ждало в очереди
             try:
                 storage = self.storage(target.id)
-                entries = storage.list_songs()
+                items = scan_target(storage, self.library, target.id, songs=self.songs)
             except StorageError as e:
                 state["error"] = str(e)
                 self.mark_output_error(e, target.id)
                 return
-            stamp = now()
-            items = [self.library_item(e, target.id, stamp) for e in entries]
-            self.library.replace_all(target.id, items)
+            stamp = items[0].scanned_at if items else now()
             state.update(scanned_at=stamp, error=None)
             self._probe.pop(target.id, None)
         finally:
@@ -267,8 +266,7 @@ class AppContext:
                     state.pop("running", None)
 
     def library_item(self, entry, target_id: str, stamp: str | None = None) -> LibraryItem:
-        own = self.songs.by_rel_dir(entry.rel_dir)
-        return entry.to_library_item(target_id, own.id if own else None, stamp or now())
+        return library_item(entry, target_id, self.songs, stamp)
 
     def refresh_song(self, rel_dir: str, target_id: str | None = None) -> LibraryItem | None:
         """Точечно обновить индекс одной папки хранилища после наших изменений."""
