@@ -1179,6 +1179,12 @@ class PublishHandler:
             publish_instrumental(ctx, job, src)
         elif src.type == "video":
             publish_video(ctx, job, src)
+        elif src.type == "audio":  # library-tools 08
+            from .audiofix import publish_audio
+            publish_audio(ctx, job, src)
+        elif src.type == "artwork":  # library-tools 07
+            from .artwork import publish_artwork
+            publish_artwork(ctx, job, src)
         else:
             raise JobFailed("input", f"Задание типа «{src.type}» нельзя выложить повторно")
 
@@ -1595,6 +1601,14 @@ def _prune_song_dir(ctx: JobContext, rel_dir: str) -> None:
             pass
 
 
+# library-tools 09 — зеркало: модуль берёт отсюда помощники, поэтому подключается в конце
+from .mirror import MirrorHandler  # noqa: E402
+# library-tools 08 — звук по ссылке #VIDEO и проверка библиотеки (модули берут помощники отсюда)
+from .audiofix import AudioHandler  # noqa: E402
+# library-tools 07 — обложка и фон (модуль берёт помощники отсюда внутри функций)
+from .artwork import ArtworkHandler  # noqa: E402
+from .libcheck import LibCheckHandler  # noqa: E402
+
 HANDLERS: dict[str, Handler] = {
     "generate": GenerateHandler(),
     "instrumental": InstrumentalHandler(),
@@ -1603,4 +1617,8 @@ HANDLERS: dict[str, Handler] = {
     "video": VideoHandler(),
     "copy": CopyHandler(),
     "rename": RenameHandler(),
+    "mirror": MirrorHandler(),  # library-tools 09
+    "artwork": ArtworkHandler(),  # library-tools 07
+    "audio": AudioHandler(),  # library-tools 08
+    "libcheck": LibCheckHandler(),  # library-tools 08
 }

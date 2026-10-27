@@ -182,12 +182,38 @@ export const api = {
   saveTelegram: (body) => request('PUT', '/api/settings/telegram', body),
   testTelegram: (body) => request('POST', '/api/settings/telegram/test', body),
   findTelegramChat: (body) => request('POST', '/api/settings/telegram/find-chat', body),
+  // library-tools 09: зеркала хранилищ → {mirrors:[{…, from_name, to_name, missing, job, waiting}]}
+  mirrors: () => request('GET', '/api/mirrors'),
+  /** Новое (без id) или правка ({id, enabled?, from_target?, to_target?}). */
+  saveMirror: ({ id, ...body }) => (id
+    ? request('PUT', `/api/mirrors/${encodeURIComponent(id)}`, body)
+    : request('POST', '/api/mirrors', body)),
+  deleteMirror: (id) => request('DELETE', `/api/mirrors/${encodeURIComponent(id)}`),
+  runMirror: (id) => request('POST', `/api/mirrors/${encodeURIComponent(id)}/run`),
   usdbSearch: ({ artist = '', title = '', language = 'Russian', start = 0 } = {}) =>
     request('GET', `/api/usdb/search?${new URLSearchParams({ artist, title, language, start: String(start) })}`),
 
   importInspect: (form) => request('POST', '/api/import/inspect', form),
   importJob: (form) => request('POST', '/api/jobs/import', form),
   linkInspect: (url) => request('POST', '/api/link/inspect', { url: String(url ?? '').trim() }),
+  // library-tools 08: проверка библиотеки и её исправления
+  /** Перекодировать .txt песни в UTF-8 (старая версия — в корзину) → карточка песни. */
+  fixEncoding: (id) => request('POST', `/api/songs/${encodeURIComponent(id)}/encoding`),
+  /** Звук по ссылке YouTube из #VIDEO → задание audio. */
+  audioFromVideo: (id) => request('POST', '/api/jobs/audio', { song_id: id }),
+  /** Запустить проверку (ids — хранилища; пусто — все) → задание libcheck. */
+  libraryCheck: (ids = null) => request('POST', '/api/library/check', { target_ids: ids && ids.length ? ids : null }),
+  /** Отчёт последней проверки ({findings: null} до первой) + job — идущая проверка. */
+  libraryReport: () => request('GET', '/api/library/check'),
+  // library-tools 07: обложка и фон
+  /** Обложка или фон: FormData {song_id, kind: cover|background, image | url | remove} → задание artwork. */
+  artwork: (songId, form) => {
+    if (!form.has('song_id')) form.append('song_id', songId);
+    return request('POST', '/api/jobs/artwork', form);
+  },
+  /** Варианты обложки iTunes/Deezer/MusicBrainz → {items:[{source, url, thumb, album, artist, title, width, height}], failed}. */
+  coverSearch: (artist, title) =>
+    request('GET', `/api/covers/search?${new URLSearchParams({ artist: artist || '', title: title || '' })}`),
 };
 
 // ---------------------------------------------------------------- общие помощники

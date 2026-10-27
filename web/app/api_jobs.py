@@ -367,6 +367,8 @@ RENAME_BUSY = "У песни есть незавершённые задания 
 
 # Задания, которые меняют папку песни (или создают её): пока они не завершены, переименовывать нельзя.
 BUSY_TYPES = ("generate", "instrumental", "import", "publish", "video", "copy", "rename")
+BUSY_TYPES += ("audio",)  # library-tools 08: звук по ссылке #VIDEO
+BUSY_TYPES += ("artwork",)  # library-tools 07: фон и обложка
 
 
 def _song_busy(ctx: AppContext, copies) -> bool:
@@ -635,6 +637,8 @@ def restart(job_id: int, request: Request):
         raise ApiError(409, "Перезапустить можно только завершённое задание")
     if job.type == "video":
         queue_duplicate(ctx, "video", song_id=job.song_id)
+    if job.type == "artwork":  # library-tools 07: вход (картинка) берётся из in/ родителя
+        queue_duplicate(ctx, "artwork", song_id=job.song_id)
     if job.type == "copy":  # ожидание хранилища начинается заново
         p = job.params
         return ctx.jobs.enqueue_copy(
@@ -649,6 +653,15 @@ def restart(job_id: int, request: Request):
             if (other.params.get("rel_dir"), other.params.get("target_id")) == (p.get("rel_dir"), p.get("target_id")):
                 raise ApiError(409, "Эта песня уже в очереди")
         return ctx.jobs.enqueue("rename", job, p, parent_id=job.id).to_dict()
+    if job.type == "mirror":  # library-tools 09: ожидание заново, дубль активного — 409
+        p = {k: v for k, v in job.params.items() if k not in ("retry_at", "wait_logged_at")}
+        if any(o.params.get("mirror_id") == p.get("mirror_id") for o in ctx.jobs.active("mirror")):
+            raise ApiError(409, "Зеркало уже синхронизируется")
+        return ctx.jobs.enqueue("mirror", job, p, parent_id=job.id).to_dict()
+    if job.type == "libcheck" and ctx.jobs.active("libcheck"):  # library-tools 08: одна проверка
+        raise ApiError(409, "Проверка уже идёт")
+    if job.type == "audio":  # library-tools 08: вход родителя (in/input.mp3) берётся по inputs.dir
+        queue_duplicate(ctx, "audio", song_id=job.song_id)
     if job.type != "generate":
         return ctx.jobs.enqueue(job.type, job, job.params, parent_id=job.id).to_dict()
     queue_duplicate(ctx, "generate", key=song_key(job.artist, job.title))

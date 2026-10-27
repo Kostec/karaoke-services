@@ -10,6 +10,10 @@ const LOG_MAX_LINES = 5000;
 const TYPE_LABEL = {
   generate: 'Генерация', instrumental: 'Минусовка', publish: 'Выкладка', import: 'Импорт', video: 'Видео',
   copy: 'Копирование', rename: 'Переименование',
+  mirror: 'Зеркало', // library-tools 09
+  // library-tools 08
+  audio: 'Звук по ссылке', libcheck: 'Проверка библиотеки',
+  artwork: 'Обложка / фон', // library-tools 07
 };
 const STATE_LABEL = {
   queued: 'В очереди', running: 'Идёт', publishing: 'Выкладка',

@@ -2,13 +2,14 @@
 // текст, сведения, хранилища, файлы.
 
 import { api, getDefaults } from './api.js';
-import { h, clear, fmtDate } from './ui.js';
+import { h, clear, fmtDate, toast } from './ui.js';
 import { menuButton, closeMenu } from './menu.js';
 import { soloPlayback, releasePlayers } from './player.js';
 import {
   songMenuItems, editorItems, makeInstrumental, openVideoDialog, openSongTagsDialog, downloadZip,
 } from './song-actions.js';
 import { tagChip } from './tags-ui.js';
+import { openCoverDialog, openBackgroundDialog } from './artwork.js';
 import { tagsById, songTagList } from './tags-logic.js';
 import { mediaRows, infoRows, fmtSize, lyricsPreview, browserCanPlay, blockSigs } from './song-page-logic.js';
 import { builtinTags, songHref } from './songs.js';
@@ -127,6 +128,8 @@ function makeEnv(details, targetsRes) {
 function render(details, tags, targetsRes) {
   const song = details.song;
   const sigs = blockSigs(details, tags);
+  // library-tools 07: строки «Обложка»/«Фон» в «Медиа» — по именам файлов
+  sigs.media = `${sigs.media}|${details.media?.cover || ''}|${details.media?.background || ''}`;
   if (page && page.id === song.song_id && root.contains(page.slots.hero)) {
     // та же песня: пересобираем только блоки со сменившейся подписью
     page.env = makeEnv(details, targetsRes);
@@ -247,11 +250,9 @@ function buildMedia(details, tags, env) {
   const fileUrl = (name, o) => api.fileUrl(song.song_id, name, o);
   const mediaCard = h('div', { class: 'card song-sec' }, h('h3', {}, 'Слушать и смотреть'));
   for (const row of mediaRows(details)) mediaCard.append(mediaRow(row, song, details, env, fileUrl));
-  if (media.background) {
-    mediaCard.append(h('div', { class: 'media-row' }, h('b', {}, 'Фон'),
-      h('a', { href: fileUrl(media.background), target: '_blank', rel: 'noopener', title: 'Открыть изображение целиком' },
-        h('img', { class: 'song-bg-thumb', src: fileUrl(media.background), alt: 'Фоновое изображение', loading: 'lazy' }))));
-  }
+  // library-tools 07: обложка и фон — миниатюра, имя файла и «Заменить…/Поставить…»
+  mediaCard.append(artworkRow('cover', media.cover, song, env, fileUrl),
+    artworkRow('background', media.background, song, env, fileUrl));
   return mediaCard;
 }
 
@@ -324,6 +325,27 @@ const BUILDERS = { hero: buildHero, media: buildMedia, lyrics: buildLyrics, info
 function targetLabel(targets, id) {
   const t = targets.find((x) => x.id === id);
   return t?.name || t?.label || id;
+}
+
+const STORAGE_OFF = 'Хранилище недоступно — действия с файлами отключены';
+
+/** Строка «Обложка»/«Фон» блока «Медиа»: миниатюра (ссылка на картинку целиком) и кнопка диалога. */
+function artworkRow(kind, name, song, env, fileUrl) {
+  const isCover = kind === 'cover';
+  const open = () => {
+    if (env.outputOk === false) { toast(STORAGE_OFF, 'err'); return; }
+    (isCover ? openCoverDialog : openBackgroundDialog)(song, env);
+  };
+  const btn = h('button', { type: 'button', class: 'sm', disabled: env.outputOk === false,
+    title: env.outputOk === false ? STORAGE_OFF : null, onclick: open }, name ? 'Заменить…' : 'Поставить…');
+  const body = name
+    ? [h('a', { href: fileUrl(name), target: '_blank', rel: 'noopener', title: 'Открыть изображение целиком' },
+      h('img', { class: isCover ? 'song-cover-thumb' : 'song-bg-thumb', src: fileUrl(name),
+        alt: isCover ? 'Обложка' : 'Фоновое изображение', loading: 'lazy' })),
+    h('span', { class: 'small muted artwork-name' }, name)]
+    : [h('span', { class: 'muted' }, isCover ? 'нет' : 'не задан')];
+  return h('div', { class: 'media-row artwork-row' }, h('b', {}, isCover ? 'Обложка' : 'Фон'),
+    h('div', { class: 'mrow' }, ...body, btn));
 }
 
 function mediaRow({ kind, label, name }, song, details, env, fileUrl) {

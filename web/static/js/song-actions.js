@@ -13,6 +13,7 @@ import { renameErrors, renameBody, ownRename } from './rename-logic.js';
 import { createVideoBlock } from './video-block.js';
 import { songEditors } from './extensions.js';
 import { openTagsDialog, tagChip } from './tags-ui.js';
+import { openCoverDialog, openBackgroundDialog } from './artwork.js'; // library-tools 07
 
 const WATCH_MS = 3000;
 const watched = new Set();
@@ -56,6 +57,8 @@ export function songMenuItems(song, env, { editors = true } = {}) {
     { label: song.instrumental ? 'Пересоздать минусовку' : 'Минусовка', disabled: off || (song.audio ? false : NO_AUDIO),
       onSelect: () => makeInstrumental(null, song, env) },
     { label: 'Видео…', disabled: off, onSelect: () => openVideoDialog(song, env) },
+    { label: 'Обложка…', disabled: off, onSelect: () => openCoverDialog(song, env) },
+    { label: 'Фон…', disabled: off, onSelect: () => openBackgroundDialog(song, env) },
     { label: 'Скачать .zip', href: api.zipUrl(song.song_id), download: true, disabled: off,
       onSelect: (e) => { e.preventDefault(); downloadZip(song); } },
     { label: 'Копировать в…', disabled: off || (others.length ? false : NO_OTHERS),

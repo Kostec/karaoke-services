@@ -13,6 +13,8 @@ import {
 import { openLyricsDialog } from './lyrics-dialog.js';
 import { publishLine } from './songs-filter.js';
 import { linkOutcome, linkCoverUrl, isYandexNoToken, LINK_SERVICES, SETTINGS_LINK_TEXT } from './link-logic.js';
+import { openCoverPicker } from './artwork.js'; // library-tools 07
+import { hitLabel, isListLink, IMPORT_URL_KEY } from './artwork-logic.js';
 
 
 let root, form, f = {}, defaults = null, defaultsError = null;
@@ -26,6 +28,7 @@ let existsSeq = 0;
 // и обложка из тегов (уходит в «Обложку», если своя не выбрана).
 let autoVals = {};
 let tagCover = null;
+let netCover = null; // library-tools 07: обложка, выбранная в «Найти в сети…» (уходит в cover_url)
 let tagsSeq = 0;
 let previewUrl = null;
 // G06: LRC рядом с текстом — состояния и что уходит серверу описаны в lyrics-search.js (LRC_SAVED, LRC_DROP).
@@ -117,6 +120,7 @@ async function build() {
   f.coverPreview = h('div', { class: 'cover-preview', hidden: true, style: 'display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap' },
     f.coverImg, f.coverNote,
     h('button', { type: 'button', onclick: removeCover }, 'Убрать'));
+  f.findCover = h('button', { type: 'button', onclick: findCover }, 'Найти в сети…');
 
   f.whisper_model = select('whisper_model', d.whisper_models.map((m) => [m, m]));
   f.language = select('language', d.languages.map((l) => [l.code, `${l.name} (${l.code})`]));
@@ -153,7 +157,7 @@ async function build() {
         f.findLyrics, f.findHint),
       f.lyricsErr, f.lrcBox),
     f.lyricsWarn,
-    field('Обложка', f.cover, d.max_cover_mb ? `jpg, png или webp до ${d.max_cover_mb} МБ, необязательно` : 'jpg, png или webp, необязательно'), f.coverErr, f.coverPreview,
+    field('Обложка', h('div', { class: 'inline-file' }, f.cover, f.findCover), d.max_cover_mb ? `jpg, png или webp до ${d.max_cover_mb} МБ, необязательно` : 'jpg, png или webp, необязательно'), f.coverErr, f.coverPreview,
     h('div', { class: 'row2' }, field('Модель Whisper', f.whisper_model), field('Язык песни', f.language)),
     h('details', { class: 'more' }, h('summary', {}, 'Дополнительно'),
       h('div', { class: 'row2' },
@@ -194,7 +198,7 @@ async function build() {
   });
   f.audioUrl.addEventListener('input', onLinkInput);
   f.audioUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); onGetLink(); } });
-  f.cover.addEventListener('change', async () => { await checkCover(); updateCoverPreview(); });
+  f.cover.addEventListener('change', async () => { netCover = null; await checkCover(); updateCoverPreview(); });
   f.language.addEventListener('change', () => {
     if (!alignTouched) f.align_model.value = (defaults?.align_models || {})[f.language.value] || '';
   });
@@ -231,6 +235,7 @@ function resetForm() {
   f.audioHint.textContent = '';
   autoVals = {};
   tagCover = null;
+  netCover = null;
   tagsSeq++;
   f.tagsHint.hidden = true;
   updateCoverPreview();
@@ -431,7 +436,7 @@ async function onGetLink() {
       link = { input, url: '', list: out.kind === 'list' ? out.text : '' };
       linkThumb = null;
       showLinkError(out.text);
-      if (out.kind === 'list') f.linkErr.append(' ', h('a', { href: '#import' }, 'Открыть Импорт'));
+      if (isListLink(out)) f.linkErr.append(' ', openInImportButton(input));
       return;
     }
     const t = out.track;
@@ -601,10 +606,35 @@ async function autofillFromTags(file) {
   }
 }
 
+/** Альбом или плейлист — в «Импорт → Ссылка»: она разберёт ссылку сразу (sessionStorage import.url). */
+function openInImportButton(url) {
+  return h('button', { type: 'button', class: 'sm', onclick: () => {
+    try { sessionStorage.setItem(IMPORT_URL_KEY, url); } catch { /* без памяти вкладки — просто откроем Импорт */ }
+    location.hash = '#import';
+  } }, 'Открыть в Импорте');
+}
+
+/** «Найти в сети…»: выбранный вариант уходит в cover_url (свой файл из поля снимается). */
+async function findCover() {
+  const hit = await openCoverPicker({ artist: f.artist.value.trim(), title: f.title.value.trim() });
+  if (!hit) return;
+  netCover = hit;
+  f.cover.value = '';
+  f.coverErr.hidden = true;
+  updateCoverPreview();
+}
+
 /** Превью обложки: своя из формы важнее обложки из тегов mp3. */
 function updateCoverPreview() {
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = null;
+  if (netCover) { // выбрана в «Найти в сети…» — её скачает сервис (cover_url)
+    f.coverPreview.hidden = false;
+    f.coverImg.setAttribute('referrerpolicy', 'no-referrer');
+    f.coverImg.src = netCover.thumb || netCover.url;
+    f.coverNote.textContent = `Обложка из сети: ${hitLabel(netCover)}`;
+    return;
+  }
   const own = f.cover.files[0] && f.coverErr.hidden ? f.cover.files[0] : null;
   const file = own || tagCover;
   const thumb = currentLinkCover();
@@ -629,6 +659,7 @@ function currentLinkCover() {
 }
 
 function removeCover() {
+  netCover = null;
   f.cover.value = '';
   f.coverErr.hidden = true;
   tagCover = null;
@@ -717,7 +748,7 @@ async function onSubmit(ev) {
     ok = false;
   } else if (audioUrl && link?.list && link.input === f.audioUrl.value.trim()) {
     showLinkError(link.list); // альбом/плейлист — это «Импорт → Ссылка»
-    f.linkErr.append(' ', h('a', { href: '#import' }, 'Открыть Импорт'));
+    f.linkErr.append(' ', openInImportButton(link.input));
     f.audioUrl.focus();
     ok = false;
   } else if (!(await checkAudio())) {
@@ -730,8 +761,8 @@ async function onSubmit(ev) {
 
   const fd = generateForm({
     artist, title, lyrics: f.lyrics.value, params: collectParams(),
-    audio: f.audio.files[0], audio_url: audioUrl, cover: f.cover.files[0] || tagCover,
-    cover_url: currentLinkCover() || undefined,
+    audio: f.audio.files[0], audio_url: audioUrl, cover: f.cover.files[0] || (netCover ? undefined : tagCover),
+    cover_url: netCover?.url || currentLinkCover() || undefined,
     song_id: regen?.song_id, replace,
     lyrics_lrc: lrcFormPart(lrcHeld), // передать / сбросить сохранённый / не трогать
     ...f.video.fields(),

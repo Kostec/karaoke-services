@@ -26,6 +26,7 @@ import {
   lyricsLabel, folderNotice, queuedText, nextLyricsRow, initialLinkTrack, NO_FOLDER_PICKER,
 } from './folder-logic.js';
 import { linkSource, isYandexNoToken, LINK_SERVICES, NEED_LINK, NO_TRACKS, SETTINGS_LINK_TEXT } from './link-logic.js';
+import { IMPORT_URL_KEY } from './artwork-logic.js'; // library-tools 07: ссылка из «Новой песни»
 import {
   pickAudioSource, importWarnings, initialCardState, importFields, importBlocker, importOutcome,
   expiredMessage, DUP_TEXT,
@@ -58,8 +59,28 @@ export function show() {
     if (d.max_import_mb) view.filesHint.textContent = `zip-архив или файлы песни (.txt, аудио, обложка), до ${d.max_import_mb} МБ`;
   }).catch(() => {});
   shown = true;
+  if (takeHandedUrl()) return;
   const g = groupOf(tab);
   if (g) runLyricsQueue(g);
+}
+
+/** library-tools 07: альбом/плейлист из «Новой песни» — вкладка «Ссылка» и сразу разбор. */
+function takeHandedUrl() {
+  let url = '';
+  try {
+    url = sessionStorage.getItem(IMPORT_URL_KEY) || '';
+    sessionStorage.removeItem(IMPORT_URL_KEY);
+  } catch { return false; }
+  url = url.trim();
+  if (!url) return false;
+  selectTab('url');
+  view.url.value = url;
+  if (linkSource(url) === 'music') inspectLink(url);
+  else {
+    resetGroup(linkGroup);
+    inspect({ source: 'url', url }, view.urlBtn, view.urlErr, { url: view.url });
+  }
+  return true;
 }
 
 export function hide() {
