@@ -80,6 +80,21 @@ services:
               count: 1
               capabilities: [gpu]
 
+  # https://<LAN_HOSTNAME> без порта; http://localhost:8090 остаётся (вход в Google — только через него).
+  proxy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    depends_on: [web]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      LAN_HOSTNAME: ${LAN_HOSTNAME:-karaoke.home}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
   tests:
     profiles: ["test"]
     build:
@@ -92,3 +107,5 @@ services:
 volumes:
   data:
   models:
+  caddy_data:
+  caddy_config:

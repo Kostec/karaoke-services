@@ -2,7 +2,7 @@
 # karaoke-services
 
 Домашний сервис (docker-compose на Windows-ПК с GPU) для генерации караоке-песен UltraStar через UltraSinger из браузера, импорта готовых (usdb, zip, GitHub) и выкладки их в хранилища (Samba-шара Raspberry Pi, папки ПК, Яндекс Диск/WebDAV, Google Диск).
-Два контейнера: `web` (FastAPI + статический фронт на ES-модулях без сборки) ставит задания в SQLite, `worker` (CUDA, UltraSinger, demucs, ffmpeg, yt-dlp + deno) их исполняет и выкладывает песню в встроенное «Локальное хранилище» и в основную цель (недоступную — докопирует позже). Интерфейс и все сообщения пользователю — на русском.
+Контейнеры: `proxy` (Caddy, `caddy/Caddyfile`: `https://$LAN_HOSTNAME` → `web:8080`, `tls internal`, корневой сертификат — `http://<имя>/ca.crt`, том `caddy_data`), `web` (FastAPI + статический фронт на ES-модулях без сборки) ставит задания в SQLite, `worker` (CUDA, UltraSinger, demucs, ffmpeg, yt-dlp + deno) их исполняет и выкладывает песню в встроенное «Локальное хранилище» и в основную цель (недоступную — докопирует позже). Интерфейс и все сообщения пользователю — на русском.
 
 ## Команды
 
@@ -142,6 +142,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 
 ## Окружение
 
+- `LAN_HOSTNAME` — имя сервиса в домашней сети для прокси Caddy (по умолчанию `karaoke.home`, DNS-запись — в роутере; порты 80/443 хоста).
 - `WEB_PORT` — порт веба на хосте; `WEB_PASSWORD` — общий пароль HTTP Basic (логин любой, пусто — без пароля); `MAX_UPLOAD_MB` — лимит загрузки mp3; `MAX_IMPORT_MB` — лимит zip импорта (файлы или ссылка; распаковка — до двойного); `MAX_VIDEO_MB` — лимит видеофайла (форма, диалог «Видео…»).
 - `OUTPUT_KIND` (`smb`|`local`), `OUTPUT_SMB_HOST`, `OUTPUT_SMB_SHARE`, `OUTPUT_SMB_PATH`, `OUTPUT_SMB_USER`, `OUTPUT_SMB_PASSWORD` — прежняя цель: читаются только первой миграцией в список хранилищ (дальше всё в БД через «Куда выкладывать»).
 - `LOCAL_OUTPUT_ROOT` — папка хоста, монтируемая как `/output` (встроенное «Локальное хранилище»); `HOST_FOLDERS_ROOT` (по умолчанию `D:/`) — корень «Папок ПК», монтируется как `/host` у web и worker (смена — `up -d`).
@@ -173,6 +174,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 - Сеть контейнеров: `dns: 77.88.8.8, 1.1.1.1` и выключенный IPv6 (`sysctls`) в `docker-compose.yml` — DNS Docker Desktop сбоил, а AAAA-адреса без маршрута ломали Яндекс/LRCLIB; yt-dlp везде с `-4`.
 - Шара на Pi не даёт переименовать поверх существующего файла (Samba на exFAT/NTFS-диске → «нет доступа»): `Storage.write_atomic` при отказе меняет файл в три шага (`_swap`: старый → `.old-*`, новый на место, старый удалить; сбой — откат), а «нет доступа»/sharing violation ещё и ждёт повторами (`BUSY_RETRY_DELAYS`).
 - Имена `pi`/`pi.local` в контейнерах не резолвятся — в адресе SMB-хранилища (и `OUTPUT_SMB_HOST`) только IP.
+- curl из Git Bash (schannel) к `https://karaoke.home` с `--cacert` падает на проверке отзыва — добавлять `--ssl-no-revoke`; вход в Google и через прокси — только `http://localhost:8090`.
 - Порт 8080 на хосте занят jenkins — `WEB_PORT=8090` (внутри контейнера веб слушает 8080).
 - Linux-колёса torch cu126 собраны без sm_61: на Pascal исполняется sm_60 — это норма (`gpucheck.runnable_arch`); cu128 без Pascal вовсе, сборку валит `worker/build/check_torch_arch.py`.
 - Зависимости UltraSinger фиксируются по его `uv.lock` (`worker/build/lock_constraints.py` → `/etc/uv-constraints.txt`), наши пины важнее (torch/torchaudio/torchvision cu126, `numpy<2.5`); без этого swift-f0 0.3.0 ломает сигнатуру SwiftF0 (ловит `selfcheck`).

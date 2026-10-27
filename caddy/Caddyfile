@@ -1,0 +1,29 @@
+# Обратный прокси karaoke-services: https://<LAN_HOSTNAME> → web:8080.
+# Сертификат выпускает свой локальный центр сертификации Caddy (tls internal); его корневой
+# сертификат один раз ставится в доверенные на каждом устройстве — скачать: http://<LAN_HOSTNAME>/ca.crt
+# Ключи центра лежат в томе caddy_data и переживают пересборку (compose down -v их удалит).
+{
+	# Не пытаться ставить корневой сертификат в хранилище доверия контейнера.
+	skip_install_trust
+}
+
+# По http — только корневой сертификат (без него https на устройстве не открыть), остальное → https.
+http://{$LAN_HOSTNAME} {
+	handle /ca.crt {
+		root * /data/caddy/pki/authorities/local
+		rewrite * /root.crt
+		header Content-Type application/x-x509-ca-cert
+		header Content-Disposition "attachment; filename=\"karaoke-ca.crt\""
+		file_server
+	}
+	handle {
+		redir https://{host}{uri} permanent
+	}
+}
+
+https://{$LAN_HOSTNAME} {
+	tls internal
+	# Host проходит без изменений — SameOriginMiddleware веба сверяет с ним Origin.
+	# Большие загрузки и SSE лога (text/event-stream) Caddy передаёт потоком сам.
+	reverse_proxy web:8080
+}
