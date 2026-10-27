@@ -64,6 +64,8 @@ export function songMenuItems(song, env, { editors = true } = {}) {
     { label: 'Копировать в…', disabled: off || (others.length ? false : NO_OTHERS),
       onSelect: () => openCopyDialog([song], env) },
     { label: 'Переименовать…', disabled: off, onSelect: () => openRenameDialog(song, env) },
+    // library-tools 11: прогон песни в браузере (#play)
+    { label: '▶ Прогон', href: `#play?id=${encodeURIComponent(song.song_id)}`, disabled: off },
   ];
   if (editors) items.push(...editorItems(song, env));
   items.push(

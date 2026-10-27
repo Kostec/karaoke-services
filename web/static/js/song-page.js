@@ -234,13 +234,17 @@ function buildHero(details, tags, env) {
     return h('button', { type: 'button', class: primary ? 'primary' : null, dataset: { editor: kind },
       disabled: !!ed.disabled, title: ed.disabled || null, onclick: ed.open }, ed.label);
   };
+  // library-tools 11: «▶ Прогон» читает файлы песни — гаснет вместе с хранилищем
+  const playBtn = h('button', { type: 'button', dataset: { action: 'play' }, disabled: env.outputOk === false,
+    title: env.outputOk === false ? STORAGE_OFF : 'Проиграть песню с бегущим текстом и нотами',
+    onclick: () => { location.hash = `#play?id=${encodeURIComponent(song.song_id)}`; } }, '▶ Прогон');
   return h('div', { class: 'song-hero' }, heroBg,
     h('div', { class: 'song-hero-in' }, big,
       h('div', { class: 'song-hero-text' },
         h('div', { class: 'song-hero-artist' }, song.artist || 'Исполнитель не указан'),
         h('h2', {}, song.title || song.txt_name),
         h('div', { class: 'tags' }, builtinTags(song), userTags, addTag),
-        h('div', { class: 'song-hero-acts' }, edBtn('notes', true), edBtn('lyrics', false),
+        h('div', { class: 'song-hero-acts' }, edBtn('notes', true), playBtn, edBtn('lyrics', false),
           menuButton(() => songMenuItems(song, env, { editors: false }))))));
 }
 

@@ -8,14 +8,16 @@ import * as songs from './songs.js';
 import * as songPage from './song-page.js';
 import * as trash from './trash.js';
 import * as settings from './settings.js';
+import * as check from './check.js'; // library-tools 10
+import * as play from './play.js'; // library-tools 11
 // Редакторы (таск 07): модуль вызывает registerSongEditor().
 import './editors/index.js';
 // Уведомления браузера о заданиях (таск 05): свой опрос, только если включены в «Настройках».
 import './notify.js';
 
-const VIEWS = { queue, new: newSong, import: importView, songs, song: songPage, trash, settings };
+const VIEWS = { queue, new: newSong, import: importView, songs, song: songPage, trash, settings, check, play };
 // Разделы без своей вкладки: какую вкладку подсветить.
-const TAB_OF = { song: 'songs' };
+const TAB_OF = { song: 'songs', check: 'songs', play: 'songs' };
 const STATUS_EVERY_MS = 15000;
 
 let current = null;
