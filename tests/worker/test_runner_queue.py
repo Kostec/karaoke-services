@@ -165,3 +165,32 @@ def test_without_gpu_publish_behind_generate_is_taken(world):
               until=lambda: world.jobs.get(pub.id).state in ("done", "failed"))
     assert world.jobs.get(pub.id).state == "done"
     assert world.jobs.get(gen.id).state == "queued"
+
+
+def _future(seconds):
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def test_postponed_job_waits_and_others_go_first(world):
+    later = world.enqueue_generate("Группа А", "Отложена")
+    now_job = world.enqueue_generate("Группа Б", "Сразу")
+    world.jobs.schedule(later.id, _future(3600))
+    world.run(until=lambda: world.jobs.get(now_job.id).state == "done")
+    assert world.jobs.get(later.id).state == "queued"
+    # «Запустить сейчас» — и воркер берёт задание
+    world.jobs.schedule(later.id, None)
+    world.run(until=lambda: world.jobs.get(later.id).state == "done")
+
+
+def test_moved_first_job_runs_before_earlier_ones(world):
+    a = world.enqueue_generate("Группа А", "Первая")
+    b = world.enqueue_generate("Группа Б", "Вторая")
+    c = world.enqueue_generate("Группа В", "Третья")
+    world.jobs.move(c.id, "first")
+    world.run(until=lambda: world.jobs.get(c.id).state == "done")
+    assert [world.jobs.get(j.id).state for j in (a, b)] == ["queued", "queued"]
+    world.jobs.move(b.id, "first")
+    world.run(until=lambda: world.jobs.get(b.id).state == "done")
+    assert world.jobs.get(a.id).state == "queued"

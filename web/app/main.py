@@ -22,8 +22,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
+from .api_bulk import router as bulk_router  # library-tools 06
 from .api_import import purge_imports, router as import_router
 from .api_jobs import ctx_of, router as jobs_router
+from .api_queue import router as queue_router  # очередь: порядок и время
 from .api_link import router as link_router
 from .api_lyrics import router as lyrics_router
 from .api_settings import router as settings_router
@@ -139,6 +141,9 @@ def create_app(*, data_dir: str | Path | None = None, env: dict | None = None,
         return defaults_payload(ctx_of(request))
 
     app.include_router(import_router)  # раньше jobs: POST /api/jobs/import
+    # library-tools 06: массовые действия — раньше jobs и songs (POST /api/jobs/instrumental/bulk)
+    app.include_router(bulk_router)
+    app.include_router(queue_router)  # раньше jobs: POST /api/jobs/schedule
     app.include_router(jobs_router)
     app.include_router(songs_router)
     app.include_router(tags_router)

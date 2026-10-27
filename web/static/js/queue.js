@@ -1,6 +1,7 @@
 // Раздел «Очередь»: опрос /api/jobs каждые 2 с (пока вкладка видна), живой лог через SSE.
 
 import { api, JOB_ACTIVE as ACTIVE, JOB_FINAL as FINAL, STAGE_PUBLISH, canRepublish } from './api.js';
+import { nightStart, timeStart, startIso, scheduleLabel, displayOrder, queuePlaces } from './queue-logic.js';
 import { h, clear, runAction, fmtDate, fmtDuration, confirmDialog, toast, songName } from './ui.js';
 
 const POLL_MS = 2000;
@@ -18,6 +19,8 @@ const STAGE_LABEL = { [STAGE_PUBLISH]: 'Выкладка' };
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]/g;
 
+let places = new Map();
+let laterAll, lastJobs = [];
 let root, listEl, emptyEl, errEl, hooks;
 const cards = new Map(); // id → {el, parts, job}
 const logs = new Map(); // id → {source, pre}
@@ -27,13 +30,15 @@ let loading = false;
 export function mount(section, ctx) {
   root = section;
   hooks = ctx;
+  laterAll = h('button', { type: 'button', hidden: true, onclick: () => openScheduleDialog(null) },
+    'Отложить все ожидающие…');
   errEl = h('div', { class: 'banner err', hidden: true });
   emptyEl = h('div', { class: 'card empty', hidden: true },
     h('p', {}, 'Заданий нет — добавьте песню'),
     h('a', { class: 'btn primary', href: '#new' }, 'Добавить песню'));
   listEl = h('div', { class: 'jobs' });
   root.append(
-    h('div', { class: 'view-head' }, h('h2', {}, 'Очередь')),
+    h('div', { class: 'view-head' }, h('h2', {}, 'Очередь'), laterAll),
     errEl, emptyEl, listEl);
 }
 
@@ -80,6 +85,10 @@ export async function poll() {
 }
 
 function render(jobs) {
+  lastJobs = jobs;
+  places = queuePlaces(jobs);
+  laterAll.hidden = !jobs.some((j) => j.state === 'queued' && !j.start_at);
+  jobs = displayOrder(jobs);
   hooks.setQueueCount(jobs.filter((j) => ACTIVE.includes(j.state)).length);
   emptyEl.hidden = jobs.length > 0;
   const seen = new Set();
@@ -92,7 +101,7 @@ function render(jobs) {
       cards.set(job.id, card);
     }
     updateCard(card, job);
-    // порядок как в ответе сервера (новые сверху)
+    // ожидающие — в порядке очереди, остальные как в ответе сервера
     const want = prev ? prev.nextSibling : listEl.firstChild;
     if (want !== card.el) listEl.insertBefore(card.el, want);
     prev = card.el;
@@ -129,13 +138,17 @@ function updateCard(card, job) {
   card.job = job;
   const cancelling = job.cancel_requested && ACTIVE.includes(job.state);
   p.title.textContent = `${TYPE_LABEL[job.type] || 'Задание'}: ${songName(job.artist, job.title)}`;
-  p.state.textContent = cancelling ? 'Отменяется…' : (STATE_LABEL[job.state] || 'Неизвестно');
-  p.state.className = `state ${job.state}`;
+  const later = job.state === 'queued' && job.start_at;
+  const place = places.get(job.id);
+  p.state.textContent = cancelling ? 'Отменяется…' : later ? 'Отложено'
+    : job.state === 'queued' && place ? `Ожидает · ${place}-е` : (STATE_LABEL[job.state] || 'Неизвестно');
+  p.state.className = `state ${later ? 'later' : job.state}`;
 
   const meta = [`№ ${job.id}`, `создано ${fmtDate(job.created_at)}`];
   if (job.started_at) meta.push(`${FINAL.includes(job.state) ? 'шло' : 'идёт'} ${fmtDuration(job.started_at, job.finished_at)}`);
   if (job.finished_at) meta.push(`завершено ${fmtDate(job.finished_at)}`);
-  clear(p.meta).append(...meta.map((m) => h('span', {}, m)));
+  const when = scheduleLabel(job);
+  clear(p.meta).append(...meta.map((m) => h('span', {}, m)), when && h('span', {}, h('b', {}, when)));
 
   const pct = job.state === 'done' ? 100 : Math.max(0, Math.min(100, Math.round(job.percent || 0)));
   const showBar = job.state !== 'queued' && job.state !== 'cancelled';
@@ -153,13 +166,14 @@ function updateCard(card, job) {
   p.error.textContent = job.error || '';
 
   // кнопки перестраиваются только при смене состояния — чтобы не сбивать нажатие
-  const sig = `${job.state}|${job.stage}|${job.cancel_requested}|${logs.has(job.id)}`;
+  const sig = `${job.state}|${job.stage}|${job.cancel_requested}|${logs.has(job.id)}|${job.start_at || ''}|${places.get(job.id) || 0}|${places.size}`;
   if (sig === card.sig) return;
   card.sig = sig;
   const btns = [];
   const logOpen = logs.has(job.id);
   btns.push(h('button', { type: 'button', 'aria-expanded': String(logOpen), onclick: () => toggleLog(card) },
     logOpen ? 'Скрыть лог' : 'Лог'));
+  if (job.state === 'queued' && !job.cancel_requested) btns.unshift(...queueButtons(job));
   if (ACTIVE.includes(job.state) && !job.cancel_requested) {
     btns.push(h('button', {
       type: 'button', class: 'danger',
@@ -184,6 +198,69 @@ function updateCard(card, job) {
     }, 'Перезапустить'));
   }
   clear(p.actions).append(...btns);
+}
+
+// ------------------------------------------------- порядок и время (T04)
+
+function queueButtons(job) {
+  const act = (fn, ok) => async (ev) => { await runAction(ev.target, fn, ok); poll(); };
+  if (job.start_at) {
+    return [
+      h('button', { type: 'button', class: 'primary', onclick: act(() => api.scheduleJob(job.id, null), 'Задание запущено сейчас') }, 'Запустить сейчас'),
+      h('button', { type: 'button', onclick: () => openScheduleDialog(job) }, 'Изменить время…'),
+    ];
+  }
+  const order = lastJobs.filter((j) => j.state === 'queued' && !j.start_at)
+    .sort((a, b) => ((a.position ?? a.id) - (b.position ?? b.id)) || (a.id - b.id));
+  const first = order[0]?.id === job.id;
+  const last = order[order.length - 1]?.id === job.id;
+  return [
+    h('span', { class: 'pos' },
+      h('button', { type: 'button', title: 'Выше', 'aria-label': 'Выше', disabled: first, onclick: act(() => api.moveJob(job.id, 'up')) }, '↑'),
+      h('button', { type: 'button', title: 'Ниже', 'aria-label': 'Ниже', disabled: last, onclick: act(() => api.moveJob(job.id, 'down')) }, '↓')),
+    h('button', { type: 'button', disabled: first, onclick: act(() => api.moveJob(job.id, 'first')) }, 'Первым'),
+    h('button', { type: 'button', onclick: () => openScheduleDialog(job) }, 'Отложить…'),
+  ];
+}
+
+/** Диалог «Отложить»: job — одно задание, null — все ожидающие. */
+function openScheduleDialog(job) {
+  const waiting = lastJobs.filter((j) => j.state === 'queued' && !j.start_at).length;
+  const night = h('input', { type: 'radio', name: 'later-when', checked: true });
+  const own = h('input', { type: 'radio', name: 'later-when' });
+  const time = h('input', { type: 'time', value: '22:30', 'aria-label': 'Время запуска' });
+  time.addEventListener('focus', () => { own.checked = true; });
+  const every = h('input', { type: 'checkbox', checked: !job });
+  const err = h('div', { class: 'field-error', hidden: true, role: 'alert' });
+  const submit = h('button', { type: 'button', class: 'primary' }, 'Отложить');
+  const el = h('dialog', { class: 'later-dlg', 'aria-labelledby': 'later-dlg-title' },
+    h('h3', { id: 'later-dlg-title' }, job ? `Отложить «${songName(job.artist, job.title)}»` : 'Отложить все ожидающие'),
+    h('div', { class: 'radio-row later-when' },
+      h('label', {}, night, ' Сегодня ночью (01:00)'),
+      h('label', {}, own, ' Своё время ', time)),
+    job && waiting > 1 ? h('label', { class: 'check' }, every, ` Отложить все ожидающие (${waiting})`) : null,
+    err,
+    h('div', { class: 'actions' }, h('button', { type: 'button', onclick: () => el.close() }, 'Отмена'), submit));
+  el.addEventListener('close', () => el.remove());
+  document.body.append(el);
+  if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
+  submit.addEventListener('click', async () => {
+    const when = night.checked ? nightStart(new Date()) : timeStart(time.value, new Date());
+    if (!when) { err.textContent = 'Укажите время'; err.hidden = false; return; }
+    submit.disabled = true;
+    try {
+      const iso = startIso(when); // с поясом (Z): сервер не угадывает часовой пояс
+      if (!job || every.checked) await api.scheduleAll(iso);
+      else await api.scheduleJob(job.id, iso);
+      toast('Отложено', 'ok');
+      el.close();
+      poll();
+    } catch (e) {
+      err.textContent = e.detail || 'Не удалось отложить';
+      err.hidden = false;
+      submit.disabled = false;
+    }
+  });
 }
 
 // ---------------------------------------------------------------- лог

@@ -100,6 +100,10 @@ export const api = {
   cancel: (id) => request('POST', `/api/jobs/${id}/cancel`),
   restart: (id) => request('POST', `/api/jobs/${id}/restart`),
   republish: (id) => request('POST', `/api/jobs/${id}/republish`),
+  // очередь: порядок и время (T04)
+  moveJob: (id, where) => request('POST', `/api/jobs/${id}/move`, { where }),
+  scheduleJob: (id, at) => request('POST', `/api/jobs/${id}/schedule`, { start_at: at }),
+  scheduleAll: (at) => request('POST', '/api/jobs/schedule', { start_at: at }),
   logStreamUrl: (id) => `/api/jobs/${id}/log/stream`,
   logFrom: (id, from) => request('GET', `/api/jobs/${id}/log?from=${from}`, undefined, { binary: true }),
 
@@ -133,6 +137,16 @@ export const api = {
   targets: () => request('GET', '/api/targets'),
   // library-tools 02: доступность хранилища песни → {ok, error, label}
   targetStatus: (id) => request('GET', `/api/targets/${encodeURIComponent(id)}/status`),
+  // library-tools 06: действия над несколькими песнями
+  /** Добавить/снять свои теги у песен → {updated, errors:[{song_id, detail}]}. */
+  bulkTags: (songIds, add = [], remove = []) => request('POST', '/api/songs/tags', { song_ids: songIds, add, remove }),
+  /** Песни — в корзину → {removed:[song_id], errors}. */
+  bulkDelete: (songIds) => request('POST', '/api/songs/delete', { song_ids: songIds }),
+  /** Минусовка песням → {queued:[job_id], skipped:[{song_id, reason}], errors}. */
+  bulkInstrumental: (songIds, replace = false) =>
+    request('POST', '/api/jobs/instrumental/bulk', { song_ids: songIds, replace }),
+  /** Общий zip: POST формой (браузер сам скачивает поток) → {action, fields}. */
+  zipForm: (songIds) => ({ action: '/api/songs/zip', fields: { song_ids: songIds.join(',') } }),
 
   /** Страница песни: {song, headers, singers, media, files, copies, usdb_url}. */
   songDetails: (id) => request('GET', `/api/songs/${encodeURIComponent(id)}/details`),
@@ -163,6 +177,11 @@ export const api = {
   yandexAccount: () => request('GET', '/api/settings/yandex'),
   saveYandexAccount: (body) => request('PUT', '/api/settings/yandex', body),
   testYandexAccount: (body) => request('POST', '/api/settings/yandex/test', body),
+  // Уведомления Telegram (таск 05): токен API не отдаёт (has_token); пустой bot_token — сохранённый.
+  telegram: () => request('GET', '/api/settings/telegram'),
+  saveTelegram: (body) => request('PUT', '/api/settings/telegram', body),
+  testTelegram: (body) => request('POST', '/api/settings/telegram/test', body),
+  findTelegramChat: (body) => request('POST', '/api/settings/telegram/find-chat', body),
   usdbSearch: ({ artist = '', title = '', language = 'Russian', start = 0 } = {}) =>
     request('GET', `/api/usdb/search?${new URLSearchParams({ artist, title, language, start: String(start) })}`),
 
