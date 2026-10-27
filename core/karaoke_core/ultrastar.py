@@ -536,13 +536,26 @@ _LEGACY = ("koi8-r", "cp866")  # кодировки, которые молча �
 # Пара mojibake: «Р»/«С» (байты D0/D1) и байт 0x80–0xBF UTF-8, прочитанный как cp1251.
 _MOJI_HEAD = frozenset("РС")
 _MOJI_TAIL = frozenset(bytes(range(0x80, 0xC0)).decode("cp1251", errors="ignore") + "\x98")
+# UTF-8, прочитанный как latin-1/cp1252: кириллица D0/D1 + 80…BF → «Ð»/«Ñ» + символ байта.
+_LATIN_HEAD = frozenset("ÐÑ")
+
+
+def _cp1252_char(b: int) -> str:
+    try:
+        return bytes([b]).decode("cp1252")
+    except UnicodeDecodeError:  # 0x81, 0x8D, 0x8F, 0x90, 0x9D: программы оставляют U+00xx
+        return chr(b)
+
+
+_LATIN_TAIL = frozenset("".join(_cp1252_char(b) + chr(b) for b in range(0x80, 0xC0)))
 _ENCODING_HEADER = re.compile(r"^#ENCODING:[^\r\n]*", re.I | re.M)
 PREVIEW_MAX = 80
 
 
 @dataclass
 class EncodingFix:
-    """Битая кодировка ``.txt``: вид (``mojibake`` — UTF-8, когда-то прочитанный как cp1251;
+    """Битая кодировка ``.txt``: вид (``mojibake`` — UTF-8, когда-то прочитанный как cp1251
+    или latin-1/cp1252 — «Р°»/«Ð²»;
     ``latin1`` — файл в koi8-r/cp866 или не читается ни UTF-8, ни cp1251; ``replacement`` —
     в тексте U+FFFD), исправленный текст (пусто — угадать не удалось) и «было → станет»."""
     kind: str
@@ -568,6 +581,21 @@ def _unmojibake(text: str) -> str | None:
     Байта 0x98 в cp1251 нет: прочитавшие его программы дают U+0098, он возвращается байтом."""
     try:
         raw = b"\x98".join(part.encode("cp1251") for part in text.split("\x98"))
+        return raw.decode("utf-8")
+    except UnicodeError:
+        return None
+
+
+def _latin_pairs(text: str) -> int:
+    return sum(1 for a, b in zip(text, text[1:]) if a in _LATIN_HEAD and b in _LATIN_TAIL)
+
+
+def _unmojibake_latin(text: str) -> str | None:
+    """Текст, когда-то прочитанный из UTF-8 как latin-1/cp1252, — обратно; не выходит — ``None``."""
+    raw = bytearray()
+    try:
+        for ch in text:
+            raw += bytes([ord(ch)]) if ord(ch) < 0x100 else ch.encode("cp1252")
         return raw.decode("utf-8")
     except UnicodeError:
         return None
@@ -614,7 +642,7 @@ def encoding_problem(data: bytes) -> EncodingFix | None:
     """Битая ли кодировка ``.txt`` (история 36); ``None`` — всё в порядке.
 
     Не прочиталось ни UTF-8, ни cp1251 (``latin-1``) → пробуются koi8-r и cp866; пары
-    «Р°/С‚» → обратный mojibake; U+FFFD → найдено, но не исправить; прочиталось cp1251, но
+    «Р°/С‚» или «Ð²/Ñ‚» → обратный mojibake; U+FFFD → найдено, но не исправить; прочиталось cp1251, но
     текст неправдоподобен, а koi8-r/cp866 дают нормальный — ``latin1`` с исправлением."""
     text, encoding, _bom = decode(data)
     score, count = _plausibility(text)
@@ -632,6 +660,11 @@ def encoding_problem(data: bytes) -> EncodingFix | None:
     if pairs >= 3 and pairs * 3 >= count:
         fixed = _unmojibake(text)
         ok = fixed is not None and _moji_pairs(fixed) == 0 and _plausibility(fixed)[0] >= PLAUSIBLE
+        return found("mojibake", fixed if ok else "")
+    pairs = _latin_pairs(text)
+    if pairs >= 3 and pairs * 3 >= count:
+        fixed = _unmojibake_latin(text)
+        ok = fixed is not None and _latin_pairs(fixed) == 0 and _plausibility(fixed)[0] >= PLAUSIBLE
         return found("mojibake", fixed if ok else "")
     if "\ufffd" in text:
         return found("replacement", "")

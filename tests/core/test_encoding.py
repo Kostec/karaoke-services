@@ -84,3 +84,29 @@ def test_preview_falls_back_to_first_changed_line():
     fix = encoding_problem(moji)
     assert fix is not None and fix.kind == "mojibake"
     assert fix.preview_after == ": 0 3 5 Привет"
+
+
+def test_utf8_read_as_latin1_cp1252_is_fixed():
+    """UTF-8, прочитанный как cp1252 и сохранённый снова в UTF-8: «Ð²Ðµ…» → нормальная кириллица."""
+    data = (FIX / "enc_mojibake_latin1.txt").read_bytes()
+    assert ultrastar.decode(data)[1] == "utf-8"
+    fix = encoding_problem(data)
+    assert fix is not None and fix.kind == "mojibake"
+    assert fix.fixed_text == GOOD  # «И» — байт 0x98, в cp1252 это «˜»
+    assert fix.preview_before.startswith("Ð")
+    assert fix.preview_after == GOOD_PREVIEW
+
+
+def test_utf8_read_as_pure_latin1_is_fixed():
+    text = "#TITLE:Зимняя вишня\n#ARTIST:Исполнитель\n#BPM:300\n: 0 3 5 Вет\n: 4 3 5 ер\nE\n"
+    data = text.encode("utf-8").decode("latin-1").encode("utf-8")  # «Ð²Ðµ…», с U+0098
+    fix = encoding_problem(data)
+    assert fix is not None and fix.kind == "mojibake"
+    assert fix.fixed_text == text
+
+
+@pytest.mark.parametrize("artist", ["Motörhead", "Mötley Crüe", "Sigur Rós", "Beyoncé", "Ñu"])
+def test_latin_accents_are_not_mojibake(artist):
+    data = f"#TITLE:Ace of Spades\r\n#ARTIST:{artist}\r\n#BPM:300\r\n: 0 3 5 Ça \r\n: 4 3 5 Ðiða\r\nE\r\n"
+    assert encoding_problem(data.encode("utf-8")) is None
+    assert encoding_problem(data.encode("cp1252")) is None

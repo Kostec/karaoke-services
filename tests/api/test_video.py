@@ -137,3 +137,25 @@ def test_video_restart_reuses_inputs(client, song):
     assert again["params"]["video_url"] == URL
     r = client.post(f"/api/jobs/{job['id']}/restart")
     assert r.status_code == 409 and r.json()["detail"] == "Эта песня уже в очереди"
+
+
+def test_video_remove_dangling_link(env, client, song):
+    """«Убрать ссылку» у находки проверки: строка #VIDEO есть, файла нет — задание ставится."""
+    d = env.out / "Artist" / "Artist - Song"
+    txt = env.SONG_TXT.replace(b"#BPM:300\n", b"#VIDEO:Artist - Song.mp4\n#VIDEOGAP:1.5\n#BPM:300\n")
+    (d / "Artist - Song.txt").write_bytes(txt)
+    client.post("/api/songs/rescan")
+    item = next(i for i in client.get("/api/songs").json()["items"] if i["title"] == "Song")
+    assert item["video"] is None  # индекс знает только существующие файлы
+    r = post_video(client, item["song_id"], remove="true")
+    assert r.status_code == 201, r.text
+    assert r.json()["params"]["remove"] is True
+
+
+def test_video_remove_gap_only_is_no_video(env, client, song):
+    """Только #VIDEOGAP без #VIDEO — видео нет, 409."""
+    d = env.out / "Artist" / "Artist - Song"
+    (d / "Artist - Song.txt").write_bytes(env.SONG_TXT.replace(b"#BPM:300\n", b"#VIDEOGAP:1\n#BPM:300\n"))
+    client.post("/api/songs/rescan")
+    item = next(i for i in client.get("/api/songs").json()["items"] if i["title"] == "Song")
+    assert _err(post_video(client, item["song_id"], remove="true"), 409) == "У песни нет видео"

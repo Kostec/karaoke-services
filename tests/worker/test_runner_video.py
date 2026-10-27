@@ -260,3 +260,20 @@ def test_video_of_other_case_only_is_not_deleted_after_upload(world, monkeypatch
 
     assert world.jobs.get(job.id).state == "done", world.jobs.get(job.id).error
     assert (world.out / DIR / f"{STEM}.mp4").read_bytes() == b"NEW-MP4"
+
+
+def test_remove_dangling_video_link_without_file(world):
+    """Находка проверки «#VIDEO на несуществующий файл»: строки сняты, прочие файлы не тронуты."""
+    original = _song(world, "#VIDEOGAP:2,5")
+    assert not (world.out / DIR / f"{STEM}.avi").exists()
+    job = _enqueue(world, remove=True)
+    world.run(gpu=NO_GPU)
+
+    assert world.jobs.get(job.id).state == "done", world.jobs.get(job.id).error
+    expected = original.replace(f"#VIDEO:{STEM}.avi\r\n".encode("cp1251"), b"", 1)
+    expected = expected.replace(b"#VIDEOGAP:2,5\r\n", b"", 1)
+    assert expected != original
+    assert (world.out / DIR / TXT).read_bytes() == expected
+    assert (world.out / DIR / f"{STEM}.mp3").read_bytes() == MP3
+    assert sorted(p.name for p in (world.out / DIR).iterdir()) == sorted([TXT, f"{STEM}.mp3"])
+    assert [i.rel_file for i in world.trash.list()] == [f"{DIR}/{TXT}"]

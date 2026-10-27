@@ -565,6 +565,13 @@ def stage_video_file(ctx: AppContext, staging: Staging, file: UploadFile, ext: s
     copy_limited(file.file, staging.path("video", f"{INPUT_VIDEO_STEM}{ext}"), max_video_mb(ctx), "video_file")
 
 
+def _has_video_line(ctx: AppContext, item) -> bool:
+    """Есть ли в ``.txt`` песни строка ``#VIDEO`` (ссылка может вести на несуществующий файл —
+    индекс тогда видео не знает, а «Убрать ссылку» должна сработать)."""
+    from .api_songs import read_txt
+    return bool(ultrastar.parse(read_txt(ctx, item)).header("VIDEO"))
+
+
 @router.post("/video", status_code=201, summary="Видео к песне из папки: ссылка, файл или убрать",
              description="Ровно один источник: файл `video` или `video_url` (качество `video_height`), "
                          "либо `remove`. Файл кладётся в songs/<A>/<A - T>/jobs/<id>/in/video.<ext>.")
@@ -585,7 +592,7 @@ def video(request: Request,
     if remove:
         if has_file or url:
             raise ApiError(400, "Нужно что-то одно: убрать видео или прикрепить новое", field="video")
-        if not item.video:
+        if not item.video and not _has_video_line(ctx, item):
             raise ApiError(409, "У песни нет видео")
         params["remove"] = True
     else:
