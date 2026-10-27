@@ -224,3 +224,23 @@ def test_worker_loop_runs_enabled_mirror(world):
     assert _mirror_jobs(world)[0].state == "done"
     assert (world.tmp / pi.id / rel).is_dir()
     assert _stored(world, m.id).last_result["added"] == 1
+
+
+def test_copy_of_other_source_folder_is_never_replaced(world):
+    """Две папки источника с одним ключом, в цели — копия только одной: вторая доезжает без
+    замены, копия первой остаётся на месте, корзина цели пуста."""
+    pi = _pi(world)
+    first = _put(world.out, "Группа", "Песня")
+    second = _put(world.out, "Группа", "Песня", rel_dir="Группа/Группа - Песня (live)", extra=" живьём")
+    _put(world.tmp / pi.id, "Группа", "Песня")
+    m = _mirror(world, pi, last={"added": 0, "updated": 0, "only_in_target": [], "started_at": now(-3600)})
+
+    job = _run_mirror(world, m)
+
+    assert job.state == "done", world.log(job.id)
+    (copy,) = _copies(world)
+    assert copy.params["rel_dir"] == second and copy.params["replace"] is False
+    assert copy.state == "done", world.log(copy.id)
+    assert (world.tmp / pi.id / first).is_dir() and (world.tmp / pi.id / second).is_dir()
+    assert world.trash.list() == []
+    assert _stored(world, m.id).last_result["added"] == 1

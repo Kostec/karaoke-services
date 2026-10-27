@@ -2,7 +2,7 @@
 
 import { api, JOB_ACTIVE as ACTIVE, JOB_FINAL as FINAL, STAGE_PUBLISH, canRepublish } from './api.js';
 import { nightStart, timeStart, startIso, scheduleLabel, displayOrder, queuePlaces } from './queue-logic.js';
-import { h, clear, runAction, fmtDate, fmtDuration, confirmDialog, toast, songName } from './ui.js';
+import { h, clear, runAction, fmtDate, fmtDuration, confirmDialog, toast, songName, openModal } from './ui.js';
 
 const POLL_MS = 2000;
 const LOG_MAX_LINES = 5000;
@@ -237,7 +237,7 @@ function openScheduleDialog(job) {
   const every = h('input', { type: 'checkbox', checked: !job });
   const err = h('div', { class: 'field-error', hidden: true, role: 'alert' });
   const submit = h('button', { type: 'button', class: 'primary' }, 'Отложить');
-  const el = h('dialog', { class: 'later-dlg', 'aria-labelledby': 'later-dlg-title' },
+  const el = openModal({ class: 'later-dlg', 'aria-labelledby': 'later-dlg-title' },
     h('h3', { id: 'later-dlg-title' }, job ? `Отложить «${songName(job.artist, job.title)}»` : 'Отложить все ожидающие'),
     h('div', { class: 'radio-row later-when' },
       h('label', {}, night, ' Сегодня ночью (01:00)'),
@@ -245,9 +245,6 @@ function openScheduleDialog(job) {
     job && waiting > 1 ? h('label', { class: 'check' }, every, ` Отложить все ожидающие (${waiting})`) : null,
     err,
     h('div', { class: 'actions' }, h('button', { type: 'button', onclick: () => el.close() }, 'Отмена'), submit));
-  el.addEventListener('close', () => el.remove());
-  document.body.append(el);
-  if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
   submit.addEventListener('click', async () => {
     const when = night.checked ? nightStart(new Date()) : timeStart(time.value, new Date());
     if (!when) { err.textContent = 'Укажите время'; err.hidden = false; return; }

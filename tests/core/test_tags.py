@@ -190,6 +190,14 @@ def test_change_for_songs_adds_and_removes_without_replacing(tags):
     assert tags.change_for_songs([], add=[a.id], remove=[]) == 0
 
 
+def test_change_for_songs_same_tag_in_add_and_remove_is_added(tags):
+    a, b = tags.create("А"), tags.create("Б")
+    tags.set_for_song("k1", [a.id])
+    # «А» и в add, и в remove — побеждает add: тег у песни остаётся, у новой — появляется
+    assert tags.change_for_songs(["k1", "k2"], add=[a.id, b.id], remove=[a.id]) == 2
+    assert tags.for_songs(["k1", "k2"]) == {"k1": [a.id, b.id], "k2": [a.id, b.id]}
+
+
 def test_change_for_songs_unknown_id_changes_nothing(tags):
     a = tags.create("А")
     tags.set_for_song("k1", [a.id])

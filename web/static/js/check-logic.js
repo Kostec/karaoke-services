@@ -1,6 +1,8 @@
 // Чистая логика раздела «Проверка библиотеки» (без DOM): группы находок, кнопки исправлений,
 // вызовы API под них, строки статуса. Отчёт — формат libcheck.make_report.
 
+import { plural } from './ui.js';
+
 export const KIND_LABELS = {
   no_audio: 'Без звука',
   no_cover: 'Без обложки',
@@ -14,14 +16,6 @@ export const KIND_ORDER = ['no_audio', 'no_cover', 'video_missing', 'encoding', 
 
 export const FIXED_JOB = 'Исправление поставлено'; // исправление ушло в очередь
 export const FIXED_DONE = 'Исправлено'; // исправлено сразу
-
-function plural(n, one, few, many) {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
-  return many;
-}
 
 /** Группы непустых видов находок: [{kind, label, count, findings}]. */
 export function groupFindings(report) {

@@ -30,6 +30,18 @@ export function clear(el) {
   return el;
 }
 
+/** Подсказка у погашенных действий с файлами песни, когда хранилище недоступно. */
+export const STORAGE_OFF = 'Хранилище недоступно — действия с файлами отключены';
+
+/** Модальное окно: <dialog attrs>…body</dialog> в body, показано; при закрытии удаляется. */
+export function openModal(attrs, ...body) {
+  const el = h('dialog', attrs, ...body);
+  el.addEventListener('close', () => el.remove());
+  document.body.append(el);
+  if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
+  return el;
+}
+
 /** Окно подтверждения; resolve(true) при «Да». */
 export function confirmDialog(text, okLabel = 'Да', { danger = false } = {}) {
   const dlg = document.getElementById('confirm');

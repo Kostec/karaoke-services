@@ -115,12 +115,18 @@ export function blockSigs(details, tags = null) {
   const song = details?.song || {};
   const media = details?.media || {};
   const sig = (v) => JSON.stringify(v);
+  // «Медиа»: имена плееров, обложки и фона плюс размер/время их файлов — тот же файл,
+  // перезаписанный заданием (минусовка заново), пересобирает плеер
+  const names = new Set([...mediaRows(details).map((r) => r.name), media.cover, media.background].filter(Boolean));
+  const mediaFiles = (details?.files || []).filter((f) => names.has(f.name)).map((f) => [f.name, f.size, f.mtime]);
   return {
     hero: sig([song.artist, song.title, song.txt_name, song.cover, song.tags || [], song.is_duet,
       song.instrumental, song.video, media.background, media.cover, tags]),
-    media: sig([mediaRows(details), details?.headers?.videogap ?? null, !!song.cover]),
+    media: sig([mediaRows(details), media.cover || null, media.background || null, mediaFiles,
+      details?.headers?.videogap ?? null, !!song.cover]),
     lyrics: sig([song.updated_at]),
     info: sig([infoRows(details), details?.usdb_url ?? null]),
-    store: sig([details?.copies || [], song.pending_copies || [], details?.files || []]),
+    // в «Файлах» видны имя и размер — время правки блок не пересобирает
+    store: sig([details?.copies || [], song.pending_copies || [], (details?.files || []).map((f) => [f.name, f.size])]),
   };
 }

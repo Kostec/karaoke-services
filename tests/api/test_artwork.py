@@ -106,6 +106,8 @@ def test_restart_reuses_staged_image_and_checks_duplicate(env, app):
     ({"kind": "cover"}, ("a.gif", b"GIF89a....", "image/gif"), "image",
      "Это не картинка (нужны jpg, png или webp)"),
     ({"kind": "cover", "url": "ftp://x/y.jpg"}, None, "url", "Нужна ссылка"),
+    ({"kind": "cover", "url": "http://[::1"}, None, "url", "Нужна ссылка http(s) на картинку"),
+    ({"kind": "cover", "url": "http://example.com:99999/a.jpg"}, None, "url", "Нужна ссылка http(s) на картинку"),
     ({"kind": "cover", "url": "http://192.168.1.5/cover.jpg"}, None, "url", musiclink.MSG_HOME_NETWORK),
 ])
 def test_bad_input_is_400_at_field_and_nothing_queued(app, http, fields, file, field, text):

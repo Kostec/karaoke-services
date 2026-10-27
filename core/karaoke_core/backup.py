@@ -305,10 +305,8 @@ def plan_import(data: dict, settings: Settings, tags: Tags) -> ImportPlan:
 def apply_import(plan: ImportPlan, settings: Settings, tags: Tags) -> None:
     """Исполнить план: только добавляет и обновляет, ничего не удаляет; пароли и токены
     существующих хранилищ, usdb, Яндекса и Telegram остаются прежними."""
-    if plan.new_targets:
-        # save_target не создаёт хранилище с заданным id, а id нужен прежний (от него song_id)
-        settings._write_targets([*settings.get_targets(), *[Target(**_public_fields(t))
-                                                           for t in plan.new_targets]])
+    for t in plan.new_targets:  # id нужен прежний: от него song_id и зеркала
+        settings.add_target(Target(**_public_fields(t)))
     for t in plan.changed_targets:
         settings.save_target(t)  # secret/token None — прежние, "" — сброшены (адрес или логин другие)
     if plan.default_target is not None:

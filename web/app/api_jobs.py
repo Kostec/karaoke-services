@@ -655,7 +655,7 @@ def restart(job_id: int, request: Request):
         return ctx.jobs.enqueue("rename", job, p, parent_id=job.id).to_dict()
     if job.type == "mirror":  # library-tools 09: ожидание заново, дубль активного — 409
         p = {k: v for k, v in job.params.items() if k not in ("retry_at", "wait_logged_at")}
-        if any(o.params.get("mirror_id") == p.get("mirror_id") for o in ctx.jobs.active("mirror")):
+        if ctx.jobs.active_mirror(p.get("mirror_id")) is not None:
             raise ApiError(409, "Зеркало уже синхронизируется")
         return ctx.jobs.enqueue("mirror", job, p, parent_id=job.id).to_dict()
     if job.type == "libcheck" and ctx.jobs.active("libcheck"):  # library-tools 08: одна проверка

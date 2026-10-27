@@ -14,7 +14,7 @@ from karaoke_core.libcheck import audio_link
 from karaoke_core.trash import TrashError
 
 from .api_jobs import Staging, ctx_of, queue_duplicate
-from .api_songs import _read_txt, _song_storage, _storage_call
+from .api_songs import read_txt, song_storage, storage_call
 from .context import ApiError
 
 router = APIRouter(prefix="/api", tags=["Проверка библиотеки"])
@@ -64,21 +64,21 @@ def get_check(request: Request):
 def fix_encoding(song_id: str, request: Request):
     ctx = ctx_of(request)
     item = ctx.find_song(song_id)
-    original = _read_txt(ctx, item)
+    original = read_txt(ctx, item)
     problem = ultrastar.encoding_problem(original)
     if problem is None:
         raise ApiError(409, ENCODING_OK)
     if not problem.fixed_text:
         raise ApiError(409, ENCODING_NOT_GUESSED)
     rel = f"{item.rel_dir}/{item.txt_name}"
-    storage = _song_storage(ctx, item)
+    storage = song_storage(ctx, item)
     try:
-        _storage_call(ctx, lambda: ctx.trash.save_version(storage, rel, reason="версия до исправления кодировки"),
+        storage_call(ctx, lambda: ctx.trash.save_version(storage, rel, reason="версия до исправления кодировки"),
                       target_id=item.target_id)
     except TrashError as e:
         raise ApiError(409, str(e)) from None
-    _storage_call(ctx, storage.write_atomic, rel, problem.fixed_text.encode("utf-8"), target_id=item.target_id)
-    item = _storage_call(ctx, ctx.refresh_song, item.rel_dir, item.target_id, target_id=item.target_id) or item
+    storage_call(ctx, storage.write_atomic, rel, problem.fixed_text.encode("utf-8"), target_id=item.target_id)
+    item = storage_call(ctx, ctx.refresh_song, item.rel_dir, item.target_id, target_id=item.target_id) or item
     return ctx.song_dict(item)
 
 
@@ -93,7 +93,7 @@ def audio_from_video(body: AudioIn, request: Request):
     queue_duplicate(ctx, "audio", song_id=item.song_id)
     if item.audio:
         raise ApiError(409, HAS_AUDIO)
-    url = audio_link(ultrastar.parse(_read_txt(ctx, item)).header("VIDEO"))
+    url = audio_link(ultrastar.parse(read_txt(ctx, item)).header("VIDEO"))
     if not url:
         raise ApiError(409, NO_YOUTUBE)
     params = {"rel_dir": item.rel_dir, "txt_name": item.txt_name, "target_id": item.target_id, "url": url}

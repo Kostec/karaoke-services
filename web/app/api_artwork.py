@@ -64,12 +64,19 @@ def _stage_file(upload: UploadFile, staging: Staging) -> None:
     tmp.replace(staging.path("image", f"{INPUT_IMAGE_STEM}.{ext}"))
 
 
+NEED_IMAGE_URL = "Нужна ссылка http(s) на картинку"
+
+
 def _public_url(url: str) -> str:
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
-        raise ApiError(400, "Нужна ссылка http(s) на картинку", field="url")
+    try:  # битая ссылка («http://[::1», порт вне 0…65535) — ValueError из urllib
+        parts = urllib.parse.urlsplit(url)
+        host, _port = parts.hostname, parts.port
+    except ValueError:
+        raise ApiError(400, NEED_IMAGE_URL, field="url") from None
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        raise ApiError(400, NEED_IMAGE_URL, field="url")
     try:
-        musiclink.check_public_host(parts.hostname)
+        musiclink.check_public_host(host)
     except musiclink.MusicLinkError as e:
         raise ApiError(400, str(e), field="url") from None
     return url

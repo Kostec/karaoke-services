@@ -1,19 +1,13 @@
 // Выбор песен в «Песнях» (режим «Выбрать») — чистая логика без DOM ради node-тестов:
 // набор отмеченных id, «скрыты фильтром», итог массовой операции, состояние кнопок нижней панели.
 
+import { plural, STORAGE_OFF as UNAVAILABLE } from './ui.js';
+
 export const MAX_BULK_SONGS = 1000; // как web/app/params.py
 export const MAX_ZIP_SONGS = 500;
-export const UNAVAILABLE = 'Хранилище недоступно — действия с файлами отключены';
+export { UNAVAILABLE };
 export const NOTHING = 'Ничего не выбрано';
 const NO_OTHERS = 'Других хранилищ нет — добавьте их в «Настройках»';
-
-function plural(n, one, few, many) {
-  const a = Math.abs(n) % 100, b = a % 10;
-  if (a > 10 && a < 20) return many;
-  if (b > 1 && b < 5) return few;
-  if (b === 1) return one;
-  return many;
-}
 
 /** Набор отмеченных песен по song_id (порядок отметки сохраняется). Смена фильтра его не трогает. */
 export function createSelection() {

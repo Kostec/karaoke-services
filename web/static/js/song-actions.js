@@ -7,7 +7,9 @@
 //   afterRename(newSongId) — задание переименования копии из currentTargetId готово (иначе reload).
 
 import { api, getDefaults, errorText, probeDownload, JOB_FINAL } from './api.js';
-import { h, confirmDialog, runAction, toast, days, songName, field, plural } from './ui.js';
+import {
+  h, confirmDialog, runAction, toast, days, songName, field, plural, openModal, STORAGE_OFF as UNAVAILABLE,
+} from './ui.js';
 import { bulkSummary } from './select-logic.js';
 import { renameErrors, renameBody, ownRename } from './rename-logic.js';
 import { createVideoBlock } from './video-block.js';
@@ -17,7 +19,6 @@ import { openCoverDialog, openBackgroundDialog } from './artwork.js'; // library
 
 const WATCH_MS = 3000;
 const watched = new Set();
-const UNAVAILABLE = 'Хранилище недоступно — действия с файлами отключены';
 const NO_AUDIO = 'У песни нет аудиофайла';
 const NO_OTHERS = 'Других хранилищ нет — добавьте их в «Настройках»';
 
@@ -136,7 +137,7 @@ export function openCopyDialog(songs, env, { bulk = false, what = 'показа�
   const existsBox = h('fieldset', {}, h('legend', {}, 'Если песня там уже есть'),
     h('label', { class: 'check' }, h('input', { type: 'radio', name: 'copy-exists', value: 'skip', checked: true }), 'пропустить'),
     h('label', { class: 'check' }, repl, 'заменить (прежняя версия уйдёт в корзину)'));
-  const el = h('dialog', { class: 'copy-dlg', 'aria-labelledby': 'copy-dlg-title' },
+  const el = openModal({ class: 'copy-dlg', 'aria-labelledby': 'copy-dlg-title' },
     h('h3', { id: 'copy-dlg-title' }, title),
     h('fieldset', {}, h('legend', {}, 'Хранилище'), radios),
     bulk ? h('label', { class: 'check' }, onlyMissing, 'только недостающие') : null,
@@ -146,9 +147,6 @@ export function openCopyDialog(songs, env, { bulk = false, what = 'показа�
   const syncExists = () => { existsBox.disabled = !!onlyMissing?.checked; };
   onlyMissing?.addEventListener('change', syncExists);
   syncExists();
-  el.addEventListener('close', () => el.remove());
-  document.body.append(el);
-  if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
 
   submit.addEventListener('click', async () => {
     const to = el.querySelector('input[name="copy-target"]:checked')?.value;
@@ -202,15 +200,12 @@ export async function openVideoDialog(song, env) {
   const cancel = h('button', { type: 'button', onclick: () => el.close() }, 'Отмена');
   const removeBtn = song.video
     ? h('button', { type: 'button', class: 'danger', onclick: () => removeVideo() }, 'Убрать видео') : null;
-  const el = h('dialog', { class: 'video-dlg', 'aria-labelledby': 'video-dlg-title' },
+  const el = openModal({ class: 'video-dlg', 'aria-labelledby': 'video-dlg-title' },
     h('h3', { id: 'video-dlg-title' }, `Видео: ${name}`),
     song.video ? h('div', { class: 'banner warn' },
       `У песни уже есть видео «${song.video}». При замене старое видео удалится.`) : null,
     block.el, errEl,
     h('div', { class: 'actions' }, removeBtn, h('span', { class: 'spacer' }), cancel, submit));
-  el.addEventListener('close', () => el.remove());
-  document.body.append(el);
-  if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
   currentVideoGap(song).then((gap) => {
     if (gap === null) return;
     gapKnown = true;
@@ -264,16 +259,13 @@ export function openRenameDialog(song, env) {
   const errEl = h('div', { class: 'banner err', hidden: true, role: 'alert' });
   const submit = h('button', { type: 'button', class: 'primary' }, 'Переименовать');
   const cancel = h('button', { type: 'button', onclick: () => el.close() }, 'Отмена');
-  const el = h('dialog', { class: 'rename-dlg', 'aria-labelledby': 'rename-dlg-title' },
+  const el = openModal({ class: 'rename-dlg', 'aria-labelledby': 'rename-dlg-title' },
     h('h3', { id: 'rename-dlg-title' }, `Переименовать «${songName(song.artist, song.title)}»`),
     field('Исполнитель', artist), errs.artist,
     field('Название', title), errs.title,
     h('p', { class: 'small muted' }, 'Переименуется во всех хранилищах, где есть песня; файлы получат новое имя.'),
     errEl,
     h('div', { class: 'actions' }, cancel, submit));
-  el.addEventListener('close', () => el.remove());
-  document.body.append(el);
-  if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
   title.focus();
   title.select();
 
@@ -330,10 +322,7 @@ const bulkName = (songs) => {
 };
 
 function modal(cls, title, ...body) {
-  const el = h('dialog', { class: `bulk-dlg ${cls}`, 'aria-label': title }, h('h3', {}, title), ...body);
-  el.addEventListener('close', () => el.remove());
-  document.body.append(el);
-  if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
+  const el = openModal({ class: `bulk-dlg ${cls}`, 'aria-label': title }, h('h3', {}, title), ...body);
   return el;
 }
 

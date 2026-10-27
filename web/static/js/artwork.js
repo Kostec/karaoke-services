@@ -3,7 +3,7 @@
 // Чистая логика — artwork-logic.js.
 
 import { api, getDefaults, errorText } from './api.js';
-import { h, confirmDialog, toast, songName } from './ui.js';
+import { h, confirmDialog, toast, songName, openModal } from './ui.js';
 import {
   imageError, urlError, hitLabel, hitSize, searchNote, artworkFields, SOURCE_LABELS, IMAGE_ACCEPT,
 } from './artwork-logic.js';
@@ -12,10 +12,7 @@ import { watchJob } from './song-actions.js';
 const DEFAULT_MAX_MB = 10;
 
 function showDialog(cls, labelId, ...body) {
-  const el = h('dialog', { class: `artwork-dlg ${cls}`, 'aria-labelledby': labelId }, ...body);
-  el.addEventListener('close', () => el.remove());
-  document.body.append(el);
-  if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
+  const el = openModal({ class: `artwork-dlg ${cls}`, 'aria-labelledby': labelId }, ...body);
   return el;
 }
 

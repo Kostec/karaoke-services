@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 
 from karaoke_core import telegram
-from karaoke_core.db import Job
+from karaoke_core.db import Job, now
 
 from .base import JobContext
 
@@ -117,9 +117,12 @@ def notify_queue_empty(ctx: JobContext, counts: dict, log_job_id: int | None = N
 
 
 def _queue_idle(ctx: JobContext) -> bool:
-    """Нет заданий к исполнению: ожидающие хранилище (``wait`` + ``retry_at``) не в счёт."""
+    """Нет заданий к исполнению: ожидающие повтора (``retry_at`` в будущем — хранилище, зеркало,
+    другое задание) не в счёт, как и в ``Jobs.claim_next``."""
+    current = now()
     for job in ctx.jobs.queued():
-        if not (job.params.get("wait") and job.params.get("retry_at")):
+        retry_at = job.params.get("retry_at")
+        if not (retry_at and str(retry_at) > current):
             return False
     return True
 

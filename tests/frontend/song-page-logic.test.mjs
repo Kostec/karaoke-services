@@ -142,3 +142,19 @@ test('blockSigs: правка .txt (updated_at) меняет lyrics и info', ()
   assert.notEqual(a.lyrics, b.lyrics);
   assert.notEqual(a.info, b.info);
 });
+
+test('blockSigs: тот же файл минусовки с новым mtime меняет только media', () => {
+  const INS = 'a [Instrumental].mp3';
+  const withFiles = (mtime) => ({ ...details({ media: { instrumental: INS } }),
+    files: [{ name: 'a.mp3', size: 500, mtime: 1 }, { name: INS, size: 400, mtime }] });
+  const a = blockSigs(withFiles(1));
+  const b = blockSigs(withFiles(2));
+  assert.notEqual(a.media, b.media);
+  for (const k of ['hero', 'lyrics', 'info', 'store']) assert.equal(a[k], b[k], k);
+});
+
+test('blockSigs: имена обложки и фона входят в подпись media', () => {
+  const a = blockSigs(details());
+  assert.notEqual(a.media, blockSigs(details({ media: { cover: 'a [CO].jpg' } })).media);
+  assert.notEqual(a.media, blockSigs(details({ media: { background: 'a [BG].jpg' } })).media);
+});

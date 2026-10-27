@@ -142,3 +142,29 @@ def test_missing_image_fails_with_russian_text(world):
     failed = world.jobs.get(job.id)
     assert failed.state == "failed" and "Картинка" in failed.error
     assert (world.out / DIR / TXT).read_bytes() == original
+
+
+def _case_insensitive(monkeypatch):
+    """Хранилище без регистра (Samba на exFAT/NTFS): удаление «X.JPG» уносит и «X.jpg»."""
+    from karaoke_core.storage import LocalStorage
+
+    def delete_file(self, rel):
+        parent, _, name = rel.rpartition("/")
+        for f in self._abs(parent).iterdir():
+            if f.name.casefold() == name.casefold():
+                f.unlink()
+
+    monkeypatch.setattr(LocalStorage, "delete_file", delete_file)
+
+
+def test_cover_of_other_case_only_is_not_deleted_after_upload(world, monkeypatch):
+    _case_insensitive(monkeypatch)
+    original = _song(world).replace(f"{STEM} [CO].jpg".encode("cp1251"), f"{STEM} [CO].JPG".encode("cp1251"))
+    (world.out / DIR / TXT).write_bytes(original)
+    (world.out / DIR / f"{STEM} [CO].jpg").rename(world.out / DIR / f"{STEM} [CO].JPG")
+    job = _enqueue(world, "cover", image=("image.jpg", JPG))
+    world.run(gpu=NO_GPU)
+
+    assert (world.jobs.get(job.id).state, world.jobs.get(job.id).error) == ("done", None)
+    assert (world.out / DIR / f"{STEM} [CO].jpg").read_bytes() == JPG  # новый файл на месте
+    assert f"#COVER:{STEM} [CO].jpg".encode("cp1251") in (world.out / DIR / TXT).read_bytes()

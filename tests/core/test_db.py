@@ -508,3 +508,16 @@ def test_libcheck_report_path(tmp_path):
     from karaoke_core.paths import DataPaths
 
     assert DataPaths(tmp_path).libcheck_report() == tmp_path / "reports" / "libcheck.json"
+
+
+def test_active_mirror_is_unfinished_job_of_that_mirror_only(jobs):
+    ref = {"artist": "Локальное", "title": "Pi"}
+    done = jobs.enqueue("mirror", ref, {"mirror_id": "m_a"})
+    jobs.update(done.id, state="done")
+    assert jobs.active_mirror("m_a") is None
+    other = jobs.enqueue("mirror", ref, {"mirror_id": "m_b"})
+    jobs.enqueue("copy", ref, {"mirror_id": "m_a"})  # не зеркало
+    assert jobs.active_mirror("m_a") is None
+    mine = jobs.enqueue("mirror", ref, {"mirror_id": "m_a"})
+    assert jobs.active_mirror("m_a").id == mine.id
+    assert jobs.active_mirror("m_b").id == other.id

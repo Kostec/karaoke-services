@@ -2,7 +2,7 @@
 // текст, сведения, хранилища, файлы.
 
 import { api, getDefaults } from './api.js';
-import { h, clear, fmtDate, toast } from './ui.js';
+import { h, clear, fmtDate, toast, STORAGE_OFF } from './ui.js';
 import { menuButton, closeMenu } from './menu.js';
 import { soloPlayback, releasePlayers } from './player.js';
 import {
@@ -128,11 +128,10 @@ function makeEnv(details, targetsRes) {
 function render(details, tags, targetsRes) {
   const song = details.song;
   const sigs = blockSigs(details, tags);
-  // library-tools 07: строки «Обложка»/«Фон» в «Медиа» — по именам файлов
-  sigs.media = `${sigs.media}|${details.media?.cover || ''}|${details.media?.background || ''}`;
   if (page && page.id === song.song_id && root.contains(page.slots.hero)) {
-    // та же песня: пересобираем только блоки со сменившейся подписью
-    page.env = makeEnv(details, targetsRes);
+    // та же песня: пересобираем только блоки со сменившейся подписью; env один на все блоки —
+    // уцелевшие блоки видят свежие хранилища и доступность через тот же объект
+    Object.assign(page.env, makeEnv(details, targetsRes));
     page.details = details;
     page.tags = tags;
     for (const name of BLOCKS) {
@@ -177,12 +176,14 @@ function setStorageOk(ok, label) {
     const el = BUILDERS.hero(page.details, page.tags, page.env);
     page.slots.hero.replaceWith(el);
     page.slots.hero = el;
+    // кнопки «Медиа» — на месте, чтобы не пересоздавать играющие плееры
+    syncFileActions(page.slots.media, ok);
   }
   const b = page.banner;
   b.hidden = ok;
   clear(b);
   if (!ok) {
-    b.append(h('div', { class: 'banner warn', role: 'status' },
+    b.append(h('div', { class: 'banner err', role: 'alert' },
       h('b', {}, `Хранилище «${storageName(page) || label || ''}» недоступно — действия с файлами отключены.`),
       ' ', h('span', { class: 'small' }, 'Проверка раз в 15 с; когда оно вернётся, всё включится само.')));
   }
@@ -331,17 +332,40 @@ function targetLabel(targets, id) {
   return t?.name || t?.label || id;
 }
 
-const STORAGE_OFF = 'Хранилище недоступно — действия с файлами отключены';
+/**
+ * Кнопка действия с файлами песни: гаснет, пока хранилище недоступно (подсказка STORAGE_OFF);
+ * baseTitle/baseOff — её собственное состояние при доступном хранилище.
+ */
+function fileAction(btn, env, { baseOff = false, baseTitle = '' } = {}) {
+  btn.dataset.fileAction = '';
+  btn.dataset.baseTitle = baseTitle;
+  if (baseOff) btn.dataset.baseOff = '';
+  syncButton(btn, env.outputOk !== false);
+  return btn;
+}
+
+function syncButton(btn, ok) {
+  btn.disabled = !ok || 'baseOff' in btn.dataset;
+  const title = ok ? btn.dataset.baseTitle : STORAGE_OFF;
+  if (title) btn.title = title; else btn.removeAttribute('title');
+}
+
+/** Погасить/включить все кнопки действий с файлами внутри scope (плееры не трогаются). */
+function syncFileActions(scope, ok) {
+  for (const btn of scope?.querySelectorAll('button[data-file-action]') || []) syncButton(btn, ok);
+}
+
+/** Обработчик кнопки с файлами: хранилище отвалилось — сообщение вместо действия. */
+const whenStorageOk = (env, fn) => (e) => {
+  if (env.outputOk === false) { toast(STORAGE_OFF, 'err'); return; }
+  fn(e);
+};
 
 /** Строка «Обложка»/«Фон» блока «Медиа»: миниатюра (ссылка на картинку целиком) и кнопка диалога. */
 function artworkRow(kind, name, song, env, fileUrl) {
   const isCover = kind === 'cover';
-  const open = () => {
-    if (env.outputOk === false) { toast(STORAGE_OFF, 'err'); return; }
-    (isCover ? openCoverDialog : openBackgroundDialog)(song, env);
-  };
-  const btn = h('button', { type: 'button', class: 'sm', disabled: env.outputOk === false,
-    title: env.outputOk === false ? STORAGE_OFF : null, onclick: open }, name ? 'Заменить…' : 'Поставить…');
+  const open = whenStorageOk(env, () => (isCover ? openCoverDialog : openBackgroundDialog)(song, env));
+  const btn = fileAction(h('button', { type: 'button', class: 'sm', onclick: open }, name ? 'Заменить…' : 'Поставить…'), env);
   const body = name
     ? [h('a', { href: fileUrl(name), target: '_blank', rel: 'noopener', title: 'Открыть изображение целиком' },
       h('img', { class: isCover ? 'song-cover-thumb' : 'song-bg-thumb', src: fileUrl(name),
@@ -357,10 +381,12 @@ function mediaRow({ kind, label, name }, song, details, env, fileUrl) {
   if (!name) {
     const none = h('div', { class: 'media-none' }, 'нет');
     if (kind === 'instrumental') {
-      none.append(h('button', { type: 'button', disabled: !song.audio, title: song.audio ? null : 'У песни нет аудиофайла',
-        onclick: (e) => makeInstrumental(e.currentTarget, song, env) }, 'Сделать минусовку'));
+      none.append(fileAction(h('button', { type: 'button',
+        onclick: whenStorageOk(env, (e) => makeInstrumental(e.currentTarget, song, env)) }, 'Сделать минусовку'),
+      env, { baseOff: !song.audio, baseTitle: song.audio ? '' : 'У песни нет аудиофайла' }));
     } else if (kind === 'video') {
-      none.append(h('button', { type: 'button', onclick: () => openVideoDialog(song, env) }, 'Прикрепить видео…'));
+      none.append(fileAction(h('button', { type: 'button', onclick: whenStorageOk(env, () => openVideoDialog(song, env)) },
+        'Прикрепить видео…'), env));
     }
     row.append(none);
     return row;

@@ -1115,7 +1115,7 @@ def publish_video(ctx: JobContext, job: Job, src: Job) -> None:
             ctx.trash.save_version(storage, txt_rel,
                                    reason="версия до удаления видео" if remove else "версия до видео")
             storage.write_atomic(txt_rel, new_txt)
-        if old and (remove or old != video.name) and storage.exists(f"{rel_dir}/{old}"):
+        if old and (remove or old.casefold() != video.name.casefold()) and storage.exists(f"{rel_dir}/{old}"):
             storage.delete_file(f"{rel_dir}/{old}")
             ctx.log(job.id, f"Прежнее видео «{old}» удалено.")
     except (StorageError, TrashError, OSError) as e:

@@ -239,3 +239,24 @@ def test_sources_skip_input_video_and_keep_video_url(world):
     assert (source / "input.mp3").is_file()
     assert not (source / "video.mp4").exists()
     assert json.loads((source / INPUT_PARAMS).read_text("utf-8"))["video_url"] == YT
+
+
+def test_video_of_other_case_only_is_not_deleted_after_upload(world, monkeypatch):
+    """Хранилище без регистра: прежнее «X.MP4» и новое «X.mp4» — один файл, удалять нельзя."""
+    from karaoke_core.storage import LocalStorage
+
+    def delete_file(self, rel):
+        parent, _, name = rel.rpartition("/")
+        for f in self._abs(parent).iterdir():
+            if f.name.casefold() == name.casefold():
+                f.unlink()
+
+    monkeypatch.setattr(LocalStorage, "delete_file", delete_file)
+    original = _song(world).replace(f"{STEM}.avi".encode("cp1251"), f"{STEM}.MP4".encode("cp1251"))
+    (world.out / DIR / TXT).write_bytes(original)
+    (world.out / DIR / f"{STEM}.MP4").write_bytes(b"OLD-MP4")
+    job = _enqueue(world, video_file=("video.mp4", b"NEW-MP4"))
+    world.run(gpu=NO_GPU)
+
+    assert world.jobs.get(job.id).state == "done", world.jobs.get(job.id).error
+    assert (world.out / DIR / f"{STEM}.mp4").read_bytes() == b"NEW-MP4"

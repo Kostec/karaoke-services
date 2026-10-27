@@ -97,7 +97,7 @@ def publish_artwork(ctx: JobContext, job: Job, src: Job) -> None:
             reason = f"версия до удаления {of_what}" if remove else f"версия до {of_what}"
             ctx.trash.save_version(storage, txt_rel, reason=reason)
             storage.write_atomic(txt_rel, new_txt)
-        if old and (remove or old != image.name) and storage.exists(f"{rel_dir}/{old}"):
+        if old and (remove or old.casefold() != image.name.casefold()) and storage.exists(f"{rel_dir}/{old}"):
             storage.delete_file(f"{rel_dir}/{old}")
             ctx.log(job.id, f"Прежний файл «{old}» удалён.")
     except (StorageError, TrashError, OSError) as e:

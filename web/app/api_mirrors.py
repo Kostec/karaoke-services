@@ -43,11 +43,6 @@ def _name(ctx: AppContext, target_id: str) -> str | None:
     return (t.name or t.label) if t is not None else None
 
 
-def active_job(ctx: AppContext, mirror_id: str) -> Job | None:
-    """Незавершённое задание ``mirror`` этого зеркала."""
-    return next((j for j in ctx.jobs.active("mirror") if j.params.get("mirror_id") == mirror_id), None)
-
-
 def _waiting(ctx: AppContext, m: Mirror, job: Job | None) -> str | None:
     """«Ждёт хранилище «X»» — у задания зеркала или у его копий, ждущих цель."""
     if job is not None and (job.stage or "").startswith(WAIT_PREFIX):
@@ -62,7 +57,7 @@ def _waiting(ctx: AppContext, m: Mirror, job: Job | None) -> str | None:
 
 def _out(ctx: AppContext, m: Mirror) -> dict:
     src, dst = _name(ctx, m.from_target), _name(ctx, m.to_target)
-    job = active_job(ctx, m.id)
+    job = ctx.jobs.active_mirror(m.id)
     return {**m.to_dict(), "from_name": src or DELETED_NAME, "to_name": dst or DELETED_NAME,
             "missing": src is None or dst is None, "job": job.to_dict() if job else None,
             "waiting": _waiting(ctx, m, job)}
@@ -140,6 +135,6 @@ def run_mirror(mirror_id: str, request: Request):
     src, dst = _name(ctx, m.from_target), _name(ctx, m.to_target)
     if src is None or dst is None:
         raise ApiError(409, MIRROR_TARGET_GONE)
-    if active_job(ctx, m.id) is not None:
+    if ctx.jobs.active_mirror(m.id) is not None:
         raise ApiError(409, MIRROR_BUSY)
     return ctx.jobs.enqueue("mirror", {"artist": src, "title": dst}, {"mirror_id": m.id}).to_dict()

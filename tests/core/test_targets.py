@@ -59,6 +59,19 @@ def test_save_target_assigns_stable_id_and_keeps_secret(path):
     assert [x.id for x in s.get_targets()] == ["local", t.id]
 
 
+def test_add_target_keeps_given_id_and_refuses_existing(path):
+    s = db.Settings(db.connect(path), ENV_LOCAL)
+    t = s.add_target(db.Target(id="t_0badc0de", name="Диск", kind="webdav", url="https://dav.example", user="me"))
+    assert t.id == "t_0badc0de"
+    assert [x.id for x in db.Settings(db.connect(path), ENV_LOCAL).get_targets()] == ["local", "t_0badc0de"]
+    for bad in (db.Target(id="t_0badc0de", name="Ещё", kind="webdav", url="https://x"),
+                db.Target(id="local", name="Л", kind="local", path="/output"),
+                db.Target(id="t_0badc0d1", name="Х", kind="ftp")):
+        with pytest.raises(ValueError):
+            s.add_target(bad)
+    assert [x.name for x in s.get_targets()] == ["Локальное хранилище", "Диск"]
+
+
 def test_save_target_keeps_token_and_public_hides_both(path):
     s = db.Settings(db.connect(path), ENV_LOCAL)
     t = s.save_target(db.Target(id="", name="Диск", kind="gdrive", client_id="cid",

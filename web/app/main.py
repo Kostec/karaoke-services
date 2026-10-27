@@ -73,6 +73,63 @@ class BasicAuthMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
+FOREIGN_ORIGIN = "Запрос с чужой страницы отклонён"
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_DEFAULT_PORTS = {"http": "80", "https": "443"}
+
+
+def _host_port(value: str, scheme: str = "http") -> str:
+    """«host[:port]» в нижнем регистре, порт по умолчанию схемы дописывается явно."""
+    value = value.strip().lower()
+    host, sep, port = value.rpartition(":")
+    if not sep or "]" in port:  # без порта (или IPv6 без порта)
+        return f"{value}:{_DEFAULT_PORTS.get(scheme, '80')}"
+    return value
+
+
+def _same_origin(origin: str, hosts: list[str]) -> bool:
+    """Origin «scheme://host[:port]» совпадает с одним из Host-заголовков запроса."""
+    scheme, sep, rest = origin.strip().partition("://")
+    if not sep or not rest or "/" in rest:
+        return False
+    mine = _host_port(rest, scheme.lower())
+    return any(mine == _host_port(h, scheme.lower()) for h in hosts if h)
+
+
+class SameOriginMiddleware:
+    """Единая проверка CSRF: изменяющий запрос под /api/ с чужим Origin (или
+    Sec-Fetch-Site: cross-site) получает 403 и до обработчиков не доходит.
+    Запросы без Origin (curl, скрипты) и со своей страницы проходят как раньше."""
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def _foreign(scope) -> bool:
+        method, path = scope.get("method", "").upper(), scope.get("path", "")
+        if scope["type"] != "http" or method not in _UNSAFE_METHODS or not path.startswith("/api/"):
+            return False
+        headers = {}
+        for name, value in scope.get("headers", []):
+            headers.setdefault(name.decode("latin-1").lower(), value.decode("latin-1"))
+        if headers.get("sec-fetch-site", "").strip().lower() == "cross-site":
+            return True
+        origin = headers.get("origin")
+        if origin is None:
+            return False
+        hosts = [headers.get("host", ""), headers.get("x-forwarded-host", "").split(",")[0]]
+        return not _same_origin(origin, hosts)
+
+    async def __call__(self, scope, receive, send):
+        if not self._foreign(scope):
+            return await self.app(scope, receive, send)
+        body = json.dumps({"detail": FOREIGN_ORIGIN}, ensure_ascii=False).encode("utf-8")
+        await send({"type": "http.response.start", "status": 403, "headers": [
+            (b"content-type", b"application/json; charset=utf-8"),
+            (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
 def _cleanup(ctx: AppContext) -> None:
     """Очистка корзины по TRASH_DAYS и распаковок импорта старше часа."""
     try:
@@ -172,6 +229,7 @@ def create_app(*, data_dir: str | Path | None = None, env: dict | None = None,
     if static.is_dir():
         app.mount("/", StaticFiles(directory=static, html=True), name="static")
 
+    app.add_middleware(SameOriginMiddleware)  # чужая страница не меняет состояние (CSRF)
     app.add_middleware(BasicAuthMiddleware, expected=ctx.password)
     return app
 

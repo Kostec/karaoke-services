@@ -22,7 +22,7 @@ from karaoke_core.storage import StorageError
 from .base import JobContext, JobFailed
 from .progress import STAGE_MIRROR_COMPARE, STAGE_MIRROR_SCAN
 
-__all__ = ["MirrorHandler", "MIRROR_EVERY_S", "MIRROR_CHECK_S", "schedule_mirrors", "active_mirror_job",
+__all__ = ["MirrorHandler", "MIRROR_EVERY_S", "MIRROR_CHECK_S", "schedule_mirrors",
            "MIRROR_GONE", "MIRROR_TARGET_GONE"]
 
 MIRROR_EVERY_S = 1800  # включённое зеркало синхронизируется раз в 30 минут
@@ -50,11 +50,6 @@ def _key(item: LibraryItem) -> str:
     return naming.song_tag_key(item.artist, item.title)
 
 
-def active_mirror_job(jobs, mirror_id: str) -> Job | None:
-    """Незавершённое задание ``mirror`` этого зеркала (дубль не ставится)."""
-    return next((j for j in jobs.active("mirror") if j.params.get("mirror_id") == mirror_id), None)
-
-
 def _mirror_ref(ctx: JobContext, mirror: Mirror) -> dict:
     """Подпись задания в «Очереди»: «откуда» - «куда»."""
     name = _handlers._target_name
@@ -74,7 +69,7 @@ def schedule_mirrors(ctx: JobContext, *, every_s: float = MIRROR_EVERY_S) -> lis
         last = _ts(mirror.last_run_at)
         if last is not None and now_ts - last < every_s:
             continue
-        if active_mirror_job(ctx.jobs, mirror.id) is not None:
+        if ctx.jobs.active_mirror(mirror.id) is not None:
             continue
         out.append(ctx.jobs.enqueue("mirror", _mirror_ref(ctx, mirror), {"mirror_id": mirror.id}))
     return out
@@ -149,11 +144,16 @@ class MirrorHandler:
         by_key: dict[str, list[LibraryItem]] = {}
         for item in dst:
             by_key.setdefault(_key(item), []).append(item)
-        src_keys = {_key(i) for i in src}
+        src_dirs: dict[str, set[str]] = {}
+        for item in src:
+            src_dirs.setdefault(_key(item), set()).add(item.rel_dir.casefold())
         added = updated = 0
         for item in src:
             ctx.check_cancel(job.id)
-            copies = by_key.get(_key(item))
+            # копия, чья папка совпадает с другой папкой источника, — чужая: её не заменяем
+            own = item.rel_dir.casefold()
+            others = src_dirs[_key(item)] - {own}
+            copies = [c for c in by_key.get(_key(item), ()) if c.rel_dir.casefold() not in others]
             same = dict(rel_dir=item.rel_dir, from_target=mirror.from_target, to_target=mirror.to_target)
             if not copies:
                 if ctx.jobs.active_copy(**same) is None:
@@ -176,7 +176,7 @@ class MirrorHandler:
             ctx.jobs.enqueue_copy(item, txt_name=item.txt_name, replace=True, wait=True,
                                   replace_rel_dir=other_dir, **same)
         only = [{"song_id": i.song_id, "artist": i.artist, "title": i.title, "rel_dir": i.rel_dir}
-                for i in dst if _key(i) not in src_keys]
+                for i in dst if _key(i) not in src_dirs]
         only.sort(key=lambda d: (d["artist"].casefold(), d["title"].casefold()))
         return {"added": added, "updated": updated, "only_in_target": only}
 

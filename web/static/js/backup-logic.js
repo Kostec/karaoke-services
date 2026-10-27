@@ -1,16 +1,11 @@
 // Резервная копия настроек (истории 66–68): чистая логика карточки «Резервная копия» в settings.js.
 // План загрузки — ответ POST /api/settings/backup?apply=0 (karaoke_core.backup.ImportPlan.to_dict).
 
+import { plural } from './ui.js';
+
 export const NOTHING_DELETED = 'Ничего не удаляется';
 export const NO_CHANGES = 'Изменений нет — всё уже есть';
 export const YM_AGAIN = 'Яндекс Музыка: введите токен заново';
-
-function plural(n, one, few, many) {
-  const m10 = n % 10, m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-  return many;
-}
 
 const count = (n, one, few, many) => `${n} ${plural(n, one, few, many)}`;
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);

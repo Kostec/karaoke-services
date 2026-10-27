@@ -421,6 +421,11 @@ class Jobs:
             f"SELECT * FROM jobs WHERE type=? AND state IN ({marks}) ORDER BY id", (type, *ACTIVE_STATES))
         return [Job.from_row(r) for r in rows]
 
+    def active_mirror(self, mirror_id: str) -> Job | None:
+        """Незавершённое задание ``mirror`` этого зеркала — единое правило дубля (веб, restart,
+        планировщик воркера)."""
+        return next((j for j in self.active("mirror") if j.params.get("mirror_id") == mirror_id), None)
+
     def get(self, id: int) -> Job | None:
         row = self.conn.execute("SELECT * FROM jobs WHERE id=?", (id,)).fetchone()
         return Job.from_row(row) if row else None
@@ -825,6 +830,21 @@ class Settings:
         saved = Target(**values)
         self._write_targets([saved if t.id == saved.id else t for t in stored]
                             + ([] if old is not None else [saved]))
+        return saved
+
+    def add_target(self, target: Target) -> Target:
+        """Создать хранилище с заданным ``id`` (восстановление из резервной копии: от id зависят
+        ``song_id`` и зеркала). Пустой ``id`` — новый; ``id`` уже есть, встроенный или
+        неизвестный тип — ``ValueError``."""
+        if target.id == LOCAL_TARGET_ID:
+            raise ValueError("Локальное хранилище не меняется")
+        if target.kind not in TARGET_KINDS:
+            raise ValueError(f"Неизвестный тип хранилища: «{target.kind}»")
+        stored = self._stored_targets()
+        if target.id and any(t.id == target.id for t in stored):
+            raise ValueError(f"Хранилище с id «{target.id}» уже есть")
+        saved = Target(**{**target._to_dict(), "id": target.id or new_target_id()})
+        self._write_targets([*stored, saved])
         return saved
 
     def delete_target(self, target_id: str) -> None:

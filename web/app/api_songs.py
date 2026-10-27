@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api", tags=["Песни"])
 log = logging.getLogger(__name__)
 
 
-def _storage_call(ctx: AppContext, fn, *a, target_id: str | None = None):
+def storage_call(ctx: AppContext, fn, *a, target_id: str | None = None):
     """Вызов хранилища ``target_id``: недоступно → 503 с понятной причиной."""
     try:
         return fn(*a)
@@ -49,13 +49,13 @@ def _not_found_or_unavailable(ctx: AppContext, e: StorageNotFound, target_id: st
     raise ApiError(404, str(e)) from None
 
 
-def _song_storage(ctx: AppContext, item):
+def song_storage(ctx: AppContext, item):
     """Хранилище песни (по ``target_id`` её строки индекса)."""
-    return _storage_call(ctx, ctx.storage, item.target_id, target_id=item.target_id)
+    return storage_call(ctx, ctx.storage, item.target_id, target_id=item.target_id)
 
 
-def _read_txt(ctx: AppContext, item) -> bytes:
-    return _storage_call(ctx, _song_storage(ctx, item).read, f"{item.rel_dir}/{item.txt_name}",
+def read_txt(ctx: AppContext, item) -> bytes:
+    return storage_call(ctx, song_storage(ctx, item).read, f"{item.rel_dir}/{item.txt_name}",
                          target_id=item.target_id)
 
 
@@ -212,9 +212,9 @@ def _copies(ctx: AppContext, item) -> list[dict]:
 def get_details(song_id: str, request: Request):
     ctx = ctx_of(request)
     item = ctx.find_song(song_id)
-    storage = _song_storage(ctx, item)
-    files = _storage_call(ctx, _folder_files, storage, item.rel_dir, target_id=item.target_id)
-    song = ultrastar.parse(_read_txt(ctx, item))
+    storage = song_storage(ctx, item)
+    files = storage_call(ctx, _folder_files, storage, item.rel_dir, target_id=item.target_id)
+    song = ultrastar.parse(read_txt(ctx, item))
     names = [e.name for e in files]
     base = (item.txt_name[:-len(naming.SUFFIX_TXT)]
             if item.txt_name.lower().endswith(naming.SUFFIX_TXT) else item.txt_name)
@@ -250,21 +250,21 @@ def get_lyrics(song_id: str, request: Request):
     own = _own_lyrics(ctx, item)
     if own is not None:
         return {"text": own, "source": "own"}
-    return {"text": ultrastar.extract_lyrics(ultrastar.parse(_read_txt(ctx, item))),
+    return {"text": ultrastar.extract_lyrics(ultrastar.parse(read_txt(ctx, item))),
             "source": "extracted"}
 
 
 @router.get("/songs/{song_id}/notes", summary="Ноты песни структурой")
 def get_notes(song_id: str, request: Request):
     ctx = ctx_of(request)
-    return notes_payload(ultrastar.parse(_read_txt(ctx, ctx.find_song(song_id))))
+    return notes_payload(ultrastar.parse(read_txt(ctx, ctx.find_song(song_id))))
 
 
 @router.put("/songs/{song_id}/notes", summary="Сохранить правку нот (старая версия — в корзину)")
 def put_notes(song_id: str, body: NotesIn, request: Request):
     ctx = ctx_of(request)
     item = ctx.find_song(song_id)
-    original = _read_txt(ctx, item)
+    original = read_txt(ctx, item)
     song = ultrastar.parse(original)
     reason = read_only_reason(song)
     if reason:
@@ -276,13 +276,13 @@ def put_notes(song_id: str, body: NotesIn, request: Request):
         raise ApiError(400, f"Символ не поддерживается кодировкой файла ({song.encoding})") from None
     if data != original:
         rel = f"{item.rel_dir}/{item.txt_name}"
-        storage = _song_storage(ctx, item)
+        storage = song_storage(ctx, item)
         try:
-            _storage_call(ctx, lambda: ctx.trash.save_version(storage, rel, reason="правка нот в редакторе"),
+            storage_call(ctx, lambda: ctx.trash.save_version(storage, rel, reason="правка нот в редакторе"),
                           target_id=item.target_id)
         except TrashError as e:
             raise ApiError(409, str(e)) from None
-        _storage_call(ctx, storage.write_atomic, rel, data, target_id=item.target_id)
+        storage_call(ctx, storage.write_atomic, rel, data, target_id=item.target_id)
         item = ctx.refresh_song(item.rel_dir, item.target_id) or item
     return ctx.song_dict(item)
 
@@ -315,9 +315,9 @@ _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 def _media(ctx: AppContext, item, name: str | None, request: Request, default_type: str):
     if not name:
         raise not_found("У песни нет такого файла")
-    storage = _song_storage(ctx, item)
+    storage = song_storage(ctx, item)
     rel = f"{item.rel_dir}/{name}"
-    st = _storage_call(ctx, storage.stat, rel, target_id=item.target_id)
+    st = storage_call(ctx, storage.stat, rel, target_id=item.target_id)
     if st is None or st.is_dir:
         _not_found_or_unavailable(ctx, StorageNotFound("Файл песни не найден в папке результата"),
                                   item.target_id)
@@ -338,7 +338,7 @@ def _media(ctx: AppContext, item, name: str | None, request: Request, default_ty
             return JSONResponse({"detail": "Неверный диапазон"}, status_code=416,
                                 headers={"Content-Range": f"bytes */{size}"})
         status = 206
-    f = _storage_call(ctx, storage.open_read, rel, target_id=item.target_id)
+    f = storage_call(ctx, storage.open_read, rel, target_id=item.target_id)
 
     def body():
         try:
@@ -395,8 +395,8 @@ def get_file(song_id: str, request: Request, name: str = "", download: bool = Fa
     item = ctx.find_song(song_id)
     if not name or "/" in name or "\\" in name or name in (".", ".."):
         raise not_found(NO_SUCH_FILE)
-    storage = _song_storage(ctx, item)
-    files = _storage_call(ctx, _folder_files, storage, item.rel_dir, target_id=item.target_id)
+    storage = song_storage(ctx, item)
+    files = storage_call(ctx, _folder_files, storage, item.rel_dir, target_id=item.target_id)
     real = _present([e.name for e in files], name)
     if real is None:
         raise not_found(NO_SUCH_FILE)
@@ -406,7 +406,7 @@ def get_file(song_id: str, request: Request, name: str = "", download: bool = Fa
     return resp
 
 
-class _ZipSink:
+class ZipSink:
     """Поток для ``zipfile``: копит записанное, генератор забирает порциями."""
 
     def __init__(self):
@@ -431,19 +431,19 @@ def _zip_name(item) -> str:
     return item.rel_dir.rsplit("/", 1)[-1]
 
 
-def _song_files(storage, rel_dir: str, sub: str = "") -> list[tuple[str, object]]:
+def song_files(storage, rel_dir: str, sub: str = "") -> list[tuple[str, object]]:
     """Файлы папки песни с подпапками: ``[(путь внутри папки, Entry)]``; ``.part`` — мимо."""
     out = []
     for e in storage.listdir(f"{rel_dir}/{sub}" if sub else rel_dir):
         path = f"{sub}/{e.name}" if sub else e.name
         if e.is_dir:
-            out.extend(_song_files(storage, rel_dir, path))
+            out.extend(song_files(storage, rel_dir, path))
         elif not e.name.endswith(PART_SUFFIX):
             out.append((path, e))
     return sorted(out, key=lambda x: x[0])
 
 
-def _zip_time(mtime: float | None) -> tuple:
+def zip_time(mtime: float | None) -> tuple:
     """Дата файла в архиве — из хранилища (zip не умеет раньше 1980 года)."""
     stamp = time.localtime(mtime) if mtime else time.localtime()
     return max(stamp[:6], (1980, 1, 1, 0, 0, 0))
@@ -453,8 +453,8 @@ def _zip_time(mtime: float | None) -> tuple:
 def get_zip(song_id: str, request: Request, check: bool = False):
     ctx = ctx_of(request)
     item = ctx.find_song(song_id)
-    storage = _song_storage(ctx, item)
-    files = _storage_call(ctx, _song_files, storage, item.rel_dir, target_id=item.target_id)
+    storage = song_storage(ctx, item)
+    files = storage_call(ctx, song_files, storage, item.rel_dir, target_id=item.target_id)
     if not files:
         _not_found_or_unavailable(ctx, StorageNotFound("Папка песни пуста или не найдена"),
                                   item.target_id)
@@ -463,7 +463,7 @@ def get_zip(song_id: str, request: Request, check: bool = False):
     name = _zip_name(item)  # список файлов уже получен — хранилище ответило до первого байта
 
     def body():
-        sink = _ZipSink()
+        sink = ZipSink()
         with zipfile.ZipFile(sink, "w") as zf:
             for sub, entry in files:
                 try:
@@ -472,7 +472,7 @@ def get_zip(song_id: str, request: Request, check: bool = False):
                     log.error("zip песни %s: не удалось прочитать «%s»: %s", song_id, sub, e)
                     raise
                 with f:
-                    info = zipfile.ZipInfo(f"{name}/{sub}", _zip_time(entry.mtime))
+                    info = zipfile.ZipInfo(f"{name}/{sub}", zip_time(entry.mtime))
                     info.compress_type = (zipfile.ZIP_DEFLATED if sub.lower().endswith(".txt")
                                           else zipfile.ZIP_STORED)
                     info.file_size = entry.size

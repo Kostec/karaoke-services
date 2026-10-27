@@ -101,3 +101,16 @@ def test_telegram_failure_does_not_break_job_or_queue(world, failure):
         assert "Telegram" in log and "Уведомление" in log
         assert BOT not in log and "AAH" not in log
         assert world.jobs.get(job.id).error is None
+
+
+def test_waiting_job_with_future_retry_does_not_block_summary(world, tg):
+    """Ждущее зеркало (``retry_at`` в будущем, без ``wait``) не мешает сводке."""
+    from karaoke_core.db import now
+
+    _configure(world, on_done=False, on_failed=False, on_queue_empty=True)
+    waiting = world.jobs.enqueue("mirror", {"artist": "Локальное", "title": "Pi"},
+                                 {"mirror_id": "m_x", "retry_at": now(3600)})
+    job = world.enqueue_generate()
+    world.run(timeout=15, until=lambda: world.jobs.get(job.id).state == "done" and bool(_texts(tg)))
+    assert world.jobs.get(waiting.id).state == "queued"
+    assert _texts(tg) == ["Очередь опустела: готово 1, сбоев 0"]

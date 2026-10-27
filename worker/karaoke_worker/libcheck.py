@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 
+from karaoke_core import scan
 from karaoke_core.db import Job, now
 from karaoke_core.libcheck import find_problems, make_report, scan_song
 from karaoke_core.storage import StorageError, StorageNotFound
@@ -81,8 +82,7 @@ class LibCheckHandler:
             ctx.check_cancel(job.id)
             if j and j % PROGRESS_EVERY == 0:
                 ctx.jobs.update(job.id, percent=round(100 * (n + j / len(entries)) / total, 1))
-            own = ctx.songs.by_rel_dir(entry.rel_dir)
-            items.append(entry.to_library_item(tid, own.id if own else None, stamp))
+            items.append(scan.library_item(entry, tid, ctx.songs, stamp))
             try:
                 scans.append(scan_song(storage, entry))
             except StorageNotFound:

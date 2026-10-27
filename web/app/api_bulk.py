@@ -17,7 +17,7 @@ from karaoke_core.storage import StorageError, StorageNotFound
 from karaoke_core.trash import TrashError
 
 from .api_jobs import ctx_of
-from .api_songs import _ZipSink, _song_files, _zip_time
+from .api_songs import ZipSink, song_files, zip_time
 from .context import ApiError, AppContext
 from .params import MAX_BULK_SONGS, MAX_ZIP_SONGS
 
@@ -109,7 +109,7 @@ def bulk_zip(request: Request, song_ids: str = Form("")):
     ids = _song_ids(song_ids.split(","), MAX_ZIP_SONGS)
 
     def body():
-        sink = _ZipSink()
+        sink = ZipSink()
         missed: list[str] = []
         down: dict[str, str] = {}  # недоступные хранилища: id → причина (не ждать каждую песню)
         used: set[str] = set()
@@ -124,7 +124,7 @@ def bulk_zip(request: Request, song_ids: str = Form("")):
                     continue
                 try:
                     storage = ctx.storage(item.target_id)
-                    files = _song_files(storage, item.rel_dir)
+                    files = song_files(storage, item.rel_dir)
                 except StorageNotFound:
                     files = []
                 except StorageError as e:
@@ -143,7 +143,7 @@ def bulk_zip(request: Request, song_ids: str = Form("")):
                         log.error("общий zip: не удалось прочитать «%s/%s»: %s", item.rel_dir, sub, e)
                         missed.append(f"{_title(item)}: файл «{sub}» не прочитан: {e}")
                         continue
-                    info = zipfile.ZipInfo(f"{folder}/{sub}", _zip_time(entry.mtime))
+                    info = zipfile.ZipInfo(f"{folder}/{sub}", zip_time(entry.mtime))
                     info.compress_type = (zipfile.ZIP_DEFLATED if sub.lower().endswith(".txt")
                                           else zipfile.ZIP_STORED)
                     info.file_size = entry.size
