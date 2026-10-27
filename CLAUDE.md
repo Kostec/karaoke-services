@@ -11,22 +11,22 @@ Docker — только Linux-движок: `docker --context desktop-linux comp
 - Проверка GPU и правок UltraSinger: `./scripts/compose.ps1 run --rm worker gpucheck` (успех — RC=0, последняя строка `gpucheck: OK …`).
 - Только образ worker (15–30 мин с нуля): `./scripts/compose.ps1 build worker`.
 - Логи: `./scripts/compose.ps1 logs --tail 100 worker` (или `web`).
-- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 848 passed, 2 skipped (после смены зависимостей — `run --build`).
+- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 1083 passed, 2 skipped (после смены зависимостей — `run --build`).
 - Подмножество: `docker --context desktop-linux compose --profile test run --rm tests pytest -q tests/worker/test_runner_queue.py`.
-- Фронт-тесты (Node 24, встроенный node:test): `node --test tests/frontend/` → 205 pass.
+- Фронт-тесты (Node 24, встроенный node:test): `node --test tests/frontend/` → 290 pass.
 - Бэкап патча UltraSinger в `patches/karaoke-local.patch`: `./scripts/export-ultrasinger-patch.ps1` (читает `D:/Projects/UltraSinger`).
 - CLI воркера внутри образа: `python -m karaoke_worker gpucheck|selfcheck|run`; entrypoint пропускает эти слова в CLI, прочее (`bash`, `python`) исполняет как есть.
 
 ## Структура
 
 ```
-core/karaoke_core/        общий пакет web+worker: db, paths, naming, ultrastar, postprocess, trash, http, songpack
+core/karaoke_core/        общий пакет web+worker: db, paths, naming, ultrastar, postprocess, trash, http, songpack; ещё scan (обход хранилища в индекс), libcheck (проверка библиотеки), telegram, backup (настройки в файл)
 core/karaoke_core/storage/  Storage: base (интерфейс, SongEntry), local, smb (smbprotocol), webdav, gdrive; `make_storage`
 core/Dockerfile.test      образ сервиса tests (editable core+web, pytest по tests/)
-web/app/                  FastAPI: main (create_app, Basic-auth, очистка корзины), api_jobs/songs/settings/targets/import/lyrics/usdb, context, params, notes, lyrics (LRCLIB), usdb (клиент)
-web/static/js/            SPA по хэшу (#queue #new #import #songs #song?id= #trash #settings; «Новая песня» — плавающая «+» `#fab-new`, не вкладка меню), api.js, ui.js, id3.js, import.js, import-logic.js, folder-logic.js, lyrics-search.js, lyrics-dialog.js, video-block.js (блок «Видео»), songs.js (хранилище, фильтры, карточка), song-actions.js (действия песни: меню, «Видео…», «Копировать в…», zip, удаление, теги), song-page.js (раздел `song`), menu.js, player.js, tags-ui.js, tags-logic.js, song-page-logic.js, songs-filter.js, settings.js («Куда выкладывать»), targets-logic.js
-web/static/js/editors/    редакторы песни: lyrics (перегенерация с новым текстом), notes-* («Редактор нот»: таймлайн, звук, волна, панель текста), shell (общее окно)
-worker/karaoke_worker/    runner (цикл очереди), handlers, base (JobContext, процессы), progress, gpucheck, selfcheck
+web/app/                  FastAPI: main (create_app, Basic-auth, очистка корзины), api_jobs/songs/settings/targets/import/lyrics/usdb, context, params, notes, lyrics (LRCLIB), usdb (клиент); api_artwork+covers (обложка/фон), api_bulk, api_queue, api_library, api_mirrors, api_backup, `SameOriginMiddleware` в main
+web/static/js/            SPA по хэшу (#queue #new #import #songs #song?id= #trash #settings; «Новая песня» — плавающая «+» `#fab-new`, не вкладка меню), api.js, ui.js, id3.js, import.js, import-logic.js, folder-logic.js, lyrics-search.js, lyrics-dialog.js, video-block.js (блок «Видео»), songs.js (хранилище, фильтры, карточка), song-actions.js (действия песни: меню, «Видео…», «Копировать в…», zip, удаление, теги), song-page.js (раздел `song`), menu.js, player.js, tags-ui.js, tags-logic.js, song-page-logic.js, songs-filter.js, settings.js («Куда выкладывать»), targets-logic.js; ещё #check, #play?id=; artwork, select-logic, check, play, tone, queue-logic, notify(-logic), mirror-logic, backup-logic
+web/static/js/editors/    редакторы песни: lyrics (перегенерация с новым текстом), notes-* («Редактор нот»: таймлайн, звук, волна, панель текста), shell (общее окно); notes-checks(+plugin) — подозрительные ноты
+worker/karaoke_worker/    runner (цикл очереди), handlers, base (JobContext, процессы), progress, gpucheck, selfcheck; artwork, audiofix, libcheck, mirror (+планировщик в runner), notify
 worker/build/             entrypoint.sh, lock_constraints.py (uv.lock → constraints), check_torch_arch.py, link_hyphen_dir.py
 worker/Dockerfile         CUDA 12.6 + Python 3.12 + torch cu126 + UltraSinger из контекста `ultrasinger`
 tests/core|api|worker/    три шва pytest; tests/worker/fixtures/fake_*.py — подмены UltraSinger/demucs/ffmpeg/yt-dlp
@@ -82,15 +82,24 @@ patches/karaoke-local.patch  резервная копия правок форк
 - `web/static/js/editors/notes-text-panel.js` (`textPanelPlugin`: панель «Текст», `localStorage` `notesEditor.textPanelClosed`, ширина — ручка `.ne-pgrip`, CSS `--ne-panel-w`, `localStorage` `notesEditor.textPanelWidth`, строка — `textarea` с переносом) и `notes-tools.js` (`toolsPlugin`: ⇠/⇢ текст с областью слово/строка/песня (`localStorage` `notesEditor.shiftScope`) и перетаскиванием слога по дорожке, `Alt+←/→` всегда гасятся — иначе браузер уходит «Назад», Разрезать, Слить, ↵ Строка, отстукивание `T`/`J`, справка `?`); их чистая логика — `notes-panel-logic.js` (`lineAt(lines, beat, voice?)`, `lineStatus`, `plural`, `tapTiming`, `tapQueue` — до конца партии, `liveNotes(state, beat)`, `liveLines(state, lines, beat)`, `panelRows(state, lines)` — группы панели и номера строк внутри партии, как в `validate`, `PANEL_WIDTH` 320, `panelWidth(w, winW)` — 240…70 % окна).
 - `web/static/js/editors/timeline-math.js` (координаты, масштаб `ZOOM_MIN..MAX`, `peaks`, `rebaseBeat`) и `waveform.js` (`loadPeaks` — fetch `/audio` → `decodeAudioData`, пики по 10 мс, лимит `WAVE_MAX_BYTES` 60 МБ; `drawWave` — только видимая часть).
 
+- Сборка library-tools (схема V5): `library.match_key`, `jobs.position/start_at`; `Jobs.move(id,"up|down|first")/schedule(id,start_at|None)/schedule_all/queued/active_mirror`, `db.parse_start_at`; `Settings.get/set_telegram` (`TelegramSettings`), `get_mirrors/save_mirror/delete_mirror/set_mirror_result` (`Mirror`), `add_target`; `Tags.change_for_songs`; `naming.background_suffix/rough_key`; `DataPaths.libcheck_report`; `ultrastar.encoding_problem/EncodingFix`.
+- `core/karaoke_core/scan.py` — `scan_target(storage, library, target_id)`; `libcheck.py` — `scan_song`, `find_problems`, `make_report` (находки: дубль, расхождение копий, кодировка, нет звука…, `fix`/`fixes`); `telegram.py` — `send_message`, `find_chat`, `TelegramError`; `backup.py` — `export_settings`, `plan_import`, `apply_import` (без паролей и токенов).
+- Задания без GPU: `worker/karaoke_worker/artwork.py` (`ArtworkHandler`, вход `in/image.<ext>`), `audiofix.py` (`AudioHandler` — звук по ссылке #VIDEO), `libcheck.py` (`LibCheckHandler`, отчёт в `DataPaths.libcheck_report`), `mirror.py` (`MirrorHandler`, `schedule_mirrors`, `MIRROR_EVERY_S=1800`), `notify.py` (`after_job` из `runner.run_job` → Telegram).
+- API library-tools: `POST /api/jobs/artwork`, `GET /api/covers/search` (iTunes/Deezer/MusicBrainz), `POST /api/songs/{tags,zip,delete}` и `/api/jobs/instrumental/bulk` (`api_bulk`), `POST /api/jobs/{id}/move|schedule`, `POST /api/jobs/schedule`, `POST/GET /api/library/check`, `POST /api/songs/{id}/encoding`, `POST /api/jobs/audio`, `/api/mirrors` (+`/{id}/run`), `GET /api/targets/{id}/status`, `/api/settings/telegram` (+`test`, `find-chat`), `GET/POST /api/settings/backup?apply=0|1`.
+- Фронт library-tools: `ui.openModal`, `ui.STORAGE_OFF`; режим выбора в `songs.js` (`select-logic.js`, `.bulk-bar`); `artwork.js` (`openCoverDialog/openBackgroundDialog/openCoverPicker`); `check.js` (`#check`, пункт меню «Песен»); `play.js` (`#play?id=`); `tone.js`; `queue-logic.js`; `notify.js`; `editors/notes-checks.js` (`suspects`).
+
 ## Архитектура
 
 - web ↔ worker общаются только через SQLite `/data/karaoke.sqlite` (WAL, явные `BEGIN IMMEDIATE`) и файлы тома `data`; HTTP между ними нет.
 - web: ставит задания (`Jobs.enqueue_with`), читает статус GPU из `settings[gpu_status]` (нет записи → `gpu.ok=null`), отдаёт лог из `/data/logs/<id>.log`, раз в 6 ч чистит корзину.
-- worker: при старте `Settings.set_gpu_status(gpucheck.check())`, `Jobs.fail_interrupted()`, уборка `jobs/.new-*` старше часа и логов/входов старше `LOG_DAYS`; затем цикл `claim_next()` по одному заданию (8 ГБ VRAM). Без GPU берёт только `publish`, `import`, `video`, `copy` и `rename` (`needs_gpu=False`), GPU перепроверяет раз в минуту; при старте же удаляет `imports/*` старше часа.
+- worker: при старте `Settings.set_gpu_status(gpucheck.check())`, `Jobs.fail_interrupted()`, уборка `jobs/.new-*` старше часа и логов/входов старше `LOG_DAYS`; затем цикл `claim_next()` по одному заданию (8 ГБ VRAM). Без GPU берёт только `publish`, `import`, `video`, `copy`, `rename`, `artwork`, `audio`, `libcheck` и `mirror` (`needs_gpu=False`), GPU перепроверяет раз в минуту; при старте же удаляет `imports/*` старше часа.
 - Отмена: web ставит `cancel_requested`, worker проверяет раз в секунду, убивает группу процессов (SIGTERM → 10 с → SIGKILL); `in/` сохраняется для «Перезапустить».
 - Состояния: `queued → running → publishing → done|failed|cancelled`; `stage` — русское название этапа, на выкладке `STAGE_PUBLISH="publish"` (UI переводит). Упавшее на выкладке → `republish` создаёт задание `publish` с `source_job_id`.
 - Поток generate: форма → `songs/<A>/<A - T>/jobs/.new-*` → rename в `jobs/<id>/in/` (`input.mp3`, `lyrics.txt`, `cover.<ext>`), `params.inputs` — пути от `DATA_DIR` → UltraSinger в `jobs/<id>/us|out` → `finalize` в `jobs/<id>/result` → `publish_song` (`Storage.upload_dir` в каждое хранилище выкладки) → `in/` копируется в `source/` (+`params.json`), обновляются Songs/Library, `jobs/<id>/` удаляется.
-- Типы заданий: `generate`, `instrumental`, `import`, `publish`, `video`, `copy`, `rename`; `import` с `instrumental=true` делает минусовку один раз в `local`, в остальные хранилища выкладки её привозит `copy` с `replace=true, after_job=<instrumental>` (сбой постановки — только предупреждение в логе).
+- Типы заданий: `generate`, `instrumental`, `import`, `publish`, `video`, `copy`, `rename`, `artwork`, `audio`, `libcheck`, `mirror`; `import` с `instrumental=true` делает минусовку один раз в `local`, в остальные хранилища выкладки её привозит `copy` с `replace=true, after_job=<instrumental>` (сбой постановки — только предупреждение в логе).
+- Очередь: порядок `ORDER BY COALESCE(position,id), id` (↑/↓/«Первым»); `start_at` (ISO с поясом, UTC `Z`) — `claim_next` пропускает отложенное; «Отложить…» одно или все ожидающие.
+- Зеркало (`settings[mirrors]`): воркер раз в `MIRROR_EVERY_S` ставит `mirror` на включённые пары; только добавляет и заменяет, лишнее в цели не удаляет (`only_in_target`), первый прогон только добавляет.
+- Уведомления: воркер шлёт в Telegram (`notify.after_job`: готово/ошибка/очередь пуста); браузерные — фронт по смене состояния заданий в опросе `app.js` раз в 15 с.
 - Хранилища: список в `settings[targets]` (JSON, без встроенного `local`), основная цель — `settings[default_target]`; `song_id = sha1(target_id + rel_dir)` — у каждой копии песни свой id, строки `library` по `target_id`; задания песни (instrumental, video, правка нот, перегенерация с заменой — `params.target_id`, `api_jobs.replace_target_id`) работают в хранилище самой песни.
 - Выкладка (`publish_song`): сначала `local` (сбой — задание падает), затем основная цель и при замене хранилище заменяемой песни; недоступная цель → задание `done` + `copy` с `wait=true` из `local`.
 - Задание `copy`: params `{rel_dir, txt_name, from_target, to_target, replace, wait, replace_rel_dir?, after_job?}` + служебные `retry_at`, `wait_logged_at`; источник → `jobs/<id>/in/` (restart и ожидание не качают заново) → цель (есть и `replace=false` — пропуск; `replace` — старая в корзину цели, сбой — откат); при `wait` недоступная цель или незавершённое `after_job` → обратно `queued` с `retry_at` +60 с, этап «Ждёт хранилище «X»»/«Ждёт задание #N», лог не чаще раза в 10 мин; `replace_rel_dir` — прежняя папка в корзину цели; restart сбрасывает ожидание.
@@ -156,6 +165,7 @@ patches/karaoke-local.patch  резервная копия правок форк
 - Дуэты: `tests/worker/test_runner_duet.py` (импорт дуэта доезжает до результата), фикстура `tests/core/fixtures/duet.txt`; видео: `tests/api/test_video.py`, `tests/worker/test_runner_video.py`, `tests/frontend/video-block.test.mjs`; `fake_ytdlp.py` в видеорежиме (без `-x`, с `-f`) пишет `.mp4`.
 - Настоящий GPU проверяется только `gpucheck` и реальной генерацией.
 - Редактор нот: швы — `PUT/GET /api/songs/{id}/notes` в `tests/api/test_songs.py` и чистые модули (`notes-model`, `syllables`, `timeline`, `notes-panel` `*.test.mjs`); экран (`notes-editor.js`, плагины) — только вручную в браузере.
+- library-tools: `tests/core/test_{backup,encoding,libcheck,telegram}.py`; `tests/api/test_{artwork,covers,bulk,library_check,mirrors,queue_order,settings_telegram,backup,origin}.py`; `tests/worker/test_runner_{artwork,audio,libcheck,mirror,notify}.py`; фронт — `select-logic`, `artwork-logic`, `check-logic`, `play-logic`, `queue-logic`, `notify-logic`, `mirror-logic`, `backup-logic`, `tone`, `notes-checks`; экраны «Проверка», «Прогон», режим выбора, очередь — вручную.
 
 ## Подводные камни
 
@@ -187,6 +197,10 @@ patches/karaoke-local.patch  резервная копия правок форк
 - Браузер не проигрывает видео `.avi` (и часть `.mkv/.mpg`): страница песни проверяет `canPlayType` по расширению (`song-page-logic.browserCanPlay`) и вместо плеера пишет «Браузер не умеет воспроизводить формат .X» со ссылкой «Скачать»; сбой уже начатого плеера — «Не удалось воспроизвести…» с той же ссылкой.
 - `GET /api/songs/{id}/file` отдаёт только файлы верхнего уровня папки песни (подпапки — 404).
 - Шара отдаёт 503 при параллельном чтении одного файла (`<audio>` и волна одновременно) — `loadPeaks` повторяет до 3 раз через 1,5 с.
+- Изменяющий запрос `/api/` с чужим `Origin`/`Sec-Fetch-Site: cross-site` → 403 (`SameOriginMiddleware`); за обратным прокси он обязан передавать `Host` или `X-Forwarded-Host`, иначе свои запросы тоже режутся.
+- `start_at` принимается только с поясом (без него 400 «Неверное время»); прошедшее время — «Время уже прошло».
+- Браузерные уведомления работают лишь в secure context (https или localhost) — по http с LAN-адреса `browserNotifyState` даёт `ok:false`.
+- Общие файлы-реестры (`api.js`, `app.css`, `main.py`, `HANDLERS` в `handlers.py`, `progress.py`, `TYPE_LABEL` в `queue.js`) дополняются блоками нескольких фич — правь точечно, не переписывай.
 
 ## Как здесь работает Autopilot
 
