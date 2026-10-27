@@ -190,6 +190,15 @@ export const api = {
     : request('POST', '/api/mirrors', body)),
   deleteMirror: (id) => request('DELETE', `/api/mirrors/${encodeURIComponent(id)}`),
   runMirror: (id) => request('POST', `/api/mirrors/${encodeURIComponent(id)}/run`),
+  // library-tools 12: резервная копия настроек (без паролей и токенов)
+  /** Адрес скачивания файла настроек (Content-Disposition: attachment). */
+  backupUrl: () => '/api/settings/backup',
+  /** Загрузить файл настроек: apply=false — только план, true — применить → план (backup-logic.planSummary). */
+  restoreBackup: (file, apply = false) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request('POST', `/api/settings/backup?apply=${apply ? 1 : 0}`, form);
+  },
   usdbSearch: ({ artist = '', title = '', language = 'Russian', start = 0 } = {}) =>
     request('GET', `/api/usdb/search?${new URLSearchParams({ artist, title, language, start: String(start) })}`),
 

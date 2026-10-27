@@ -24,6 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from . import __version__
 from .api_artwork import covers_router, router as artwork_router  # library-tools 07: фон и обложка
 from .api_bulk import router as bulk_router  # library-tools 06
+from .api_backup import router as backup_router  # library-tools 12: резервная копия настроек
 from .api_import import purge_imports, router as import_router
 from .api_jobs import ctx_of, router as jobs_router
 from .api_queue import router as queue_router  # очередь: порядок и время
@@ -156,6 +157,7 @@ def create_app(*, data_dir: str | Path | None = None, env: dict | None = None,
     app.include_router(songs_router)
     app.include_router(tags_router)
     app.include_router(settings_router)
+    app.include_router(backup_router)  # library-tools 12: резервная копия настроек
     app.include_router(targets_router)
     app.include_router(lyrics_router)
     app.include_router(usdb_router)

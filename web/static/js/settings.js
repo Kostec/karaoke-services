@@ -1,7 +1,8 @@
 // Раздел «Настройки»: «Куда выкладывать» — список хранилищ (локальное, SMB, папка ПК, Яндекс Диск,
 // WebDAV, Google Диск) с проверкой и основной целью; учётка usdb; ключ доступа Яндекс Музыки
 // (OAuth-токен аккаунта — сервис не спрашивает логин и пароль Яндекса); «Уведомления» — Telegram-бот
-// (токен назад не отдаётся) и уведомления в этом браузере; «Зеркала» — одно хранилище копией другого.
+// (токен назад не отдаётся) и уведомления в этом браузере; «Зеркала» — одно хранилище копией другого;
+// «Резервная копия» — настройки одним файлом без паролей и токенов, загрузка с предпросмотром.
 
 import { api, request, getDefaults } from './api.js';
 import { h, clear, toast, field, confirmDialog } from './ui.js';
@@ -10,6 +11,7 @@ import { yandexSaveAction, YM_REMOVE_CONFIRM, YM_KEPT, YM_EMPTY } from './link-l
 import { notifyEnabled, notifyState, setNotifyEnabled } from './notify.js';
 import { mirrorError, mirrorSummary, mirrorStatus, onlyInTarget, MIRROR_TRASH_HINT } from './mirror-logic.js';
 import { bulkDelete } from './song-actions.js';
+import { planSummary, planChanges } from './backup-logic.js';
 
 let root, hooks, built = false;
 const T = {}; // карточка «Куда выкладывать»: элементы, список, форма
@@ -59,7 +61,7 @@ export function hide() {
 function build() {
   built = true;
   clear(root).append(h('div', { class: 'view-head' }, h('h2', {}, 'Настройки')),
-    buildTargets(), buildUsdb(), buildYandex(), buildNotify(), buildMirrors());
+    buildTargets(), buildUsdb(), buildYandex(), buildNotify(), buildMirrors(), buildBackup());
 }
 
 // ---------------------------------------------------------------- usdb
@@ -1029,4 +1031,79 @@ async function googleLogin() {
     T.googleTimer = setTimeout(poll, GOOGLE_POLL_MS);
   };
   T.googleTimer = setTimeout(poll, GOOGLE_POLL_MS);
+}
+
+// ---------------------------------------------------------------- Резервная копия (library-tools 12)
+
+const B = {}; // карточка «Резервная копия»: элементы и выбранный файл
+
+function buildBackup() {
+  B.file = h('input', { type: 'file', accept: '.json,application/json', hidden: true, onchange: previewBackup });
+  B.download = h('button', { type: 'button', onclick: downloadBackup }, 'Скачать настройки');
+  B.pick = h('button', { type: 'button', onclick: () => { B.file.value = ''; B.file.click(); } }, 'Загрузить…');
+  B.result = h('div', { class: 'banner', hidden: true, role: 'status', style: 'margin-bottom:0' });
+  return h('section', { class: 'card' },
+    h('h3', { style: 'margin-top:0' }, 'Резервная копия'),
+    h('p', { class: 'small muted', style: 'margin-top:0' },
+      'Теги со связями, хранилища, основная цель, логин usdb, уведомления и зеркала — одним файлом. ',
+      'Пароли и токены в файл не попадают.'),
+    h('div', { class: 'actions', style: 'margin-top:0' }, B.download, B.pick),
+    B.file, B.result);
+}
+
+function downloadBackup() {
+  const a = h('a', { href: api.backupUrl(), download: '' });
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
+function showBackup(kind, title, lines = [], buttons = []) {
+  clear(B.result);
+  B.result.className = `banner ${kind}`;
+  B.result.append(h('b', {}, title));
+  if (lines.length) B.result.append(h('ul', { class: 'plan' }, ...lines.map((l) => h('li', {}, l))));
+  if (buttons.length) B.result.append(h('div', { class: 'actions' }, ...buttons));
+  B.result.hidden = false;
+}
+
+function hideBackup() {
+  B.result.hidden = true;
+  B.chosen = null;
+}
+
+async function previewBackup() {
+  const file = B.file.files && B.file.files[0];
+  if (!file) return;
+  B.chosen = file;
+  B.pick.disabled = true;
+  try {
+    const plan = await api.restoreBackup(file, false);
+    if (B.chosen !== file) return;
+    const apply = h('button', { type: 'button', class: 'primary', onclick: () => applyBackup(file, apply) }, 'Применить');
+    apply.disabled = planChanges(plan) === 0;
+    showBackup('ok', `${file.name} — что изменится:`, planSummary(plan),
+      [apply, h('button', { type: 'button', onclick: hideBackup }, 'Отмена')]);
+  } catch (e) {
+    showBackup('err', e.detail || e.message || 'Не удалось прочитать файл');
+  } finally {
+    B.pick.disabled = false;
+  }
+}
+
+async function applyBackup(file, btn) {
+  btn.disabled = true;
+  try {
+    const plan = await api.restoreBackup(file, true);
+    const reminders = planSummary({ ...plan, tags_added: 0, tag_links_added: 0, targets_added: 0,
+      targets_updated: 0, mirrors_added: 0, default_target: null, usdb_user_set: false, telegram_set: false })
+      .filter((l) => !l.startsWith('Изменений нет') && !l.startsWith('Ничего не'));
+    B.chosen = null;
+    showBackup('ok', 'Настройки загружены', reminders);
+    toast('Настройки загружены');
+    await show(); // хранилища, usdb, Telegram и зеркала — заново с сервера
+  } catch (e) {
+    btn.disabled = false;
+    showBackup('err', e.detail || e.message || 'Не удалось применить настройки');
+  }
 }
