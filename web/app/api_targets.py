@@ -255,6 +255,14 @@ def delete_target(target_id: str, request: Request):
 # ---------------------------------------------------------------------- обзор папок ПК
 
 
+@router.get("/{target_id}/status", summary="Доступность хранилища: {ok, error, label} (fresh=1 — без кэша)")
+def target_status(target_id: str, request: Request, fresh: int = 0):
+    ctx = ctx_of(request)
+    _get(ctx, target_id)
+    st = ctx.output_status(fresh=bool(fresh), target_id=target_id)
+    return {"ok": bool(st["ok"]), "error": st.get("error"), "label": st.get("label") or ""}
+
+
 @router.get("/browse", summary="Подпапки внутри корня «Папки ПК» (/host) или «Локальное хранилище» (/output)")
 def browse(request: Request, root: str = "host", path: str = ""):
     if root not in BROWSE_ROOTS:

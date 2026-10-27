@@ -131,6 +131,8 @@ export const api = {
   copySongs: (body) => request('POST', '/api/jobs/copy', body),
   renameSong: ({ song_id: songId, artist, title }) => request('POST', '/api/jobs/rename', { song_id: songId, artist, title }),
   targets: () => request('GET', '/api/targets'),
+  // library-tools 02: доступность хранилища песни → {ok, error, label}
+  targetStatus: (id) => request('GET', `/api/targets/${encodeURIComponent(id)}/status`),
 
   /** Страница песни: {song, headers, singers, media, files, copies, usdb_url}. */
   songDetails: (id) => request('GET', `/api/songs/${encodeURIComponent(id)}/details`),

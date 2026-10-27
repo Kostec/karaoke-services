@@ -105,3 +105,40 @@ test('browserCanPlay: пустой ответ canPlayType — не играет,
   assert.equal(browserCanPlay('a.mpg', chrome), false);
   assert.equal(browserCanPlay('a.xyz', chrome), true);
 });
+
+import { blockSigs } from '../../web/static/js/song-page-logic.js';
+
+const withTags = (tags) => details({ song: { tags } });
+test('blockSigs: пять блоков, одинаковые данные — одинаковые подписи', () => {
+  const a = blockSigs(details());
+  assert.deepEqual(Object.keys(a).sort(), ['hero', 'info', 'lyrics', 'media', 'store']);
+  assert.deepEqual(blockSigs(details()), a);
+});
+
+test('blockSigs: смена тегов меняет только hero', () => {
+  const a = blockSigs(withTags([1]));
+  const b = blockSigs(withTags([1, 2]));
+  assert.notEqual(a.hero, b.hero);
+  for (const k of ['media', 'lyrics', 'info', 'store']) assert.equal(a[k], b[k], k);
+});
+
+test('blockSigs: новая копия меняет только store', () => {
+  const a = blockSigs(details());
+  const b = blockSigs({ ...details(), copies: [{ song_id: 's2', target_id: 't_2', target_name: 'Pi', current: false }] });
+  assert.notEqual(a.store, b.store);
+  for (const k of ['hero', 'media', 'lyrics', 'info']) assert.equal(a[k], b[k], k);
+});
+
+test('blockSigs: новый файл минусовки меняет только media', () => {
+  const a = blockSigs(details({}));
+  const b = blockSigs({ ...details(), media: { instrumental: 'A - T [Instrumental].mp3' } });
+  assert.notEqual(a.media, b.media);
+  for (const k of ['hero', 'lyrics', 'info', 'store']) assert.equal(a[k], b[k], k);
+});
+
+test('blockSigs: правка .txt (updated_at) меняет lyrics и info', () => {
+  const a = blockSigs(details());
+  const b = blockSigs(details({ song: { updated_at: '2026-10-27T10:00:00+00:00' } }));
+  assert.notEqual(a.lyrics, b.lyrics);
+  assert.notEqual(a.info, b.info);
+});

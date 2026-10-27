@@ -86,3 +86,14 @@ export function soloPlayback(mediaEl) {
 export function pausePlayers() {
   for (const p of players) if (!p.paused) p.pause();
 }
+
+/** Освободить плееры страницы (все или только внутри scope): пауза, снятый src, выход из реестра. */
+export function releasePlayers(scope) {
+  for (const p of [...players]) {
+    if (scope && !(scope === p || scope.contains(p))) continue;
+    p.pause();
+    p.removeAttribute('src');
+    try { p.load(); } catch { /* нет медиа-стека — не страшно */ }
+    players.delete(p);
+  }
+}

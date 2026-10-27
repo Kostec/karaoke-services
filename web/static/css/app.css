@@ -546,3 +546,6 @@ dialog.video-dlg .actions .spacer { flex: 1 1 auto; }
 .browse-item.up { color: var(--muted); }
 .browse-empty { padding: 6px 10px; }
 button.link { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; min-height: 0; }
+
+/* library-tools 02: баннер недоступного хранилища на странице песни */
+.song-banner .banner { margin: 0 0 10px; }

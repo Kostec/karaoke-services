@@ -323,3 +323,30 @@ def test_gdrive_unknown_error_shows_generic_text_without_secrets(env, net, monke
         state = api.get(f"/api/targets/gdrive/draft/{draft}")
         _no_secrets(state)
         assert state.json()["error"] == "Google не дал доступ, попробуйте ещё раз"
+
+
+# ---------------------------------------------------------------------- статус хранилища
+
+
+def test_status_ok_for_builtin_local(api):
+    r = api.get("/api/targets/local/status")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and body["error"] is None and body["label"]
+
+
+def test_status_unknown_target_is_404(api):
+    r = api.get("/api/targets/t_nosuch/status")
+    assert r.status_code == 404 and r.json()["detail"]
+
+
+def test_status_reports_unavailable_storage(env, api):
+    import shutil
+    smb = api.post("/api/targets", json={**SMB, "password": SMB_PASS}).json()
+    assert api.get(f"/api/targets/{smb['id']}/status").json()["ok"] is True
+    shutil.rmtree(env.tmp / "net" / "smb")
+    r = api.get(f"/api/targets/{smb['id']}/status?fresh=1")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is False and body["error"] and body["label"] == "//10.0.0.9/karaoke/songs"
+    _no_secrets(r)

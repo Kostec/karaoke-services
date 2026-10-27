@@ -106,3 +106,21 @@ export function lyricsPreview(text, n = 12) {
   if (lines.length === 1 && !lines[0]) return { head: '', more: false };
   return { head: lines.slice(0, n).join('\n'), more: lines.length > n };
 }
+
+/**
+ * Подписи блоков страницы: hero, media, lyrics, info, store. Блок пересобирается, только если
+ * его подпись сменилась. tags — справочник тегов (имя/цвет влияют на шапку).
+ */
+export function blockSigs(details, tags = null) {
+  const song = details?.song || {};
+  const media = details?.media || {};
+  const sig = (v) => JSON.stringify(v);
+  return {
+    hero: sig([song.artist, song.title, song.txt_name, song.cover, song.tags || [], song.is_duet,
+      song.instrumental, song.video, media.background, media.cover, tags]),
+    media: sig([mediaRows(details), details?.headers?.videogap ?? null, !!song.cover]),
+    lyrics: sig([song.updated_at]),
+    info: sig([infoRows(details), details?.usdb_url ?? null]),
+    store: sig([details?.copies || [], song.pending_copies || [], details?.files || []]),
+  };
+}

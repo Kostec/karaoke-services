@@ -4,13 +4,13 @@
 import { api, getDefaults } from './api.js';
 import { h, clear, fmtDate } from './ui.js';
 import { menuButton, closeMenu } from './menu.js';
-import { soloPlayback, pausePlayers } from './player.js';
+import { soloPlayback, releasePlayers } from './player.js';
 import {
   songMenuItems, editorItems, makeInstrumental, openVideoDialog, openSongTagsDialog, downloadZip,
 } from './song-actions.js';
 import { tagChip } from './tags-ui.js';
 import { tagsById, songTagList } from './tags-logic.js';
-import { mediaRows, infoRows, fmtSize, lyricsPreview, browserCanPlay } from './song-page-logic.js';
+import { mediaRows, infoRows, fmtSize, lyricsPreview, browserCanPlay, blockSigs } from './song-page-logic.js';
 import { builtinTags, songHref } from './songs.js';
 
 let root;
@@ -40,7 +40,9 @@ export function show(params) {
 }
 
 export function hide() {
-  pausePlayers();
+  stopPolling();
+  releasePlayers();
+  page = null;
   closeMenu();
   songId = '';
   document.title = 'Караоке';
@@ -60,7 +62,12 @@ async function load({ quiet = false } = {}) {
     clear(root).append(backLink(), notFound());
     return;
   }
-  if (!quiet) clear(root).append(backLink(), h('p', { class: 'muted' }, 'Загрузка…'));
+  if (!quiet) {
+    stopPolling();
+    releasePlayers();
+    page = null;
+    clear(root).append(backLink(), h('p', { class: 'muted' }, 'Загрузка…'));
+  }
   try {
     const [details, tagsRes, targetsRes] = await Promise.all([
       api.songDetails(id),
@@ -71,7 +78,10 @@ async function load({ quiet = false } = {}) {
     render(details, tagsRes.tags || [], targetsRes);
   } catch (e) {
     if (my !== seq || id !== songId) return;
-    if (quiet && e.status !== 404) return; // фоновое перечитывание — прежний вид остаётся
+    if (quiet && e.status !== 404) { // фоновое перечитывание — прежний вид остаётся
+      if (e.status === 503 && page?.id === id) setStorageOk(false);
+      return;
+    }
     clear(root).append(backLink(), e.status === 404 ? notFound() : unavailable(e));
   }
 }
@@ -93,13 +103,17 @@ function reload() {
   if (root && !root.hidden && songId) load({ quiet: true });
 }
 
-function render(details, tags, targetsRes) {
+// ---- состояние показанной страницы: блоки обновляются по подписям, плееры живут между обновлениями
+let page = null; // {id, env, sigs, slots, banner, details, tags}
+let pollTimer = null;
+const POLL_MS = 15000;
+const BLOCKS = ['hero', 'media', 'lyrics', 'info', 'store'];
+
+function makeEnv(details, targetsRes) {
   const song = details.song;
-  const media = details.media || {};
-  const fileUrl = (name, o) => api.fileUrl(song.song_id, name, o);
-  const env = {
+  return {
     targets: (targetsRes?.targets || details.copies?.map((c) => ({ id: c.target_id, name: c.target_name })) || []),
-    currentTargetId: song.target_id, outputOk: true, trashDays, reload,
+    currentTargetId: song.target_id, outputOk: page?.id === song.song_id ? page.env.outputOk : true, trashDays, reload,
     afterRemove: () => { location.hash = '#songs'; },
     // прежний id исчез — заменить адрес, чтобы «Назад» не вёл на него
     afterRename: (newId) => {
@@ -108,8 +122,96 @@ function render(details, tags, targetsRes) {
       location.replace(`#song?id=${encodeURIComponent(newId)}`);
     },
   };
+}
 
-  // ---- шапка
+function render(details, tags, targetsRes) {
+  const song = details.song;
+  const sigs = blockSigs(details, tags);
+  if (page && page.id === song.song_id && root.contains(page.slots.hero)) {
+    // та же песня: пересобираем только блоки со сменившейся подписью
+    page.env = makeEnv(details, targetsRes);
+    page.details = details;
+    page.tags = tags;
+    for (const name of BLOCKS) {
+      if (sigs[name] === page.sigs[name]) continue;
+      if (name === 'media') releasePlayers(page.slots.media);
+      const el = BUILDERS[name](details, tags, page.env);
+      page.slots[name].replaceWith(el);
+      page.slots[name] = el;
+    }
+    page.sigs = sigs;
+    setTitle(song);
+    return;
+  }
+  releasePlayers();
+  const env = makeEnv(details, targetsRes);
+  const slots = {};
+  for (const name of BLOCKS) slots[name] = BUILDERS[name](details, tags, env);
+  const banner = h('div', { class: 'song-banner', hidden: true });
+  page = { id: song.song_id, env, sigs, slots, banner, details, tags };
+  clear(root).append(backLink(), banner, slots.hero,
+    h('div', { class: 'song-grid' }, slots.media, slots.lyrics, slots.info, slots.store));
+  setTitle(song);
+  startPolling();
+}
+
+function setTitle(song) {
+  document.title = `${song.artist ? `${song.artist} — ` : ''}${song.title || song.txt_name} · Караоке`;
+}
+
+// ---- доступность хранилища песни
+
+function storageName(p) {
+  const t = p.env.targets.find((x) => x.id === p.env.currentTargetId);
+  return t?.name || t?.label || p.details.copies?.find((c) => c.current)?.target_name || p.env.currentTargetId;
+}
+
+function setStorageOk(ok, label) {
+  if (!page) return;
+  if (page.env.outputOk !== ok) {
+    page.env.outputOk = ok;
+    // кнопки редакторов в шапке гаснут/оживают; меню «…» считает пункты при открытии
+    const el = BUILDERS.hero(page.details, page.tags, page.env);
+    page.slots.hero.replaceWith(el);
+    page.slots.hero = el;
+  }
+  const b = page.banner;
+  b.hidden = ok;
+  clear(b);
+  if (!ok) {
+    b.append(h('div', { class: 'banner warn', role: 'status' },
+      h('b', {}, `Хранилище «${storageName(page) || label || ''}» недоступно — действия с файлами отключены.`),
+      ' ', h('span', { class: 'small' }, 'Проверка раз в 15 с; когда оно вернётся, всё включится само.')));
+  }
+}
+
+function pollStatus() {
+  const p = page;
+  if (!p || !songId || root.hidden) return;
+  api.targetStatus(p.env.currentTargetId).then((st) => {
+    if (page === p) setStorageOk(st.ok !== false, st.label);
+  }).catch((e) => {
+    if (page === p && e.status === 503) setStorageOk(false);
+  });
+}
+
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(pollStatus, POLL_MS);
+  pollStatus();
+}
+
+function stopPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+}
+
+// ---- блоки
+
+function buildHero(details, tags, env) {
+  const song = details.song;
+  const media = details.media || {};
+  const fileUrl = (name, o) => api.fileUrl(song.song_id, name, o);
   const bg = media.background ? fileUrl(media.background) : (song.cover ? api.coverUrl(song.song_id) : null);
   const heroBg = h('div', { class: `song-hero-bg${bg ? '' : ' plain'}` });
   if (bg) heroBg.style.backgroundImage = `url("${bg}")`;
@@ -129,7 +231,7 @@ function render(details, tags, targetsRes) {
     return h('button', { type: 'button', class: primary ? 'primary' : null, dataset: { editor: kind },
       disabled: !!ed.disabled, title: ed.disabled || null, onclick: ed.open }, ed.label);
   };
-  const hero = h('div', { class: 'song-hero' }, heroBg,
+  return h('div', { class: 'song-hero' }, heroBg,
     h('div', { class: 'song-hero-in' }, big,
       h('div', { class: 'song-hero-text' },
         h('div', { class: 'song-hero-artist' }, song.artist || 'Исполнитель не указан'),
@@ -137,8 +239,12 @@ function render(details, tags, targetsRes) {
         h('div', { class: 'tags' }, builtinTags(song), userTags, addTag),
         h('div', { class: 'song-hero-acts' }, edBtn('notes', true), edBtn('lyrics', false),
           menuButton(() => songMenuItems(song, env, { editors: false }))))));
+}
 
-  // ---- слушать и смотреть
+function buildMedia(details, tags, env) {
+  const song = details.song;
+  const media = details.media || {};
+  const fileUrl = (name, o) => api.fileUrl(song.song_id, name, o);
   const mediaCard = h('div', { class: 'card song-sec' }, h('h3', {}, 'Слушать и смотреть'));
   for (const row of mediaRows(details)) mediaCard.append(mediaRow(row, song, details, env, fileUrl));
   if (media.background) {
@@ -146,8 +252,11 @@ function render(details, tags, targetsRes) {
       h('a', { href: fileUrl(media.background), target: '_blank', rel: 'noopener', title: 'Открыть изображение целиком' },
         h('img', { class: 'song-bg-thumb', src: fileUrl(media.background), alt: 'Фоновое изображение', loading: 'lazy' }))));
   }
+  return mediaCard;
+}
 
-  // ---- текст
+function buildLyrics(details) {
+  const song = details.song;
   const lyricsBody = h('div', { class: 'song-lyrics muted' }, 'Загрузка…');
   const lyricsCard = h('div', { class: 'card song-sec' }, h('h3', {}, 'Текст'), lyricsBody);
   api.lyrics(song.song_id).then(({ text }) => {
@@ -167,16 +276,21 @@ function render(details, tags, targetsRes) {
       lyricsCard.append(toggle);
     }
   }).catch((e) => { lyricsBody.textContent = `Текст недоступен: ${e.detail || e.message}`; });
+  return lyricsCard;
+}
 
-  // ---- сведения
+function buildInfo(details) {
   const dl = h('dl', { class: 'song-info-list' });
   for (const [label, value, href] of infoRows(details, { date: fmtDate })) {
     dl.append(h('dt', {}, label),
       h('dd', {}, href ? h('a', { href, target: '_blank', rel: 'noopener' }, value) : value));
   }
-  const infoCard = h('div', { class: 'card song-sec' }, h('h3', {}, 'Сведения'), dl);
+  return h('div', { class: 'card song-sec' }, h('h3', {}, 'Сведения'), dl);
+}
 
-  // ---- хранилища и файлы
+function buildStore(details, tags, env) {
+  const song = details.song;
+  const fileUrl = (name, o) => api.fileUrl(song.song_id, name, o);
   const stores = h('div', { class: 'song-list-rows' });
   const pending = song.pending_copies || [];
   const copies = details.copies?.length ? details.copies
@@ -199,16 +313,13 @@ function render(details, tags, targetsRes) {
       h('span', { class: 'muted small nowrap' }, fmtSize(f.size))));
   }
   if (!details.files?.length) files.append(h('p', { class: 'muted' }, 'Файлов нет'));
-  const storeCard = h('div', { class: 'card song-sec' },
+  return h('div', { class: 'card song-sec' },
     h('h3', {}, 'Хранилища'), stores,
     h('h3', { class: 'song-sec-next' }, 'Файлы'), files,
     h('button', { type: 'button', class: 'song-zip', onclick: () => downloadZip(song) }, 'Скачать всё (.zip)'));
-
-  pausePlayers();
-  clear(root).append(backLink(), hero,
-    h('div', { class: 'song-grid' }, mediaCard, lyricsCard, infoCard, storeCard));
-  document.title = `${song.artist ? `${song.artist} — ` : ''}${song.title || song.txt_name} · Караоке`;
 }
+
+const BUILDERS = { hero: buildHero, media: buildMedia, lyrics: buildLyrics, info: buildInfo, store: buildStore };
 
 function targetLabel(targets, id) {
   const t = targets.find((x) => x.id === id);
