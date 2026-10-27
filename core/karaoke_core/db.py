@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Any, Callable, Iterator, Mapping
 
-from .naming import match_key
+from .naming import song_tag_key
 
 __all__ = [
     "connect", "Jobs", "Job", "Settings", "OutputTarget", "Target", "LOCAL_TARGET_ID",
@@ -29,6 +29,7 @@ __all__ = [
     "INTERRUPTED_MESSAGE", "ACTIVE_STATES", "STAGE_PUBLISH", "GPU_STATUS_KEY",
     "UsdbAccount", "USDB_KEY", "YANDEX_KEY",
     "Tags", "Tag", "TagError", "TAG_COLORS", "DEFAULT_TAG_COLOR", "TAG_NAME_MAX",
+    "TelegramSettings", "TELEGRAM_KEY", "Mirror", "MIRRORS_KEY", "parse_start_at",
 ]
 
 JOB_STATES = ("queued", "running", "publishing", "done", "failed", "cancelled")
@@ -42,6 +43,10 @@ GPU_STATUS_KEY = "gpu_status"
 USDB_KEY = "usdb"
 # Ключ settings с OAuth-токеном Яндекс Музыки (JSON {"token": …}); API отдаёт только has_token.
 YANDEX_KEY = "yandex_music"
+# Ключ settings с уведомлениями Telegram (JSON TelegramSettings); API отдаёт только has_token.
+TELEGRAM_KEY = "telegram"
+# Ключ settings со списком зеркал хранилищ (JSON [Mirror]).
+MIRRORS_KEY = "mirrors"
 INTERRUPTED_MESSAGE = "прервано перезапуском"
 
 _SCHEMA_V1 = """
@@ -126,7 +131,18 @@ CREATE TABLE song_tags (
 CREATE INDEX song_tags_tag ON song_tags(tag_id)
 """
 
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4]
+# V5: ключ копий песни в library (naming.song_tag_key, с индексом) — копии по индексу,
+# а не перебором всей таблицы. Ручной порядок очереди (position, у старых NULL — по id)
+# и время запуска задания (start_at, ISO UTC как db.now(), NULL — сразу).
+_SCHEMA_V5 = """
+ALTER TABLE library ADD COLUMN match_key TEXT;
+UPDATE library SET match_key = karaoke_match_key(artist, title);
+CREATE INDEX library_match_key ON library(match_key);
+ALTER TABLE jobs ADD COLUMN position INTEGER;
+ALTER TABLE jobs ADD COLUMN start_at TEXT
+"""
+
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5]
 
 
 def now(after_s: float = 0.0) -> str:
@@ -145,6 +161,7 @@ def connect(path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.create_function("karaoke_song_id", 2, song_id_for, deterministic=True)
+    conn.create_function("karaoke_match_key", 2, _library_key, deterministic=True)
     _migrate(conn)
     return conn
 
@@ -189,6 +206,8 @@ class Job:
     finished_at: str | None
     cancel_requested: bool = False
     parent_id: int | None = None
+    position: int | None = None  # ручной порядок очереди; NULL (старые задания) — по id
+    start_at: str | None = None  # не раньше этого времени (ISO UTC); None — сразу
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Job":
@@ -202,7 +221,37 @@ class Job:
 
 
 _JOB_UPDATABLE = {"state", "stage", "percent", "artist", "title", "song_id", "params",
-                  "error", "cancel_requested", "started_at", "finished_at"}
+                  "error", "cancel_requested", "started_at", "finished_at", "position", "start_at"}
+
+# Порядок очереди: ручной (position), у старых заданий без него — по id.
+_QUEUE_ORDER = "COALESCE(position, id), id"
+JOB_MOVES = ("up", "down", "first")
+MOVE_NOT_QUEUED = "Переставлять можно только ожидающие задания"
+SCHEDULE_NOT_QUEUED = "Отложить можно только ожидающее задание"
+TIME_PASSED = "Время уже прошло"
+BAD_TIME = "Неверное время"
+
+
+def parse_start_at(value: str | None) -> str | None:
+    """Время запуска из ISO 8601 → формат :func:`now` (UTC, секунды); ``None``/пусто — ``None``.
+    Время без пояса считается UTC. Не разбирается — ``ValueError(BAD_TIME)``."""
+    if value is None or not str(value).strip():
+        return None
+    try:
+        at = datetime.fromisoformat(str(value).strip())
+    except ValueError:
+        raise ValueError(BAD_TIME) from None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _future_start(value: str | None) -> str | None:
+    """:func:`parse_start_at` + проверка, что время ещё не наступило."""
+    at = parse_start_at(value)
+    if at is not None and at <= now():
+        raise ValueError(TIME_PASSED)
+    return at
 
 
 def _song_ref(song_ref: Any) -> tuple[str, str, str | None]:
@@ -236,12 +285,13 @@ class Jobs:
         """Поставить задание. ``song_ref`` — mapping/объект с artist, title, song_id."""
         artist, title, song_id = _song_ref(song_ref)
         with _tx(self.conn):
-            row = self.conn.execute(
+            job_id = self.conn.execute(
                 "INSERT INTO jobs (type, state, artist, title, song_id, params, parent_id, created_at)"
-                " VALUES (?, 'queued', ?, ?, ?, ?, ?, ?) RETURNING *",
+                " VALUES (?, 'queued', ?, ?, ?, ?, ?, ?) RETURNING id",
                 (type, artist, title, song_id, json.dumps(params or {}, ensure_ascii=False),
                  parent_id, now()),
-            ).fetchone()
+            ).fetchone()[0]
+            row = self.conn.execute("UPDATE jobs SET position=id WHERE id=? RETURNING *", (job_id,)).fetchone()
         return Job.from_row(row)
 
     def enqueue_with(self, type: str, song_ref: Any, make_params: Callable[[int], dict],
@@ -258,15 +308,16 @@ class Jobs:
             ).fetchone()[0]
             params = make_params(job_id)
             row = self.conn.execute(
-                "UPDATE jobs SET params=? WHERE id=? RETURNING *",
+                "UPDATE jobs SET params=?, position=id WHERE id=? RETURNING *",
                 (json.dumps(params or {}, ensure_ascii=False), job_id),
             ).fetchone()
         return Job.from_row(row)
 
     def claim_next(self, types: Iterable[str] | None = None) -> Job | None:
-        """Атомарно забрать самое старое задание из очереди (queued → running).
-        ``types`` — только задания этих типов (например, без GPU — только выкладка).
-        Задание с ``params.retry_at`` в будущем (копирование ждёт хранилище) пропускается."""
+        """Атомарно забрать первое задание очереди (queued → running) — по ручному порядку
+        ``COALESCE(position, id), id``. ``types`` — только задания этих типов (например, без GPU —
+        только выкладка). Задание с ``params.retry_at`` (копирование ждёт хранилище) или
+        ``start_at`` (отложено) в будущем пропускается."""
         stamp = now()
         where, args = "state='queued'", []
         if types is not None:
@@ -275,14 +326,68 @@ class Jobs:
                 return None
             where += f" AND type IN ({', '.join('?' * len(args))})"
         where += " AND (json_extract(params, '$.retry_at') IS NULL OR json_extract(params, '$.retry_at') <= ?)"
+        where += " AND (start_at IS NULL OR start_at <= ?)"
         with _tx(self.conn):
             row = self.conn.execute(
                 "UPDATE jobs SET state='running', started_at=?"
-                f" WHERE id = (SELECT id FROM jobs WHERE {where} ORDER BY id LIMIT 1)"
+                f" WHERE id = (SELECT id FROM jobs WHERE {where} ORDER BY {_QUEUE_ORDER} LIMIT 1)"
                 " RETURNING *",
-                (stamp, *args, stamp),
+                (stamp, *args, stamp, stamp),
             ).fetchone()
         return Job.from_row(row) if row else None
+
+    def queued(self) -> list[Job]:
+        """Ожидающие задания в порядке очереди (как их возьмёт :meth:`claim_next`)."""
+        rows = self.conn.execute(f"SELECT * FROM jobs WHERE state='queued' ORDER BY {_QUEUE_ORDER}")
+        return [Job.from_row(r) for r in rows]
+
+    def move(self, id: int, where: str) -> list[Job]:
+        """Переставить ожидающее задание: ``up`` — на одно раньше, ``down`` — на одно позже,
+        ``first`` — в начало очереди. Ожидающие получают те же ключи порядка в новом порядке,
+        поэтому новые задания (``position = id``) по-прежнему встают в конец. Не ``queued`` —
+        ``ValueError(MOVE_NOT_QUEUED)``. Возвращает ожидающие в новом порядке."""
+        if where not in JOB_MOVES:
+            raise ValueError(f"Неизвестное направление: «{where}»")
+        with _tx(self.conn):
+            rows = self.conn.execute(
+                f"SELECT id, COALESCE(position, id) AS k FROM jobs WHERE state='queued' ORDER BY {_QUEUE_ORDER}"
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            if id not in ids:
+                raise ValueError(MOVE_NOT_QUEUED)
+            i = ids.index(id)
+            order = list(ids)
+            if where == "first":
+                order.insert(0, order.pop(i))
+            elif where == "up" and i > 0:
+                order[i - 1], order[i] = order[i], order[i - 1]
+            elif where == "down" and i < len(order) - 1:
+                order[i + 1], order[i] = order[i], order[i + 1]
+            keys = [r["k"] for r in rows]
+            self.conn.executemany("UPDATE jobs SET position=? WHERE id=?",
+                                  [(k, j) for k, j in zip(keys, order)])
+        return self.queued()
+
+    def schedule(self, id: int, start_at: str | None) -> Job:
+        """Отложить ожидающее задание до ``start_at`` (ISO 8601) или снять время (``None`` —
+        «Запустить сейчас»). Не ``queued`` — ``ValueError``; время в прошлом —
+        ``ValueError(TIME_PASSED)``."""
+        at = _future_start(start_at)
+        with _tx(self.conn):
+            row = self.conn.execute("UPDATE jobs SET start_at=? WHERE id=? AND state='queued' RETURNING *",
+                                    (at, id)).fetchone()
+        if row is None:
+            raise ValueError(SCHEDULE_NOT_QUEUED)
+        return Job.from_row(row)
+
+    def schedule_all(self, start_at: str) -> int:
+        """Отложить до ``start_at`` все ожидающие задания без своего времени; сколько отложено."""
+        at = _future_start(start_at)
+        if at is None:
+            raise ValueError(BAD_TIME)
+        with _tx(self.conn):
+            return self.conn.execute(
+                "UPDATE jobs SET start_at=? WHERE state='queued' AND start_at IS NULL", (at,)).rowcount
 
     def active_copy(self, rel_dir: str, from_target: str, to_target: str) -> Job | None:
         """Незавершённое «Копирование» этой песни в эту цель (правило дубля, история 21)."""
@@ -561,6 +666,44 @@ class UsdbAccount:
         return {"user": self.user, "has_password": bool(self.password)}
 
 
+@dataclass(frozen=True)
+class TelegramSettings:
+    """Уведомления в Telegram: токен бота (в API не отдаётся), чат и события."""
+    bot_token: str | None = field(default=None, repr=False)
+    chat_id: str = ""
+    on_done: bool = True
+    on_failed: bool = True
+    on_queue_empty: bool = False
+
+    def public(self) -> dict:
+        """Для API: без токена, только признак его наличия."""
+        return {"has_token": bool(self.bot_token), "chat_id": self.chat_id, "on_done": self.on_done,
+                "on_failed": self.on_failed, "on_queue_empty": self.on_queue_empty}
+
+
+MIRROR_NOT_FOUND = "Зеркало не найдено"
+MIRROR_SAME_TARGET = "Откуда и куда — одно и то же хранилище"
+
+
+@dataclass
+class Mirror:
+    """Зеркало хранилищ: новое и изменённое из ``from_target`` докопируется в ``to_target``.
+    ``last_result`` — ``{added, updated, only_in_target: [{song_id, artist, title, rel_dir}], error?}``."""
+    id: str = ""
+    from_target: str = ""
+    to_target: str = ""
+    enabled: bool = True
+    last_run_at: str | None = None
+    last_result: dict | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def new_mirror_id() -> str:
+    return f"m_{secrets.token_hex(4)}"
+
+
 class Settings:
     def __init__(self, conn: sqlite3.Connection, env: Mapping[str, str] | None = None):
         self.conn = conn
@@ -697,6 +840,13 @@ class Settings:
         with _tx(self.conn):
             self._put_json(TARGETS_KEY, [t._to_dict() for t in stored if t.id != target_id])
             self.conn.execute("DELETE FROM library WHERE target_id=?", (target_id,))
+            # зеркала удалённого хранилища выключаются (сами не удаляются — их итог виден)
+            mirrors = self._stored_mirrors()
+            touched = [m for m in mirrors if target_id in (m.from_target, m.to_target) and m.enabled]
+            for m in touched:
+                m.enabled = False
+            if touched:
+                self._put_json(MIRRORS_KEY, [m.to_dict() for m in mirrors])
 
     def get_default_target_id(self) -> str:
         """id основной цели; нет или удалена — ``local``."""
@@ -819,6 +969,90 @@ class Settings:
         self._set(GPU_STATUS_KEY, json.dumps({**status, "checked_at": status.get("checked_at") or now()},
                                              ensure_ascii=False, default=str))
 
+    # ------------------------------------------------------------ Telegram
+
+    def get_telegram(self) -> TelegramSettings:
+        value = self._json(TELEGRAM_KEY, {})
+        if not isinstance(value, dict):
+            return TelegramSettings()
+        defaults = TelegramSettings()
+        return TelegramSettings(
+            str(value.get("bot_token") or "").strip() or None,
+            str(value.get("chat_id") or "").strip(),
+            bool(value.get("on_done", defaults.on_done)),
+            bool(value.get("on_failed", defaults.on_failed)),
+            bool(value.get("on_queue_empty", defaults.on_queue_empty)))
+
+    def set_telegram(self, value: TelegramSettings) -> TelegramSettings:
+        """Сохранить уведомления; ``bot_token`` ``None`` — прежний токен, пустая строка — удалить."""
+        with _tx(self.conn):
+            bot_key = value.bot_token
+            if bot_key is None:
+                bot_key = self.get_telegram().bot_token
+            saved = TelegramSettings((bot_key or "").strip() or None, (value.chat_id or "").strip(),
+                                     bool(value.on_done), bool(value.on_failed), bool(value.on_queue_empty))
+            self._put_json(TELEGRAM_KEY, {"bot_token": saved.bot_token or "", "chat_id": saved.chat_id,
+                                          "on_done": saved.on_done, "on_failed": saved.on_failed,
+                                          "on_queue_empty": saved.on_queue_empty})
+        return saved
+
+    # ------------------------------------------------------------ зеркала
+
+    def _stored_mirrors(self) -> list[Mirror]:
+        known = {f.name for f in fields(Mirror)}
+        raw = self._json(MIRRORS_KEY, [])
+        return [Mirror(**{k: v for k, v in d.items() if k in known})
+                for d in (raw if isinstance(raw, list) else []) if isinstance(d, dict) and d.get("id")]
+
+    def get_mirrors(self) -> list[Mirror]:
+        """Зеркала в порядке добавления."""
+        return self._stored_mirrors()
+
+    def save_mirror(self, mirror: Mirror) -> Mirror:
+        """Создать (пустой ``id`` → новый ``m_…``) или изменить зеркало; итог прошлого прогона
+        (``last_run_at``/``last_result`` ``None``) сохраняется. ``ValueError``: неизвестное
+        хранилище, откуда = куда, нет такого зеркала."""
+        ids = {t.id for t in self.get_targets()}
+        if mirror.from_target not in ids or mirror.to_target not in ids:
+            raise ValueError(TARGET_NOT_FOUND)
+        if mirror.from_target == mirror.to_target:
+            raise ValueError(MIRROR_SAME_TARGET)
+        with _tx(self.conn):
+            stored = self._stored_mirrors()
+            old = next((m for m in stored if m.id == mirror.id), None) if mirror.id else None
+            if mirror.id and old is None:
+                raise ValueError(MIRROR_NOT_FOUND)
+            saved = Mirror(id=mirror.id or new_mirror_id(), from_target=mirror.from_target,
+                           to_target=mirror.to_target, enabled=bool(mirror.enabled),
+                           last_run_at=mirror.last_run_at if mirror.last_run_at is not None
+                           else (old.last_run_at if old else None),
+                           last_result=mirror.last_result if mirror.last_result is not None
+                           else (old.last_result if old else None))
+            out = [saved if m.id == saved.id else m for m in stored] + ([] if old else [saved])
+            self._put_json(MIRRORS_KEY, [m.to_dict() for m in out])
+        return saved
+
+    def delete_mirror(self, mirror_id: str) -> None:
+        """Удалить зеркало; нет такого — ``ValueError``."""
+        with _tx(self.conn):
+            stored = self._stored_mirrors()
+            if not any(m.id == mirror_id for m in stored):
+                raise ValueError(MIRROR_NOT_FOUND)
+            self._put_json(MIRRORS_KEY, [m.to_dict() for m in stored if m.id != mirror_id])
+
+    def set_mirror_result(self, mirror_id: str, result: dict) -> Mirror | None:
+        """Итог прогона зеркала (``last_result``) и время (``last_run_at`` = сейчас);
+        зеркало уже удалено — ``None``."""
+        with _tx(self.conn):
+            stored = self._stored_mirrors()
+            hit = next((m for m in stored if m.id == mirror_id), None)
+            if hit is None:
+                return None
+            hit.last_result = result
+            hit.last_run_at = now()
+            self._put_json(MIRRORS_KEY, [m.to_dict() for m in stored])
+        return hit
+
 
 # --------------------------------------------------------------------------- индекс песен
 
@@ -851,6 +1085,7 @@ class LibraryItem:
     def from_row(cls, row: sqlite3.Row) -> "LibraryItem":
         d = dict(row)
         d.pop("song_id", None)  # вычисляемое свойство; в таблице — для поиска по индексу
+        d.pop("match_key", None)  # ключ копий из artist/title; в таблице — для поиска по индексу
         d["is_duet"] = bool(d["is_duet"])
         return cls(**d)
 
@@ -859,6 +1094,11 @@ class LibraryItem:
 
 
 _LIB_COLS = [f.name for f in fields(LibraryItem)]
+
+
+def _library_key(artist: str | None, title: str | None) -> str:
+    """Значение ``library.match_key``: :func:`naming.song_tag_key` (``match_key`` строкой)."""
+    return song_tag_key(artist or "", title or "")
 
 
 def _fold(s: str | None) -> str:
@@ -870,8 +1110,8 @@ class Library:
         self.conn = conn
 
     def _insert(self, item: LibraryItem) -> None:
-        cols = _LIB_COLS + ["song_id"]
-        values = [getattr(item, c) for c in cols]
+        cols = _LIB_COLS + ["song_id", "match_key"]
+        values = [getattr(item, c) for c in cols[:-1]] + [_library_key(item.artist, item.title)]
         values[cols.index("is_duet")] = int(bool(item.is_duet))
         self.conn.execute(
             f"INSERT INTO library ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})"
@@ -920,9 +1160,12 @@ class Library:
 
     def copies(self, artist: str, title: str) -> list[LibraryItem]:
         """Песни всех хранилищ с тем же ключом ``naming.match_key(artist, title)`` (только индекс)."""
-        key = match_key(artist, title)
-        rows = self.conn.execute("SELECT * FROM library")
-        return [i for i in map(LibraryItem.from_row, rows) if match_key(i.artist, i.title) == key]
+        return self.by_key(_library_key(artist, title))
+
+    def by_key(self, key: str) -> list[LibraryItem]:
+        """Песни всех хранилищ с готовым ключом ``naming.song_tag_key`` (колонка ``match_key`` с индексом)."""
+        rows = self.conn.execute("SELECT * FROM library WHERE match_key=?", (key,))
+        return [LibraryItem.from_row(r) for r in rows]
 
 
 # --------------------------------------------------------------------------- свои песни
@@ -1020,6 +1263,19 @@ class TagError(ValueError):
         self.field = field
 
 
+TAG_DUPLICATE = "Такой тег уже есть"
+
+
+@contextmanager
+def _duplicate_as_tag_error() -> Iterator[None]:
+    """Нарушение ``UNIQUE(name_key)`` (второй создатель успел между проверкой и записью) —
+    ``TagError`` у поля ``name``, а не ``sqlite3.IntegrityError`` (500)."""
+    try:
+        yield
+    except sqlite3.IntegrityError:
+        raise TagError(TAG_DUPLICATE, "name") from None
+
+
 def _tag_name(name: str | None) -> str:
     """Название тега: без пробелов по краям, внутренние пробелы схлопнуты."""
     return " ".join((name or "").split())
@@ -1069,7 +1325,7 @@ class Tags:
     def _check_unique(self, key: str, except_id: str | None = None) -> None:
         row = self.conn.execute("SELECT id FROM tags WHERE name_key=?", (key,)).fetchone()
         if row is not None and row["id"] != except_id:
-            raise TagError("Такой тег уже есть", "name")
+            raise TagError(TAG_DUPLICATE, "name")
 
     def list(self) -> list[Tag]:
         """Все теги по названию без учёта регистра."""
@@ -1086,7 +1342,7 @@ class Tags:
         color = self._check_color(color)
         key = tag_name_key(clean)
         tag = Tag(id=uuid.uuid4().hex, name=clean, color=color, created_at=now())
-        with _tx(self.conn):
+        with _duplicate_as_tag_error(), _tx(self.conn):
             self._check_unique(key)
             self.conn.execute("INSERT INTO tags (id, name, name_key, color, created_at) VALUES (?, ?, ?, ?, ?)",
                               (tag.id, tag.name, key, tag.color, tag.created_at))
@@ -1094,7 +1350,7 @@ class Tags:
 
     def update(self, id: str, *, name: str | None = None, color: str | None = None) -> Tag:
         """Переименовать и/или сменить цвет; неизвестный id — ``KeyError``."""
-        with _tx(self.conn):
+        with _duplicate_as_tag_error(), _tx(self.conn):
             tag = self.get(id)
             if tag is None:
                 raise KeyError(id)
@@ -1144,6 +1400,34 @@ class Tags:
             self.conn.executemany("INSERT INTO song_tags (song_key, tag_id) VALUES (?, ?)",
                                   [(key, i) for i in ids])
         return self.for_songs([key]).get(key, [])
+
+    def change_for_songs(self, keys: list[str], add: list[str], remove: list[str]) -> int:
+        """Массовые теги: песням с ключами ``keys`` добавить теги ``add`` и снять ``remove``,
+        не заменяя остальной набор; тег сразу в обоих списках — добавляется. Одна транзакция;
+        неизвестный id — ``KeyError`` (ничего не меняется). Сколько ключей изменилось."""
+        keys = list(dict.fromkeys(keys))
+        add = list(dict.fromkeys(add))
+        remove = [i for i in dict.fromkeys(remove) if i not in add]
+        with _tx(self.conn):
+            ids = add + remove
+            if ids:
+                known = {r["id"] for r in self.conn.execute(
+                    f"SELECT id FROM tags WHERE id IN ({','.join('?' * len(ids))})", ids)}
+                missing = [i for i in ids if i not in known]
+                if missing:
+                    raise KeyError(missing[0])
+            changed = 0
+            for key in keys:
+                n = 0
+                for tag_id in add:
+                    n += self.conn.execute("INSERT OR IGNORE INTO song_tags (song_key, tag_id) VALUES (?, ?)",
+                                           (key, tag_id)).rowcount
+                if remove:
+                    n += self.conn.execute(
+                        f"DELETE FROM song_tags WHERE song_key=? AND tag_id IN ({','.join('?' * len(remove))})",
+                        (key, *remove)).rowcount
+                changed += n > 0
+        return changed
 
     def copy_key(self, old: str, new: str) -> int:
         """Теги песни с ключа ``old`` — ещё и на ``new`` (переименование песни): без дублей, повтор

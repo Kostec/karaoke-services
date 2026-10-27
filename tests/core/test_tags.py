@@ -117,3 +117,83 @@ def test_copy_key_without_duplicates_and_drop_key(tags):
     assert tags.drop_key(old) == 0
     assert tags.for_songs([old, new]) == {new: [a.id, b.id]}
     assert tags.counts() == {a.id: 1, b.id: 1}
+
+
+def test_create_none_or_empty_color_is_unknown(tags):
+    for color in (None, ""):
+        with pytest.raises(db.TagError) as e:
+            tags.create("x", color)
+        assert (str(e.value), e.value.field) == ("Неизвестный цвет", "color")
+    assert tags.list() == []
+
+
+def test_unique_violation_becomes_tag_error(tags, monkeypatch):
+    """Гонка: проверка дубля прошла у обоих, второй INSERT/UPDATE упирается в UNIQUE(name_key)."""
+    import sqlite3
+
+    a = tags.create("Рок")
+    b = tags.create("Поп")
+    monkeypatch.setattr(db.Tags, "_check_unique", lambda self, key, except_id=None: None)
+    for call in (lambda: tags.create("рок"), lambda: tags.update(b.id, name="РОК")):
+        try:
+            call()
+        except sqlite3.IntegrityError as e:  # pragma: no cover - это и есть баг
+            pytest.fail(f"IntegrityError наружу: {e}")
+        except db.TagError as e:
+            assert (str(e), e.field) == ("Такой тег уже есть", "name")
+        else:
+            pytest.fail("дубль создан")
+    assert [t.name for t in tags.list()] == ["Поп", "Рок"] and tags.get(a.id).name == "Рок"
+
+
+def test_parallel_create_on_two_connections(tmp_path):
+    import threading
+
+    path = tmp_path / "karaoke.sqlite"
+    db.connect(path)
+    for round_ in range(5):
+        name = f"тег {round_}"
+        barrier = threading.Barrier(2)
+        results: list = []
+
+        def work():
+            t = db.Tags(db.connect(path))
+            barrier.wait()
+            try:
+                results.append(t.create(name))
+            except Exception as e:  # noqa: BLE001 - собираем всё, что вылетело
+                results.append(e)
+
+        threads = [threading.Thread(target=work) for _ in range(2)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        ok = [r for r in results if isinstance(r, db.Tag)]
+        errors = [r for r in results if not isinstance(r, db.Tag)]
+        assert len(ok) == 1 and len(errors) == 1, results
+        assert isinstance(errors[0], db.TagError) and (str(errors[0]), errors[0].field) == (
+            "Такой тег уже есть", "name")
+
+
+def test_change_for_songs_adds_and_removes_without_replacing(tags):
+    a, b, c = tags.create("А"), tags.create("Б"), tags.create("В")
+    tags.set_for_song("k1", [a.id])
+    tags.set_for_song("k2", [a.id, b.id])
+    # k1: +b; k2: b уже есть, снимаем a; k3: новая песня
+    assert tags.change_for_songs(["k1", "k2", "k3"], add=[b.id], remove=[a.id]) == 3
+    assert tags.for_songs(["k1", "k2", "k3"]) == {"k1": [b.id], "k2": [b.id], "k3": [b.id]}
+    # повтор ничего не меняет
+    assert tags.change_for_songs(["k1", "k2", "k3"], add=[b.id], remove=[a.id]) == 0
+    assert tags.change_for_songs(["k1"], add=[c.id], remove=[]) == 1
+    assert tags.for_songs(["k1"]) == {"k1": [b.id, c.id]}
+    assert tags.change_for_songs([], add=[a.id], remove=[]) == 0
+
+
+def test_change_for_songs_unknown_id_changes_nothing(tags):
+    a = tags.create("А")
+    tags.set_for_song("k1", [a.id])
+    for add, remove in (([a.id, "nope"], []), ([], ["nope"])):
+        with pytest.raises(KeyError):
+            tags.change_for_songs(["k1", "k2"], add=add, remove=remove)
+    assert tags.for_songs(["k1", "k2"]) == {"k1": [a.id]}

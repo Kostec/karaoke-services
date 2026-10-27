@@ -272,10 +272,239 @@ def test_v3_database_gets_tags_tables_and_keeps_data(path):
     conn.commit()
     conn.close()
     c = db.connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert c.execute("PRAGMA user_version").fetchone()[0] == len(db._MIGRATIONS)
     assert db.Library(c).get("t1", "A/A - B").artist == "A"
     assert db.Songs(c).get("s1").title == "B"
     tags = db.Tags(c)
     t = tags.create("Любимое")
     assert tags.set_for_song("a\nb", [t.id]) == [t.id]
     assert {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")} >= {"tags", "song_tags"}
+
+
+# --------------------------------------------------------------------------- V5
+
+def _v4_database(path):
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.create_function("karaoke_song_id", 2, db.song_id_for, deterministic=True)
+    conn.executescript(";".join(db._MIGRATIONS[:4]) + ";PRAGMA user_version = 4;")
+    return conn
+
+
+def test_v4_database_migrates_to_v5_match_key_and_job_order(path):
+    from karaoke_core import naming
+
+    conn = _v4_database(path)
+    conn.execute("INSERT INTO library (target_id, rel_dir, txt_name, artist, title, song_id)"
+                 " VALUES ('t1', 'Ёлка/Ёлка - Прованс', 'x.txt', 'Ёлка', 'Прованс', 'x')")
+    conn.execute("INSERT INTO jobs (type, created_at) VALUES ('generate', 'c')")
+    conn.commit()
+    conn.close()
+    c = db.connect(path)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 5
+    row = c.execute("SELECT match_key FROM library").fetchone()
+    assert row[0] == naming.song_tag_key("Ёлка", "Прованс") == "елка\nпрованс"
+    indexes = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "library_match_key" in indexes
+    old = db.Jobs(c).get(1)
+    assert (old.position, old.start_at) == (None, None)
+    new = db.Jobs(c).enqueue("generate", REF, {})
+    assert new.position == new.id
+    assert db.Jobs(c).get(new.id).to_dict()["position"] == new.id
+    other = db.Jobs(c).enqueue_with("generate", REF, lambda i: {"n": i})
+    assert other.position == other.id and other.params == {"n": other.id}
+
+
+def test_library_copies_by_indexed_match_key(path):
+    c = db.connect(path)
+    lib = db.Library(c)
+    lib.upsert(db.LibraryItem(target_id="t1", rel_dir="Ёлка/Ёлка - Прованс", txt_name="a.txt",
+                              artist="Ёлка", title="Прованс"))
+    lib.upsert(db.LibraryItem(target_id="t2", rel_dir="елка/елка - прованс", txt_name="b.txt",
+                              artist="елка", title="ПРОВАНС "))
+    lib.upsert(db.LibraryItem(target_id="t2", rel_dir="Ёлка/Ёлка - Другая", txt_name="c.txt",
+                              artist="Ёлка", title="Другая"))
+    seen: list[str] = []
+    c.set_trace_callback(seen.append)
+    got = lib.copies(" ЕЛКА", "прованс")
+    c.set_trace_callback(None)
+    assert sorted((i.target_id, i.rel_dir) for i in got) == [
+        ("t1", "Ёлка/Ёлка - Прованс"), ("t2", "елка/елка - прованс")]
+    assert all(isinstance(i, db.LibraryItem) for i in got)
+    selects = [s for s in seen if s.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 1 and "match_key" in selects[0], selects
+    sql = selects[0]
+    args = ("x",) * sql.count("?")
+    plan = " ".join(str(tuple(r)) for r in c.execute("EXPLAIN QUERY PLAN " + sql, args))
+    assert "library_match_key" in plan, plan
+    assert [i.title for i in lib.by_key("елка\nдругая")] == ["Другая"]
+    assert lib.copies("Нет", "Такой") == []
+
+
+def test_library_match_key_follows_rename_on_upsert(path):
+    lib = db.Library(db.connect(path))
+    lib.upsert(db.LibraryItem(target_id="t1", rel_dir="A/A - B", txt_name="a.txt", artist="A", title="B"))
+    lib.upsert(db.LibraryItem(target_id="t1", rel_dir="A/A - B", txt_name="a.txt", artist="A", title="C"))
+    assert lib.copies("A", "B") == [] and len(lib.copies("a", "c")) == 1
+    lib.replace_all("t2", [db.LibraryItem(target_id="", rel_dir="A/A - C", txt_name="a.txt",
+                                          artist="a", title="c")])
+    assert sorted(i.target_id for i in lib.copies("A", "C")) == ["t1", "t2"]
+
+
+def _ids(jobs_list):
+    return [j.id for j in jobs_list]
+
+
+def test_claim_next_skips_future_start_and_follows_position(jobs):
+    a = jobs.enqueue("generate", REF, {})
+    b = jobs.enqueue("generate", REF, {})
+    c = jobs.enqueue("generate", REF, {})
+    jobs.update(a.id, start_at=db.now(3600))
+    jobs.update(b.id, position=c.id + 10)  # b — в конец
+    assert jobs.claim_next().id == c.id
+    assert jobs.claim_next().id == b.id
+    assert jobs.claim_next() is None  # a — ещё рано
+    jobs.update(a.id, start_at=db.now(-5))
+    assert jobs.claim_next().id == a.id
+
+
+def test_claim_next_old_jobs_without_position_use_id(path):
+    conn = _v4_database(path)
+    conn.execute("INSERT INTO jobs (type, created_at) VALUES ('generate', 'c')")
+    conn.execute("INSERT INTO jobs (type, created_at) VALUES ('generate', 'c')")
+    conn.commit()
+    conn.close()
+    jobs = db.Jobs(db.connect(path))
+    new = jobs.enqueue("generate", REF, {})
+    jobs.move(new.id, "first")
+    assert [jobs.claim_next().id for _ in range(3)] == [new.id, 1, 2]
+
+
+def test_move_up_down_first_only_among_queued(jobs):
+    a, b, c, d = (jobs.enqueue("generate", REF, {}) for _ in range(4))
+    jobs.claim_next()  # a → running
+    assert _ids(jobs.move(d.id, "up")) == [b.id, d.id, c.id]
+    assert _ids(jobs.move(b.id, "down")) == [d.id, b.id, c.id]
+    assert _ids(jobs.move(c.id, "first")) == [c.id, d.id, b.id]
+    assert _ids(jobs.move(c.id, "up")) == [c.id, d.id, b.id]  # уже первый
+    assert _ids(jobs.move(b.id, "down")) == [c.id, d.id, b.id]  # уже последний
+    e = jobs.enqueue("generate", REF, {})  # новое — в конец
+    assert [jobs.claim_next().id for _ in range(4)] == [c.id, d.id, b.id, e.id]
+    with pytest.raises(ValueError) as err:
+        jobs.move(a.id, "up")
+    assert str(err.value) == "Переставлять можно только ожидающие задания"
+    f = jobs.enqueue("generate", REF, {})
+    with pytest.raises(ValueError):
+        jobs.move(f.id, "sideways")
+    with pytest.raises(ValueError):
+        jobs.move(999, "up")
+
+
+def test_schedule_only_queued_and_not_in_past(jobs):
+    from datetime import datetime, timedelta, timezone
+
+    a = jobs.enqueue("generate", REF, {})
+    b = jobs.enqueue("generate", REF, {})
+    at = db.now(7200)
+    got = jobs.schedule(a.id, at)
+    assert got.start_at == at
+    assert jobs.claim_next().id == b.id
+    assert jobs.claim_next() is None
+    # другой формат ISO (Z, микросекунды) приводится к формату db.now()
+    later = datetime.now(timezone.utc) + timedelta(hours=3)
+    got = jobs.schedule(a.id, later.strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
+    assert got.start_at == later.isoformat(timespec="seconds")
+    with pytest.raises(ValueError) as err:
+        jobs.schedule(a.id, db.now(-60))
+    assert str(err.value) == "Время уже прошло"
+    assert jobs.get(a.id).start_at == got.start_at
+    with pytest.raises(ValueError):
+        jobs.schedule(a.id, "завтра")
+    assert jobs.schedule(a.id, None).start_at is None  # «Запустить сейчас»
+    assert jobs.claim_next().id == a.id
+    with pytest.raises(ValueError) as err:
+        jobs.schedule(a.id, db.now(60))  # уже running
+    assert "ожидающ" in str(err.value)
+
+
+def test_schedule_all_defers_queued_without_time(jobs):
+    a, b, c, d = (jobs.enqueue("generate", REF, {}) for _ in range(4))
+    jobs.claim_next()  # a running
+    early = db.now(600)
+    jobs.schedule(b.id, early)
+    at = db.now(7200)
+    assert jobs.schedule_all(at) == 2
+    assert [jobs.get(i).start_at for i in (a.id, b.id, c.id, d.id)] == [None, early, at, at]
+    with pytest.raises(ValueError) as err:
+        jobs.schedule_all(db.now(-1))
+    assert str(err.value) == "Время уже прошло"
+
+
+# --------------------------------------------------------------------------- Telegram и зеркала
+
+def test_settings_telegram_roundtrip_and_public(path):
+    s = db.Settings(db.connect(path))
+    t = s.get_telegram()
+    assert (t.bot_token, t.chat_id) == (None, "")
+    assert t.public() == {"has_token": False, "chat_id": "", "on_done": t.on_done,
+                          "on_failed": t.on_failed, "on_queue_empty": t.on_queue_empty}
+    s.set_telegram(db.TelegramSettings("123:abc", "42", True, False, True))
+    got = db.Settings(db.connect(path)).get_telegram()
+    assert (got.bot_token, got.chat_id, got.on_done, got.on_failed, got.on_queue_empty) == (
+        "123:abc", "42", True, False, True)
+    pub = got.public()
+    assert pub == {"has_token": True, "chat_id": "42", "on_done": True, "on_failed": False,
+                   "on_queue_empty": True}
+    assert "123:abc" not in repr(got) and "123:abc" not in str(pub)
+    # None — прежний токен, пустая строка — удалить
+    s.set_telegram(db.TelegramSettings(None, "7", False, True, False))
+    assert (s.get_telegram().bot_token, s.get_telegram().chat_id) == ("123:abc", "7")
+    s.set_telegram(db.TelegramSettings("", "7", False, True, False))
+    assert s.get_telegram().bot_token is None
+
+
+def test_settings_mirrors_crud_and_result(path):
+    s = db.Settings(db.connect(path))
+    t1 = s.save_target(db.Target(name="ПК", kind="local", path="/host/pc"))
+    t2 = s.save_target(db.Target(name="ПК2", kind="local", path="/host/pc2"))
+    assert s.get_mirrors() == []
+    m = s.save_mirror(db.Mirror(from_target="local", to_target=t1.id, enabled=True))
+    assert m.id and (m.from_target, m.to_target, m.enabled) == ("local", t1.id, True)
+    assert (m.last_run_at, m.last_result) == (None, None)
+    m2 = s.save_mirror(db.Mirror(from_target=t1.id, to_target=t2.id, enabled=True))
+    assert [x.id for x in db.Settings(db.connect(path)).get_mirrors()] == [m.id, m2.id]
+    result = {"added": 2, "updated": 1, "only_in_target": [
+        {"song_id": "s", "artist": "А", "title": "Б", "rel_dir": "А/А - Б"}]}
+    s.set_mirror_result(m.id, result)
+    got = s.get_mirrors()[0]
+    assert got.last_result == result and got.last_run_at
+    # правка не теряет итог прошлого прогона
+    edited = s.save_mirror(db.Mirror(id=m.id, from_target="local", to_target=t2.id, enabled=False))
+    assert (edited.to_target, edited.enabled, edited.last_result) == (t2.id, False, result)
+    for bad in (db.Mirror(from_target=t1.id, to_target=t1.id),
+                db.Mirror(from_target="local", to_target="t_nope"),
+                db.Mirror(id="m_nope", from_target="local", to_target=t1.id)):
+        with pytest.raises(ValueError):
+            s.save_mirror(bad)
+    s.delete_mirror(m.id)
+    assert [x.id for x in s.get_mirrors()] == [m2.id]
+    with pytest.raises(ValueError):
+        s.delete_mirror(m.id)
+
+
+def test_delete_target_disables_its_mirrors(path):
+    s = db.Settings(db.connect(path))
+    t1 = s.save_target(db.Target(name="ПК", kind="local", path="/host/pc"))
+    t2 = s.save_target(db.Target(name="ПК2", kind="local", path="/host/pc2"))
+    on_t1 = s.save_mirror(db.Mirror(from_target="local", to_target=t1.id, enabled=True))
+    other = s.save_mirror(db.Mirror(from_target="local", to_target=t2.id, enabled=True))
+    s.delete_target(t1.id)
+    state = {x.id: x.enabled for x in s.get_mirrors()}
+    assert state == {on_t1.id: False, other.id: True}
+
+
+def test_libcheck_report_path(tmp_path):
+    from karaoke_core.paths import DataPaths
+
+    assert DataPaths(tmp_path).libcheck_report() == tmp_path / "reports" / "libcheck.json"

@@ -52,8 +52,10 @@ def list_tags(request: Request):
 
 @router.post("/tags", status_code=201, summary="Создать тег")
 def create_tag(body: TagIn, request: Request):
+    # Поле не прислано (старый фронт) — цвет по умолчанию; прислано ""/null/чужое — 400 у поля color.
+    color = body.color if "color" in body.model_fields_set else DEFAULT_TAG_COLOR
     try:
-        tag = ctx_of(request).tags.create(body.name, body.color or DEFAULT_TAG_COLOR)
+        tag = ctx_of(request).tags.create(body.name, color)
     except TagError as e:
         raise _tag_error(e) from None
     return _out(tag, 0)

@@ -110,3 +110,24 @@ def test_rename_plan_keeps_tails_and_falls_back_to_txt_stem():
         "song.txt": "B - U.txt", "song.mp3": "B - U.mp3"}
     assert renamed_txt_name("A - T (duet).txt", "A/A - T", "A", "T", "B", "U") == "B - U (duet).txt"
     assert renamed_txt_name("song.txt", "A/A - T", "A", "T", "B", "U") == "B - U.txt"
+
+
+def test_background_suffix_like_cover_suffix():
+    assert naming.background_suffix("jpeg") == " [BG].jpg"
+    assert naming.background_suffix(".JPEG") == " [BG].jpg"
+    assert naming.background_suffix(".PNG") == " [BG].png"
+    assert naming.background_suffix("webp") == " [BG].webp"
+    assert naming.song_file("Bros.", "T", naming.background_suffix(".jpg")) == "Bros - T [BG].jpg"
+
+
+def test_rough_key_glues_lookalikes_and_punctuation():
+    # «Kино» с латинской K — та же песня, что «Кино»
+    assert naming.rough_key("Kино", "Группа крови") == naming.rough_key("Кино", "Группа крови")
+    assert naming.rough_key("Ленинград!", "Экспонат") == naming.rough_key("ленинград", "экспонат")
+    assert naming.rough_key("Ма-ма", "A") == naming.rough_key("Мама", "a")
+    assert naming.rough_key("Ёлка", "Прованс") == naming.rough_key("елка", "прованс")
+    # чисто латинская строка остаётся латинской: Kino ≠ Кино
+    assert naming.rough_key("Kino", "Blood") != naming.rough_key("Кино", "Blood")
+    assert naming.rough_key("Kino", "Blood") == naming.rough_key("KINO", "blood!")
+    # исполнитель и название не склеиваются в одно: «AB»+«C» ≠ «A»+«BC»
+    assert naming.rough_key("AB", "C") != naming.rough_key("A", "BC")

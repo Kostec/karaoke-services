@@ -6,6 +6,7 @@
     <DATA_DIR>/songs/<Исполнитель>/<Исполнитель - Название>/jobs/<id>/in/ вход задания
     <DATA_DIR>/trash/
     <DATA_DIR>/imports/<token>/                                         распаковка импорта (час)
+    <DATA_DIR>/reports/libcheck.json                                    отчёт проверки библиотеки
 
 Папка песни — :func:`karaoke_core.naming.song_dir`. Пути в ``params`` заданий —
 относительные от ``DATA_DIR`` (:meth:`DataPaths.rel`).
@@ -57,6 +58,10 @@ class DataPaths:
         if not _IMPORT_ID_RE.fullmatch(token or ""):
             raise ValueError(f"Недопустимый токен импорта: {token!r}")
         return self.imports_root / token
+
+    def libcheck_report(self) -> Path:
+        """Отчёт последней проверки библиотеки (задание ``libcheck``) — ``reports/libcheck.json``."""
+        return self.root / "reports" / "libcheck.json"
 
     def log(self, job_id: int) -> Path:
         return self.root / "logs" / f"{job_id}.log"

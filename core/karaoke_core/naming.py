@@ -20,6 +20,7 @@ SUFFIX_INSTRUMENTAL = " [Instrumental].mp3"
 SUFFIX_VOCALS = " [Vocals].mp3"
 SUFFIX_MIDI = ".mid"
 _COVER_MARK = " [CO]"
+_BACKGROUND_MARK = " [BG]"
 
 
 def _bad(ch: str) -> bool:
@@ -50,14 +51,22 @@ def song_dir(artist: str, title: str) -> str:
     return f"{artist_dir(artist)}/{base_name(artist, title)}"
 
 
-def cover_suffix(ext: str) -> str:
-    """Суффикс обложки ``" [CO].<ext>"`` (расширение в нижнем регистре, jpeg → jpg)."""
+def _image_ext(ext: str) -> str:
+    """Расширение картинки: с точкой, в нижнем регистре, jpeg → jpg."""
     ext = (ext or ".jpg").lower()
     if not ext.startswith("."):
         ext = "." + ext
-    if ext == ".jpeg":
-        ext = ".jpg"
-    return f"{_COVER_MARK}{ext}"
+    return ".jpg" if ext == ".jpeg" else ext
+
+
+def cover_suffix(ext: str) -> str:
+    """Суффикс обложки ``" [CO].<ext>"`` (расширение в нижнем регистре, jpeg → jpg)."""
+    return f"{_COVER_MARK}{_image_ext(ext)}"
+
+
+def background_suffix(ext: str) -> str:
+    """Суффикс фона ``" [BG].<ext>"`` (расширение в нижнем регистре, jpeg → jpg)."""
+    return f"{_BACKGROUND_MARK}{_image_ext(ext)}"
 
 
 # Контейнеры видео, которые кладутся в папку песни как есть (R07).
@@ -106,6 +115,24 @@ def song_tag_key(artist: str, title: str) -> str:
     """Ключ своих тегов песни: :func:`match_key` строкой через перевод строки —
     общий для всех копий «исполнитель — название» во всех хранилищах."""
     return "\n".join(match_key(artist, title))
+
+
+# Латинские буквы, неотличимые на вид от кириллических (после casefold).
+_LOOKALIKES = str.maketrans("aeopcxykmthb", "аеорсхукмтнв")
+
+
+def _has_cyrillic(s: str) -> bool:
+    return any("Ѐ" <= ch <= "ӿ" for ch in s)
+
+
+def rough_key(artist: str, title: str) -> str:
+    """Грубый ключ дублей для проверки библиотеки: :func:`match_key` без всех не-букв и не-цифр,
+    а в строке с кириллицей латинские двойники (``a e o p c x y k m t h b``) — кириллицей
+    («Kино» = «Кино», «Ленинград!» = «ленинград»). Исполнитель и название — через перевод строки."""
+    def rough(s: str) -> str:
+        s = "".join(ch for ch in s if ch.isalnum())
+        return s.translate(_LOOKALIKES) if _has_cyrillic(s) else s
+    return "\n".join(rough(part) for part in match_key(artist, title))
 
 
 def rename_plan(names, old_bases, new_base: str, fallback=()) -> dict[str, str]:

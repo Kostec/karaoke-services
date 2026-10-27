@@ -62,6 +62,30 @@ def test_tags_crud_and_errors(client):
     assert r.status_code == 200 and r.json() == {"ok": True, "removed": 0}
 
 
+def test_create_tag_empty_or_null_color_is_400_missing_is_blue(client):
+    for body in ({"name": "Пустой", "color": ""}, {"name": "Нулевой", "color": None}):
+        r = client.post("/api/tags", json=body)
+        assert r.status_code == 400, body
+        assert r.json() == {"detail": "Неизвестный цвет", "field": "color"}
+    assert client.get("/api/tags").json()["tags"] == []
+    assert _tag(client, "Без цвета")["color"] == "blue"  # так шлёт старый фронт
+    r = client.put(f"/api/tags/{_tag(client, 'Другой')['id']}", json={"color": ""})
+    assert r.status_code == 400 and r.json() == {"detail": "Неизвестный цвет", "field": "color"}
+
+
+def test_create_tag_race_is_400_not_500(client, monkeypatch):
+    """Проверка дубля прошла, а INSERT упёрся в UNIQUE (второй создатель успел раньше)."""
+    from karaoke_core import db
+
+    _tag(client, "Рок")
+    monkeypatch.setattr(db.Tags, "_check_unique", lambda self, key, except_id=None: None)
+    r = client.post("/api/tags", json={"name": "рок", "color": "red"})
+    assert r.status_code == 400 and r.json() == {"detail": "Такой тег уже есть", "field": "name"}
+    other = _tag(client, "Поп")
+    r = client.put(f"/api/tags/{other['id']}", json={"name": "РОК"})
+    assert r.status_code == 400 and r.json() == {"detail": "Такой тег уже есть", "field": "name"}
+
+
 def test_song_tags_set_list_count_and_delete(client, song):
     a = _tag(client, "Б-тег")
     b = _tag(client, "А-тег", "pink")
