@@ -469,7 +469,7 @@ def test_notes_lines_align_to_own_lyrics_without_writing(env, client):
              "про", "ку", "рен", "ным ", "был "]
     r = client.post(f"/api/songs/{sid}/notes/lines", json={"texts": texts, "starts": [0, 8, 9, 16]})
     assert r.status_code == 200
-    assert r.json() == {"starts": [0, 8], "unmatched": 1, "total": 3}
+    assert r.json() == {"starts": [0, 8], "unmatched": 1, "total": 3, "unmatched_lines": [2]}
     assert client.post(f"/api/songs/{sid}/notes/lines", json={"texts": texts}).json()["starts"] == [0, 8]
     assert txt.read_bytes() == before
 

@@ -60,7 +60,7 @@ def test_extra_notes_between_adjacent_lines_do_not_keep_old_breaks():
 
 def test_nothing_matched_returns_existing():
     r = align_line_starts(NOTES, "совсем\nдругой текст", existing_starts=[17, 8, 0, 99])
-    assert r == LineAlign(starts=[0, 8, 17], unmatched=2, total=2)
+    assert r == LineAlign(starts=[0, 8, 17], unmatched=2, total=2, unmatched_lines=[0, 1])
 
 
 def test_case_yo_punctuation_brackets():
@@ -75,7 +75,8 @@ def test_punctuation_only_lines_are_not_counted():
 
 
 def test_empty_notes():
-    assert align_line_starts([], LYRICS) == LineAlign(starts=[0], unmatched=3, total=3)
+    assert align_line_starts([], LYRICS) == LineAlign(starts=[0], unmatched=3, total=3,
+                                                      unmatched_lines=[0, 1, 2])
 
 
 def test_align_song_rewrites_breaks():
@@ -90,3 +91,16 @@ def test_align_song_rewrites_breaks():
     out = ultrastar.render(song).decode()
     assert "\n- 16\n: 16 2 5 Что \n" in out and "\n- 34\n: 34 2 5 У \n" in out
     assert out.count("\n- ") == 2
+
+
+def test_unmatched_lines_are_text_line_numbers_without_blank_lines():
+    lyrics = "".join([chr(10), "Тяни лотерейный билет", chr(10) * 2, "Этой строки нет в нотах", chr(10),
+                      "У нас с тобой выигравших нет", chr(10), "И этой тоже нет"])
+    r = align_line_starts(NOTES, lyrics, existing_starts=[0, 8, 17])
+    # нумерация — по строкам со словами: 0 «Тяни…», 1 «Этой…», 2 «У нас…», 3 «И этой…»
+    assert r.unmatched_lines == [1, 3]
+    assert r.unmatched == len(r.unmatched_lines) == 2
+
+
+def test_no_unmatched_lines_when_all_found():
+    assert align_line_starts(NOTES, LYRICS).unmatched_lines == []

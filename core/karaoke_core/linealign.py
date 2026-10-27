@@ -9,7 +9,7 @@ UltraSinger без таймингов LRC режет строки по пауз�
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Iterable
 
@@ -28,6 +28,7 @@ class LineAlign:
     starts: list[int]  # индексы нот — начала строк, по возрастанию, первый 0
     unmatched: int  # строк текста, ни одно слово которых не нашлось в нотах
     total: int  # строк текста, в которых есть слова
+    unmatched_lines: list[int] = field(default_factory=list)  # номера (с 0) таких строк текста
 
 
 @dataclass
@@ -135,9 +136,12 @@ def align_line_starts(note_texts: list[str], lyrics: str,
             found.append({"li": li, "j1": pairs[idx[0]], "j2": pairs[idx[-1]],
                           "lead": idx[0] - pos, "trail": pos + len(line) - 1 - idx[-1]})
         pos += len(line)
-    unmatched = total - len(found)
+    matched_li = {f["li"] for f in found}
+    unmatched_lines = [li for li in range(total) if li not in matched_li]
+    unmatched = len(unmatched_lines)
     if not found or n == 0:
-        return LineAlign(starts=[0, *existing], unmatched=unmatched, total=total)
+        return LineAlign(starts=[0, *existing], unmatched=unmatched, total=total,
+                         unmatched_lines=unmatched_lines)
 
     starts = {0}
     first = found[0]
@@ -158,7 +162,8 @@ def align_line_starts(note_texts: list[str], lyrics: str,
     if last["li"] < total - 1:
         lo = words[last["j2"]].last
         starts.update(s for s in existing if s > lo)
-    return LineAlign(starts=sorted(starts), unmatched=unmatched, total=total)
+    return LineAlign(starts=sorted(starts), unmatched=unmatched, total=total,
+                     unmatched_lines=unmatched_lines)
 
 
 def line_starts(song: ultrastar.Song) -> list[int]:

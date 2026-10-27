@@ -305,7 +305,8 @@ def align_notes_lines(song_id: str, body: LinesIn, request: Request):
     if lyrics is None or not lyrics.strip():
         raise ApiError(409, NO_LYRICS_TO_ALIGN)
     r = linealign.align_line_starts(body.texts, lyrics, body.starts)
-    return {"starts": r.starts, "unmatched": r.unmatched, "total": r.total}
+    return {"starts": r.starts, "unmatched": r.unmatched, "total": r.total,
+            "unmatched_lines": r.unmatched_lines}
 
 
 _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")

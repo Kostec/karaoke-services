@@ -5,6 +5,7 @@ import { openLyricsEditor, lyricsEnabled } from './lyrics-editor.js';
 import { openNotesEditor, addNotesEditorPlugin } from './notes-editor.js';
 import { textPanelPlugin } from './notes-text-panel.js';
 import { toolsPlugin } from './notes-tools.js';
+import { notesChecksPlugin } from './notes-checks-plugin.js';
 
 registerSongEditor('lyrics', {
   label: 'Править текст',
@@ -20,3 +21,6 @@ registerSongEditor('notes', {
 // расширения редактора нот (таск 04): панель «Текст», перенос текста, отстукивание, справка
 addNotesEditorPlugin(textPanelPlugin);
 addNotesEditorPlugin(toolsPlugin);
+
+// подозрительные ноты и «сыграть ноту» (сборка library-tools, таск 03)
+addNotesEditorPlugin(notesChecksPlugin);

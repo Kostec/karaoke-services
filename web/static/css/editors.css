@@ -307,3 +307,11 @@ dialog.ne-help h3 { margin-top: 0; }
 .ne-vgroup { display: inline-flex; align-items: center; gap: 3px; }
 .ne-vgroup[hidden] { display: none; }
 .ne-vbtn { min-width: 34px; }
+
+/* --- library-tools 03: подозрительные ноты --- */
+.ne-note.suspect:not(.sel):not(.bad) { background: #f5c518; box-shadow: 0 0 0 2px rgba(245, 197, 24, .45); }
+.ne-note.suspect.sel { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px #f5c518; }
+.ne-bar .ne-sus.has { border-color: #f5c518; }
+.ne-bar .ne-sus-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: .85rem; }
+.ne-bar .ne-sus-toggle input { width: auto; min-height: 0; margin: 0; }
+.ne-sus-note { max-width: 24ch; }
