@@ -10,6 +10,8 @@ import * as trash from './trash.js';
 import * as settings from './settings.js';
 // Редакторы (таск 07): модуль вызывает registerSongEditor().
 import './editors/index.js';
+// Уведомления браузера о заданиях (таск 05): свой опрос, только если включены в «Настройках».
+import './notify.js';
 
 const VIEWS = { queue, new: newSong, import: importView, songs, song: songPage, trash, settings };
 // Разделы без своей вкладки: какую вкладку подсветить.

@@ -1,16 +1,19 @@
 // Раздел «Настройки»: «Куда выкладывать» — список хранилищ (локальное, SMB, папка ПК, Яндекс Диск,
 // WebDAV, Google Диск) с проверкой и основной целью; учётка usdb; ключ доступа Яндекс Музыки
-// (OAuth-токен аккаунта — сервис не спрашивает логин и пароль Яндекса).
+// (OAuth-токен аккаунта — сервис не спрашивает логин и пароль Яндекса); «Уведомления» — Telegram-бот
+// (токен назад не отдаётся) и уведомления в этом браузере.
 
 import { api, request } from './api.js';
 import { h, clear, toast, field, confirmDialog } from './ui.js';
 import { targetBody, savedBody, formKind, fieldTarget, needsLocalHint, sameAccount } from './targets-logic.js';
 import { yandexSaveAction, YM_REMOVE_CONFIRM, YM_KEPT, YM_EMPTY } from './link-logic.js';
+import { notifyEnabled, notifyState, setNotifyEnabled } from './notify.js';
 
 let root, hooks, built = false;
 const T = {}; // карточка «Куда выкладывать»: элементы, список, форма
 let u = {}, usdbCurrent = null; // карточка «usdb»
 let y = {}, ymCurrent = null; // карточка «Яндекс Музыка»: {has_token}
+let n = {}, tgCurrent = null; // карточка «Уведомления»: {has_token, chat_id, on_done, on_failed, on_queue_empty}
 
 export function mount(section, ctx) {
   root = section;
@@ -32,6 +35,13 @@ export async function show() {
   } catch (e) {
     showYandexResult('err', `Не удалось загрузить настройки Яндекс Музыки: ${e.detail}`);
   }
+  fillBrowserNotify();
+  try {
+    tgCurrent = await api.telegram();
+    fillTelegram(tgCurrent);
+  } catch (e) {
+    showNotifyResult('err', `Не удалось загрузить настройки уведомлений: ${e.detail}`);
+  }
 }
 
 export function hide() {
@@ -41,7 +51,7 @@ export function hide() {
 function build() {
   built = true;
   clear(root).append(h('div', { class: 'view-head' }, h('h2', {}, 'Настройки')),
-    buildTargets(), buildUsdb(), buildYandex());
+    buildTargets(), buildUsdb(), buildYandex(), buildNotify());
 }
 
 // ---------------------------------------------------------------- usdb
@@ -210,6 +220,149 @@ function showYandexResult(kind, text) {
   y.result.className = `banner ${kind}`;
   y.result.textContent = text;
   y.result.hidden = false;
+}
+
+// ---------------------------------------------------------------- Уведомления (Telegram и браузер)
+
+const TG_HELP = 'https://core.telegram.org/bots/features#botfather';
+
+function buildNotify() {
+  n.key = h('input', { type: 'password', autocomplete: 'off', name: 'telegram-bot-key', spellcheck: 'false' });
+  n.keyHint = h('div', { class: 'small muted' });
+  n.chat = h('input', { type: 'text', autocomplete: 'off', name: 'telegram-chat', spellcheck: 'false',
+    placeholder: '248019337' });
+  n.find = h('button', { type: 'button', onclick: findTelegramChat }, 'Найти чат');
+  n.onDone = h('input', { type: 'checkbox' });
+  n.onFailed = h('input', { type: 'checkbox' });
+  n.onEmpty = h('input', { type: 'checkbox' });
+  n.result = h('div', { class: 'banner', hidden: true, role: 'status' });
+  n.test = h('button', { type: 'button', onclick: () => submitTelegram(false) }, 'Проверить');
+  n.save = h('button', { type: 'submit', class: 'primary' }, 'Сохранить');
+  n.browser = h('input', { type: 'checkbox', onchange: toggleBrowserNotify });
+  n.browserLabel = h('label', { class: 'check' }, n.browser, 'Показывать, пока вкладка открыта');
+  n.browserNote = h('div', { class: 'banner warn', hidden: true, role: 'status', style: 'margin:4px 0 0' });
+  const form = h('form', { class: 'card', novalidate: true },
+    h('h3', { style: 'margin-top:0' }, 'Уведомления'),
+    h('p', { class: 'small muted', style: 'margin-top:0' },
+      'Telegram работает с любого устройства. Сообщение приходит, когда задание готово или упало. ',
+      'Бота создают у ', h('a', { href: TG_HELP, target: '_blank', rel: 'noopener' }, '@BotFather'),
+      ' — он выдаёт токен.'),
+    h('div', { class: 'row2' },
+      h('div', {}, field('Токен бота', n.key), n.keyHint),
+      h('div', {},
+        h('label', { class: 'field' }, h('span', {}, 'Chat id'),
+          h('div', { style: 'display:flex;gap:8px' }, n.chat, n.find)),
+        h('div', { class: 'small muted' }, 'сначала напишите боту любое сообщение'))),
+    h('div', { class: 'radio-row', style: 'margin-top:8px' },
+      h('label', {}, n.onDone, 'Готово'), h('label', {}, n.onFailed, 'Сбой'),
+      h('label', {}, n.onEmpty, 'Очередь опустела')),
+    n.result,
+    h('div', { class: 'actions' }, n.test, n.save),
+    h('hr', { style: 'border:0;border-top:1px solid var(--border);margin:14px 0' }),
+    h('h3', { style: 'font-size:1rem' }, 'Уведомления в этом браузере'),
+    n.browserLabel,
+    n.browserNote);
+  form.addEventListener('submit', (e) => { e.preventDefault(); submitTelegram(true); });
+  n.chat.addEventListener('input', () => n.chat.classList.remove('invalid'));
+  n.key.addEventListener('input', () => n.key.classList.remove('invalid'));
+  return form;
+}
+
+function fillTelegram(t) {
+  n.key.value = '';
+  n.key.placeholder = t?.has_token ? '••••••••••••••••' : '123456:ABC…';
+  n.keyHint.textContent = t?.has_token ? 'сохранён — оставьте пустым, чтобы не менять' : 'токен ещё не задан';
+  n.chat.value = t?.chat_id || '';
+  n.onDone.checked = t?.on_done ?? true;
+  n.onFailed.checked = t?.on_failed ?? true;
+  n.onEmpty.checked = t?.on_queue_empty ?? false;
+}
+
+/** Тело запроса: пустой токен не шлётся — сервер возьмёт сохранённый (назад он его не отдаёт). */
+function telegramBody(withEvents = true) {
+  const b = { chat_id: n.chat.value.trim() };
+  if (withEvents) Object.assign(b, { on_done: n.onDone.checked, on_failed: n.onFailed.checked, on_queue_empty: n.onEmpty.checked });
+  const typed = n.key.value.trim();
+  if (typed) b['bot_token'] = typed;
+  return b;
+}
+
+function markNotifyField(e) {
+  const el = e.data?.field === 'bot_token' ? n.key : e.data?.field === 'chat_id' ? n.chat : null;
+  if (el) {
+    el.classList.add('invalid');
+    el.focus();
+  }
+}
+
+async function submitTelegram(save) {
+  const btn = save ? n.save : n.test;
+  n.test.disabled = n.save.disabled = n.find.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = save ? 'Сохранение…' : 'Отправка…';
+  n.result.hidden = true;
+  try {
+    if (save) {
+      tgCurrent = await api.saveTelegram(telegramBody());
+      fillTelegram(tgCurrent);
+      showNotifyResult('ok', 'Сохранено');
+      toast('Уведомления сохранены');
+    } else {
+      await api.testTelegram(telegramBody(false));
+      showNotifyResult('ok', '✓ Тестовое сообщение отправлено');
+    }
+  } catch (e) {
+    showNotifyResult('err', e.detail);
+    markNotifyField(e);
+  } finally {
+    btn.textContent = label;
+    n.test.disabled = n.save.disabled = n.find.disabled = false;
+  }
+}
+
+async function findTelegramChat() {
+  n.find.disabled = true;
+  const label = n.find.textContent;
+  n.find.textContent = 'Поиск…';
+  n.result.hidden = true;
+  try {
+    const body = telegramBody(false);
+    delete body.chat_id;
+    const found = await api.findTelegramChat(body);
+    n.chat.value = found.chat_id;
+    n.chat.classList.remove('invalid');
+    showNotifyResult('ok', `Найден чат ${found.chat_id} — нажмите «Сохранить»`);
+  } catch (e) {
+    showNotifyResult(e.status === 404 ? 'warn' : 'err', e.detail);
+    markNotifyField(e);
+  } finally {
+    n.find.textContent = label;
+    n.find.disabled = false;
+  }
+}
+
+function showNotifyResult(kind, text) {
+  n.result.className = `banner ${kind}`;
+  n.result.textContent = text;
+  n.result.hidden = false;
+}
+
+/** Переключатель «в этом браузере»: погашен с причиной, если браузер не даст (http, запрет). */
+function fillBrowserNotify(reason = '') {
+  const st = notifyState();
+  n.browser.checked = st.ok && notifyEnabled();
+  n.browser.disabled = !st.ok;
+  n.browserLabel.style.opacity = st.ok ? '' : '.55';
+  const text = st.ok ? reason : st.reason;
+  n.browserNote.textContent = text;
+  n.browserNote.hidden = !text;
+}
+
+async function toggleBrowserNotify() {
+  n.browser.disabled = true;
+  const st = await setNotifyEnabled(n.browser.checked);
+  fillBrowserNotify(st.ok ? '' : st.reason);
+  if (st.ok && n.browser.checked) toast('Уведомления в этом браузере включены');
 }
 
 // ---------------------------------------------------------------- Куда выкладывать

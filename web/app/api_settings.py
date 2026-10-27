@@ -1,12 +1,12 @@
-"""Настройки папки результата. Пароль Samba API никогда не возвращает."""
+"""Настройки: папка результата, usdb, Яндекс Музыка, уведомления Telegram. Пароли и токены API никогда не возвращает."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
 
-from karaoke_core import musiclink
-from karaoke_core.db import OutputTarget, Target, UsdbAccount
+from karaoke_core import musiclink, telegram
+from karaoke_core.db import OutputTarget, Target, TelegramSettings, UsdbAccount
 from karaoke_core.storage import StorageError
 
 from .api_jobs import ctx_of
@@ -208,3 +208,85 @@ def test_yandex(body: YandexIn, request: Request):
         raise ApiError(400, musiclink.MSG_NEED_LOGIN, field="token")
     _yandex_check(ctx, ym_key)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------- Telegram (уведомления)
+
+
+class TelegramIn(BaseModel):
+    bot_token: str | None = None  # пусто или нет поля — прежний (API его никогда не отдаёт)
+    chat_id: str = ""
+    on_done: bool = True
+    on_failed: bool = True
+    on_queue_empty: bool = False
+
+
+class TelegramProbeIn(BaseModel):
+    bot_token: str | None = None  # пусто — сохранённый
+    chat_id: str = ""             # пусто — сохранённый (только для проверки)
+
+
+TELEGRAM_TEST_TEXT = "🔔 Проверка: уведомления karaoke-services приходят сюда"
+TELEGRAM_NO_CHAT = "Напишите боту любое сообщение и повторите"
+
+
+def _telegram_key(ctx: AppContext, typed: str | None) -> str:
+    """Токен из формы или сохранённый; формат проверяется до запроса (токен стоит в адресе)."""
+    bot_key = (typed or "").strip() or ctx.settings.get_telegram().bot_token
+    if not bot_key:
+        raise ApiError(400, "Введите токен бота", field="bot_token")
+    if not telegram.valid_key(bot_key):
+        raise ApiError(400, telegram.MSG_KEY_FORMAT, field="bot_token")
+    return bot_key
+
+
+def _telegram_api_error(e: telegram.TelegramError) -> ApiError:
+    if e.network:
+        return ApiError(503, str(e))
+    return ApiError(400, str(e), **({"field": e.field} if e.field else {}))
+
+
+@router.get("/telegram", summary="Уведомления Telegram (токен не возвращается — только has_token)")
+def get_telegram(request: Request):
+    return ctx_of(request).settings.get_telegram().public()
+
+
+@router.put("/telegram", summary="Сохранить уведомления Telegram; пустой токен — прежний")
+def put_telegram(body: TelegramIn, request: Request):
+    ctx = ctx_of(request)
+    typed = (body.bot_token or "").strip()
+    if typed and not telegram.valid_key(typed):
+        raise ApiError(400, telegram.MSG_KEY_FORMAT, field="bot_token")
+    chat_id = body.chat_id.strip()
+    if chat_id and not telegram.valid_chat_id(chat_id):
+        raise ApiError(400, telegram.MSG_CHAT_FORMAT, field="chat_id")
+    saved = ctx.settings.set_telegram(TelegramSettings(
+        typed or None, chat_id, body.on_done, body.on_failed, body.on_queue_empty))
+    return saved.public()
+
+
+@router.post("/telegram/test", summary="Отправить тестовое сообщение (не сохраняет); пустые поля — сохранённые")
+def test_telegram(body: TelegramProbeIn, request: Request):
+    ctx = ctx_of(request)
+    bot_key = _telegram_key(ctx, body.bot_token)
+    chat_id = body.chat_id.strip() or ctx.settings.get_telegram().chat_id
+    if not chat_id:
+        raise ApiError(400, "Впишите chat id или нажмите «Найти чат»", field="chat_id")
+    try:
+        telegram.send_message(ctx.http, bot_key, chat_id, TELEGRAM_TEST_TEXT)
+    except telegram.TelegramError as e:
+        raise _telegram_api_error(e) from None
+    return {"ok": True}
+
+
+@router.post("/telegram/find-chat", summary="Chat id последнего, кто писал боту (getUpdates)")
+def find_telegram_chat(body: TelegramProbeIn, request: Request):
+    ctx = ctx_of(request)
+    bot_key = _telegram_key(ctx, body.bot_token)
+    try:
+        chat_id = telegram.find_chat(ctx.http, bot_key)
+    except telegram.TelegramError as e:
+        raise _telegram_api_error(e) from None
+    if not chat_id:
+        raise ApiError(404, TELEGRAM_NO_CHAT)
+    return {"chat_id": chat_id}

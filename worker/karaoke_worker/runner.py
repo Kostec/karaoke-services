@@ -17,6 +17,7 @@ from typing import Callable
 from karaoke_core import naming
 from karaoke_core.db import Job
 
+from . import notify
 from .base import JobCancelled, JobContext, JobFailed, remove_tree
 from .handlers import HANDLERS, Handler
 
@@ -141,6 +142,8 @@ def run_job(ctx: JobContext, job: Job) -> None:
     except Exception as e:  # noqa: BLE001 — задание не должно зависнуть в running
         ctx.log(job.id, traceback.format_exc())
         ctx.jobs.update(job.id, state="failed", error=f"Внутренняя ошибка воркера: {e}")
+    # уведомления (Telegram): о конечном состоянии и «очередь опустела»; сбой — строка в логе
+    notify.after_job(ctx, job.id)
 
 
 def run_forever(ctx: JobContext | None = None, *, gpu_check: Callable[[], dict] | None = None,
