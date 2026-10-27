@@ -16,7 +16,7 @@ __all__ = [
     "Song", "Header", "Note", "LineBreak", "PlayerMark", "End", "RawLine",
     "parse", "render", "set_header_line", "fix_zero_length", "beat_to_ms",
     "extract_lyrics", "NOTE_TYPES", "decode", "number", "singer_names", "set_singer_names",
-    "set_line_starts",
+    "set_line_starts", "EncodingFix", "encoding_problem",
 ]
 
 NOTE_TYPES = (":", "*", "F", "R", "G")
@@ -520,3 +520,123 @@ def extract_lyrics(song: Song) -> str:
         if words:
             blocks[-1].append(words)
     return "\n\n".join("\n".join(b) for b in blocks if b)
+
+
+
+# ----------------------------------------------------------------- битая кодировка (история 36)
+
+# Самые частые строчные буквы русского текста (≈90 % букв): их доля среди не-ASCII символов
+# отличает настоящий текст от кракозябр (koi8-r под видом cp1251 — сплошь заглавные,
+# cp866 — значки и сербские буквы, mojibake — «Р°С‚»).
+_COMMON_RU = frozenset("оеаинтсрвлкмдпуяыьгз")
+_TYPOGRAPHY = frozenset("«»—–…“”„‘’№ ")
+PLAUSIBLE = 0.5  # доля частых букв, с которой текст считается нормальным
+MIN_LETTERS = 10  # меньше не-ASCII символов — о «правдоподобности» судить не по чему
+_LEGACY = ("koi8-r", "cp866")  # кодировки, которые молча читаются как cp1251
+# Пара mojibake: «Р»/«С» (байты D0/D1) и байт 0x80–0xBF UTF-8, прочитанный как cp1251.
+_MOJI_HEAD = frozenset("РС")
+_MOJI_TAIL = frozenset(bytes(range(0x80, 0xC0)).decode("cp1251", errors="ignore") + "\x98")
+_ENCODING_HEADER = re.compile(r"^#ENCODING:[^\r\n]*", re.I | re.M)
+PREVIEW_MAX = 80
+
+
+@dataclass
+class EncodingFix:
+    """Битая кодировка ``.txt``: вид (``mojibake`` — UTF-8, когда-то прочитанный как cp1251;
+    ``latin1`` — файл в koi8-r/cp866 или не читается ни UTF-8, ни cp1251; ``replacement`` —
+    в тексте U+FFFD), исправленный текст (пусто — угадать не удалось) и «было → станет»."""
+    kind: str
+    fixed_text: str
+    preview_before: str
+    preview_after: str
+
+
+def _plausibility(text: str) -> tuple[float, int]:
+    """(доля частых русских строчных среди не-ASCII символов, число таких символов)."""
+    wide = [ch for ch in text if ord(ch) > 0x7F and ch not in _TYPOGRAPHY and not ch.isspace()]
+    if not wide:
+        return 1.0, 0
+    return sum(ch in _COMMON_RU for ch in wide) / len(wide), len(wide)
+
+
+def _moji_pairs(text: str) -> int:
+    return sum(1 for a, b in zip(text, text[1:]) if a in _MOJI_HEAD and b in _MOJI_TAIL)
+
+
+def _unmojibake(text: str) -> str | None:
+    """Текст, когда-то прочитанный из UTF-8 как cp1251, — обратно; не выходит — ``None``.
+    Байта 0x98 в cp1251 нет: прочитавшие его программы дают U+0098, он возвращается байтом."""
+    try:
+        raw = b"\x98".join(part.encode("cp1251") for part in text.split("\x98"))
+        return raw.decode("utf-8")
+    except UnicodeError:
+        return None
+
+
+def _best_legacy(data: bytes, current: float) -> str:
+    """Самый правдоподобный текст среди koi8-r/cp866, если он нормален и лучше текущего; иначе пусто."""
+    best, best_score = "", -1.0
+    for enc in _LEGACY:
+        try:
+            text = data.decode(enc)
+        except UnicodeError:
+            continue
+        score, count = _plausibility(text)
+        if count and score >= PLAUSIBLE and score > current and score > best_score:
+            best, best_score = text, score
+    return best
+
+
+def _header_preview(text: str) -> str:
+    def header(key: str) -> str:
+        m = re.search(rf"^#{key}:([^\r\n]*)", text, re.I | re.M)
+        return m.group(1).strip() if m else ""
+    return f"{header('ARTIST')} - {header('TITLE')}"
+
+
+def _previews(before: str, after: str) -> tuple[str, str]:
+    """«Было → станет» по ``#ARTIST - #TITLE``; совпали — по первой отличающейся строке."""
+    a, b = _header_preview(before), _header_preview(after) if after else ""
+    if not after or a != b:
+        return a[:PREVIEW_MAX], b[:PREVIEW_MAX]
+    for x, y in zip(before.splitlines(), after.splitlines()):
+        if x != y:
+            return x.strip()[:PREVIEW_MAX], y.strip()[:PREVIEW_MAX]
+    return a, b
+
+
+def _fixed(text: str) -> str:
+    """Исправленный текст пишется в UTF-8: ``#ENCODING`` (если был) говорит то же."""
+    return _ENCODING_HEADER.sub("#ENCODING:UTF8", text) if text else ""
+
+
+def encoding_problem(data: bytes) -> EncodingFix | None:
+    """Битая ли кодировка ``.txt`` (история 36); ``None`` — всё в порядке.
+
+    Не прочиталось ни UTF-8, ни cp1251 (``latin-1``) → пробуются koi8-r и cp866; пары
+    «Р°/С‚» → обратный mojibake; U+FFFD → найдено, но не исправить; прочиталось cp1251, но
+    текст неправдоподобен, а koi8-r/cp866 дают нормальный — ``latin1`` с исправлением."""
+    text, encoding, _bom = decode(data)
+    score, count = _plausibility(text)
+
+    def found(kind: str, fixed: str) -> EncodingFix:
+        fixed = _fixed(fixed)
+        before, after = _previews(text, fixed)
+        if kind == "replacement" and "\ufffd" not in before:  # «было» — строка с U+FFFD
+            before = next((ln.strip() for ln in text.splitlines() if "\ufffd" in ln), before)[:PREVIEW_MAX]
+        return EncodingFix(kind, fixed, before, after)
+
+    if encoding == "latin-1":
+        return found("latin1", _best_legacy(data, score))
+    pairs = _moji_pairs(text)
+    if pairs >= 3 and pairs * 3 >= count:
+        fixed = _unmojibake(text)
+        ok = fixed is not None and _moji_pairs(fixed) == 0 and _plausibility(fixed)[0] >= PLAUSIBLE
+        return found("mojibake", fixed if ok else "")
+    if "\ufffd" in text:
+        return found("replacement", "")
+    if encoding == "cp1251" and count >= MIN_LETTERS and score < PLAUSIBLE:
+        fixed = _best_legacy(data, score)
+        if fixed:
+            return found("latin1", fixed)
+    return None
