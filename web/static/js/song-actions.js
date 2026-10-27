@@ -7,11 +7,12 @@
 //   afterRename(newSongId) — задание переименования копии из currentTargetId готово (иначе reload).
 
 import { api, getDefaults, errorText, probeDownload, JOB_FINAL } from './api.js';
-import { h, confirmDialog, runAction, toast, days, songName, field } from './ui.js';
+import { h, confirmDialog, runAction, toast, days, songName, field, plural } from './ui.js';
+import { bulkSummary } from './select-logic.js';
 import { renameErrors, renameBody, ownRename } from './rename-logic.js';
 import { createVideoBlock } from './video-block.js';
 import { songEditors } from './extensions.js';
-import { openTagsDialog } from './tags-ui.js';
+import { openTagsDialog, tagChip } from './tags-ui.js';
 
 const WATCH_MS = 3000;
 const watched = new Set();
@@ -115,10 +116,10 @@ export function openSongTagsDialog(song, env) {
 }
 
 /** Диалог «Копировать в…»: хранилище (кроме текущего), «если уже есть», у «показанных» — «только недостающие». */
-export function openCopyDialog(songs, env, { bulk = false } = {}) {
+export function openCopyDialog(songs, env, { bulk = false, what = 'показанные', onResult = null } = {}) {
   const others = otherTargets(env);
   if (!songs.length || !others.length) return;
-  const title = bulk ? `Копировать показанные (${songs.length}) в…`
+  const title = bulk ? `Копировать ${what} (${songs.length}) в…`
     : `Копировать «${songName(songs[0].artist, songs[0].title)}» в…`;
   const radios = others.map((t, i) => h('label', { class: 'check' },
     h('input', { type: 'radio', name: 'copy-target', value: t.id, checked: i === 0 }), targetName(t)));
@@ -157,7 +158,8 @@ export function openCopyDialog(songs, env, { bulk = false } = {}) {
       el.close();
       const n = res.queued.length;
       const errs = res.errors?.length ? `; не скопировано ${res.errors.length}: ${res.errors[0].detail}` : '';
-      if (bulk) toast(`В «${toName}»: поставлено ${n}, пропущено ${res.skipped} (уже есть)${errs}`, errs ? 'err' : '');
+      if (onResult) onResult(res, toName);
+      else if (bulk) toast(`В «${toName}»: поставлено ${n}, пропущено ${res.skipped} (уже есть)${errs}`, errs ? 'err' : '');
       else if (n) toast(`Копирование в «${toName}» поставлено в очередь`);
       else if (res.skipped) toast(`Уже есть в «${toName}» — пропущено`);
       else toast(`Не скопировано${errs}`, 'err');
@@ -312,4 +314,134 @@ export function openRenameDialog(song, env) {
     }
   });
   return el;
+}
+
+// ---------------------------------------------------------------- несколько песен (режим «Выбрать»)
+// songs — отмеченные песни (объекты списка); env как у одной песни + afterBulk?(result) — после операции.
+
+const bulkName = (songs) => {
+  const by = new Map(songs.map((s) => [s.song_id, songName(s.artist, s.title)]));
+  return (id) => by.get(id) || id;
+};
+
+function modal(cls, title, ...body) {
+  const el = h('dialog', { class: `bulk-dlg ${cls}`, 'aria-label': title }, h('h3', {}, title), ...body);
+  el.addEventListener('close', () => el.remove());
+  document.body.append(el);
+  if (typeof el.showModal === 'function') el.showModal(); else el.setAttribute('open', '');
+  return el;
+}
+
+/** Итог массовой операции: «Готово: N. Пропущено: M» и причины по песням; queue — кнопка «К очереди». */
+export function showBulkResult(title, result, songs, { queue = false } = {}) {
+  const sum = bulkSummary(result, bulkName(songs));
+  if (!sum.lines.length) { toast(`${title}: ${sum.text.toLowerCase()}`); return null; }
+  const close = h('button', { type: 'button', class: 'primary', onclick: () => el.close() }, 'Закрыть');
+  const el = modal('bulk-result', title,
+    h('div', { class: 'banner warn' }, h('b', {}, sum.text)),
+    h('div', { class: 'reasons' }, sum.lines.map((l) => h('div', {}, l.name ? h('b', {}, l.name) : null, h('span', {}, l.reason)))),
+    h('div', { class: 'actions' },
+      queue ? h('a', { class: 'btn', href: '#queue', onclick: () => el.close() }, 'К очереди') : null, close));
+  close.focus();
+  return el;
+}
+
+/** «Теги…» для отмеченных: у каждого тега «не менять / добавить / снять» (набор песни не заменяется). */
+export async function openBulkTagsDialog(songs, env) {
+  let data;
+  try {
+    data = await api.tags();
+  } catch (e) {
+    toast(`Не удалось получить теги: ${errorText(e)}`, 'err');
+    return;
+  }
+  const tags = data.tags || [];
+  const n = songs.length;
+  const rows = tags.map((t) => {
+    const have = songs.filter((s) => (s.tags || []).includes(t.id)).length;
+    const sel = h('select', { 'aria-label': `Тег «${t.name}»` },
+      h('option', { value: '' }, 'не менять'), h('option', { value: 'add' }, 'добавить'),
+      h('option', { value: 'remove' }, 'снять'));
+    return { id: t.id, sel, el: h('div', { class: 'bulk-tag' }, tagChip(t),
+      h('span', { class: 'small muted' }, have === n ? 'у всех' : have ? `у ${have} из ${n}` : 'ни у одной'), sel) };
+  });
+  const errEl = h('div', { class: 'banner err', hidden: true, role: 'alert' });
+  const save = h('button', { type: 'button', class: 'primary', disabled: !rows.length }, 'Применить');
+  const cancel = h('button', { type: 'button', onclick: () => el.close() }, 'Отмена');
+  const el = modal('tags-dlg bulk-tags', `Теги: выбрано ${n}`,
+    rows.length ? h('div', { class: 'bulk-tags-list' }, rows.map((r) => r.el))
+      : h('p', { class: 'muted' }, 'Своих тегов пока нет — создайте их в «Мои теги…» в меню раздела'),
+    errEl, h('div', { class: 'actions' }, cancel, save));
+  save.addEventListener('click', async () => {
+    const add = rows.filter((r) => r.sel.value === 'add').map((r) => r.id);
+    const remove = rows.filter((r) => r.sel.value === 'remove').map((r) => r.id);
+    if (!add.length && !remove.length) { errEl.textContent = 'Выберите, какие теги добавить или снять'; errEl.hidden = false; return; }
+    errEl.hidden = true;
+    save.disabled = true;
+    try {
+      const res = await api.bulkTags(songs.map((s) => s.song_id), add, remove);
+      el.close();
+      showBulkResult('Теги', res, songs);
+      (env.afterBulk || env.reload)?.(res);
+    } catch (e) {
+      errEl.textContent = errorText(e);
+      errEl.hidden = false;
+    } finally {
+      save.disabled = false;
+    }
+  });
+}
+
+/** Удалить отмеченные — только в корзину и только после подтверждения с числом песен и сроком. */
+export async function bulkDelete(songs, env) {
+  const n = songs.length;
+  if (!n) return;
+  const what = `${n} ${plural(n, 'песню', 'песни', 'песен')}`;
+  const term = env.trashDays == null ? 'Они уйдут в корзину' : `Они уйдут в корзину на ${days(env.trashDays)}`;
+  if (!(await confirmDialog(`Удалить ${what}? ${term} — оттуда их можно восстановить.`, `Удалить ${n}`, { danger: true }))) return;
+  const res = await runAction(null, () => api.bulkDelete(songs.map((s) => s.song_id)));
+  if (!res) return;
+  showBulkResult('Удаление', res, songs);
+  (env.afterBulk || env.reload)?.(res);
+}
+
+/** Минусовка отмеченным; где она уже есть — пропуск или пересоздание по галочке. */
+export function bulkInstrumental(songs, env) {
+  const n = songs.length;
+  if (!n) return null;
+  const has = songs.filter((s) => s.instrumental).length;
+  const replace = h('input', { type: 'checkbox' });
+  const submit = h('button', { type: 'button', class: 'primary' }, 'Поставить в очередь');
+  const cancel = h('button', { type: 'button', onclick: () => el.close() }, 'Отмена');
+  const el = modal('bulk-instr', `Минусовка: выбрано ${n}`,
+    h('p', {}, 'Каждой песне — отдельное задание в очереди. Песни без звука и уже стоящие в очереди пропускаются.'),
+    has ? h('label', { class: 'check' }, replace,
+      `Пересоздать там, где минусовка уже есть (${has}); старые файлы уйдут в корзину`) : null,
+    h('div', { class: 'actions' }, cancel, submit));
+  submit.addEventListener('click', async () => {
+    submit.disabled = true;
+    const res = await runAction(null, () => api.bulkInstrumental(songs.map((s) => s.song_id), replace.checked));
+    submit.disabled = false;
+    if (!res) return;
+    el.close();
+    showBulkResult('Минусовка', res, songs, { queue: true });
+    (env.afterBulk || env.reload)?.(res);
+  });
+  return el;
+}
+
+/** Скачать отмеченные одним zip: POST формой — браузер сохраняет поток сам, без памяти страницы. */
+export function bulkZip(songs) {
+  if (!songs.length) return;
+  const { action, fields } = api.zipForm(songs.map((s) => s.song_id));
+  const form = h('form', { method: 'post', action, hidden: true },
+    Object.entries(fields).map(([name, value]) => {
+      const input = h('input', { type: 'hidden', name });
+      input.value = value;
+      return input;
+    }));
+  document.body.append(form);
+  form.submit();
+  form.remove();
+  toast(`Архив из ${songs.length} ${plural(songs.length, 'песни', 'песен', 'песен')} собирается — скачивание начнётся само`);
 }
