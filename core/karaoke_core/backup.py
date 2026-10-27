@@ -14,8 +14,8 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from .db import (DEFAULT_TAG_COLOR, LOCAL_TARGET_ID, TAG_COLORS, TAG_NAME_MAX, TARGET_KINDS, Mirror,
-                 Settings, Tags, Target, TelegramSettings, UsdbAccount, default_target_name, now,
+from .db import (DEFAULT_TAG_COLOR, LOCAL_OUTPUT_MOUNT, LOCAL_TARGET_ID, TAG_COLORS, TAG_NAME_MAX,
+                 TARGET_KINDS, Mirror, Settings, Tags, Target, TelegramSettings, UsdbAccount, default_target_name, now,
                  tag_name_key)
 
 __all__ = ["FORMAT", "VERSION", "NOT_SETTINGS", "TARGET_FIELDS", "BackupError", "ImportPlan",
@@ -27,6 +27,7 @@ NOT_SETTINGS = "Это не файл настроек karaoke-services"
 # Единственный список полей хранилища, которые попадают в файл (без secret/token).
 TARGET_FIELDS = ("id", "name", "kind", "path", "host", "share", "user", "url", "preset", "client_id")
 TELEGRAM_EVENTS = ("on_done", "on_failed", "on_queue_empty")
+LOCAL_ROOTS = ("host", "output")  # как api_targets.BROWSE_ROOTS: /host и /output
 _TARGET_ID = re.compile(r"^t_[A-Za-z0-9_-]{1,40}$")
 
 
@@ -114,6 +115,28 @@ def _bool(value, default: bool) -> bool:
     return value
 
 
+def _target_path(kind: str, raw: str) -> str:
+    """Путь хранилища по правилам ``api_targets`` (``_rel_path``/``_local_path``): без ``..``, ``.``
+    и двоеточий; у ``local`` — папка внутри ``/host`` или ``/output``, но не сам ``/output``.
+    Иначе весь файл отклоняется — ``BackupError``."""
+    path = raw.replace("\\", "/")
+    parts = [p for p in path.split("/") if p]
+    _check(not any(p in ("..", ".") for p in parts) and ":" not in path)
+    if kind != "local":
+        return "/".join(parts)
+    _check(bool(parts) and parts[0] in LOCAL_ROOTS)
+    local = "/" + "/".join(parts)
+    _check(local != LOCAL_OUTPUT_MOUNT)
+    return local
+
+
+def _identity(t: Target) -> tuple:
+    """Адрес и логин, как ``api_targets._identity``: при их смене прежний секрет не подставляется."""
+    if t.kind == "gdrive":
+        return (t.kind, t.client_id)
+    return (t.kind, t.host, t.share, t.user, t.url.rstrip("/"))
+
+
 @dataclass
 class _FileTag:
     name: str
@@ -129,6 +152,8 @@ def _parse(data: dict) -> tuple[list[Target], list[_FileTag], list[Mirror], dict
         values = {k: _str(t.get(k)) for k in TARGET_FIELDS}
         _check(values["kind"] in TARGET_KINDS)
         _check(values["id"] == LOCAL_TARGET_ID or bool(_TARGET_ID.match(values["id"])))
+        if values["id"] != LOCAL_TARGET_ID:  # встроенное из файла пропускается в plan_import
+            values["path"] = _target_path(values["kind"], values["path"])
         targets.append(Target(**values))
     file_tags = []
     for t in _list(data, "tags"):
@@ -214,9 +239,14 @@ def plan_import(data: dict, settings: Settings, tags: Tags) -> ImportPlan:
             plan.new_targets.append(t)
             after[t.id] = t
         else:
+            # тот же адрес и логин — прежние пароль и вход Google (None = «не менять»),
+            # другие — секреты сбрасываются: прежний пароль не уйдёт на чужой сервер
+            same = _identity(old) == _identity(t)
+            kept = (None, None) if same else ("", "")
             if _public_fields(old) != _public_fields(t):
-                plan.changed_targets.append(t)
-            after[t.id] = Target(**{**_public_fields(t), "secret": old.secret, "token": old.token})
+                plan.changed_targets.append(Target(**{**_public_fields(t), "secret": kept[0], "token": kept[1]}))
+            after[t.id] = Target(**{**_public_fields(t), "secret": old.secret if same else "",
+                                    "token": old.token if same else ""})
     for t in [after[i] for i in seen]:
         if t.kind == "gdrive" and not (t.token and t.secret):
             plan.ask_google.append(_name(t))
@@ -280,7 +310,7 @@ def apply_import(plan: ImportPlan, settings: Settings, tags: Tags) -> None:
         settings._write_targets([*settings.get_targets(), *[Target(**_public_fields(t))
                                                            for t in plan.new_targets]])
     for t in plan.changed_targets:
-        settings.save_target(Target(**_public_fields(t)))  # secret/token None — прежние
+        settings.save_target(t)  # secret/token None — прежние, "" — сброшены (адрес или логин другие)
     if plan.default_target is not None:
         settings.set_default_target_id(plan.default_target.id)
 

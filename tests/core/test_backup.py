@@ -207,3 +207,51 @@ def test_mirror_to_unknown_target_and_local_target_are_skipped(home):
     d = backup.plan_import(data, settings, tags).to_dict()
     assert (d["targets_added"], d["targets_updated"], d["mirrors_added"]) == (0, 0, 0)
     assert d["default_target"] is None
+
+
+def test_changed_address_or_login_drops_saved_secret(home):
+    """Адрес или логин в файле другие — прежний пароль/вход Google не подставляется (как в /api/targets)."""
+    settings, tags = home
+    s = _fill(settings, tags)
+    data = backup.export_settings(settings, tags)
+    for t in data["targets"]:
+        if t["id"] == s["pi"].id:
+            t["host"] = "10.0.0.99"
+        elif t["id"] == s["disk"].id:
+            t["user"] = "someone-else"
+        elif t["id"] == s["gd"].id:
+            t["client_id"] = "other-cid"
+    plan = backup.plan_import(data, settings, tags)
+    d = plan.to_dict()
+    assert d["targets_updated"] == 3
+    assert d["needs_password"] == ["Pi", "Диск"] and d["needs_google"] == ["Гугл"]
+    backup.apply_import(plan, settings, tags)
+    pi = settings.get_target(s["pi"].id)
+    assert (pi.host, pi.secret) == ("10.0.0.99", "")
+    assert settings.get_target(s["disk"].id).secret == ""
+    gd = settings.get_target(s["gd"].id)
+    assert gd.client_id == "other-cid" and not gd.secret and not gd.token
+    # только имя/папка другие — пароль остаётся
+    data2 = backup.export_settings(settings, tags)
+    settings.save_target(db.Target(**{**{k: getattr(pi, k) for k in backup.TARGET_FIELDS}, "secret": SMB_PW}))
+    data2["targets"] = [dict(t, name="Малинка", path="new") for t in data2["targets"] if t["id"] == s["pi"].id]
+    backup.apply_import(backup.plan_import(data2, settings, tags), settings, tags)
+    assert settings.get_target(s["pi"].id).secret == SMB_PW
+
+
+@pytest.mark.parametrize("path", ["/", "", "/data", "/output", "/host/../data", "/output/./x", "/host:x"])
+def test_local_target_outside_host_or_output_is_rejected(home, path):
+    settings, tags = home
+    data = {"format": "karaoke-services-settings", "version": 1,
+            "targets": [{"id": "t_0000abcd", "name": "Чужое", "kind": "local", "path": path}]}
+    with pytest.raises(backup.BackupError):
+        backup.plan_import(data, settings, tags)
+    assert [t.id for t in settings.get_targets()] == ["local"]
+
+
+@pytest.mark.parametrize("path", ["/host/karaoke", "/output/sub", "/host", "host/x"])
+def test_local_target_inside_host_or_output_is_accepted(home, path):
+    settings, tags = home
+    data = {"format": "karaoke-services-settings", "version": 1,
+            "targets": [{"id": "t_0000abcd", "name": "Папка", "kind": "local", "path": path}]}
+    assert backup.plan_import(data, settings, tags).to_dict()["targets_added"] == 1
