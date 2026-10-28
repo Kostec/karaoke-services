@@ -1,0 +1,33 @@
+/* Пульт Rii i8: крупная рамка фокуса при навигации с клавиатуры, кнопка «⌨», подсказка. */
+
+body.kbd :focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+button.remote-help {
+  min-height: 0;
+  padding: 4px 10px;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+nav.tabs .remote-help { flex: 0 0 auto; min-height: 44px; padding: 0 12px; border-radius: 8px; }
+
+dialog.remote-help-dlg { width: min(560px, calc(100vw - 24px)); }
+dialog.remote-help-dlg h3 { margin: 0 0 8px; }
+dialog.remote-help-dlg h4 { margin: 14px 0 6px; }
+.remote-table { width: 100%; border-collapse: collapse; }
+.remote-table td { padding: 4px 6px; vertical-align: top; border-top: 1px solid var(--border); }
+.remote-table td.remote-keys { white-space: nowrap; width: 1%; }
+.remote-table kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: .9em;
+  text-align: center;
+}

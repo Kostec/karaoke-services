@@ -14,6 +14,8 @@ import * as play from './play.js'; // library-tools 11
 import './editors/index.js';
 // Уведомления браузера о заданиях (таск 05): свой опрос, только если включены в «Настройках».
 import './notify.js';
+// Пульт Rii i8: стрелки, горячие клавиши, подсказка «Клавиши пульта».
+import { initRemote } from './remote.js';
 
 const VIEWS = { queue, new: newSong, import: importView, songs, song: songPage, trash, settings, check, play };
 // Разделы без своей вкладки: какую вкладку подсветить.
@@ -96,6 +98,7 @@ window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') refreshStatus();
 });
+initRemote({ views: ['queue', 'import', 'songs', 'trash', 'settings'] });
 route();
 queue.startPolling();
 refreshStatus();

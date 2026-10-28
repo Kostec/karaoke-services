@@ -8,6 +8,7 @@ import { h, clear, runAction, toast, fmtDate, debounce } from './ui.js';
 import { onEditorsChanged } from './extensions.js';
 import { menuButton, closeMenu } from './menu.js';
 import { playToggle, adoptPlayButton } from './player.js';
+import { setScreenKeys } from './remote.js';
 import {
   songMenuItems, openCopyDialog, openBulkTagsDialog, bulkDelete, bulkInstrumental, bulkZip, showBulkResult,
 } from './song-actions.js';
@@ -120,12 +121,39 @@ export function mount(section) {
     emptyEl, listEl, barEl);
   setFiltersOpen(stored(FILTERS_OPEN_KEY) === '1');
   onEditorsChanged(() => data && render());
+  root.addEventListener('keydown', onScreenKey);
+}
+
+// Пульт: клавиши «Песен» для выбранной (с фокусом) карточки.
+const SCREEN_KEYS = [
+  [['P', '⏯'], 'Послушать / остановить выбранную песню'],
+  [['R'], '«Прогон» выбранной песни'],
+];
+
+function onScreenKey(e) {
+  if (e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.target.closest?.('input:not([type="checkbox"]), select, textarea, [contenteditable]')) return;
+  const playKey = e.key === 'MediaPlayPause' || (e.code === 'KeyP' && !e.shiftKey);
+  const runKey = e.code === 'KeyR' && !e.shiftKey;
+  if (!playKey && !runKey) return;
+  const cardEl = document.activeElement?.closest?.('article.card.song[data-id]');
+  if (!cardEl || !root.contains(cardEl)) return;
+  if (playKey) {
+    const btn = cardEl.querySelector('button.play');
+    if (!btn || btn.disabled) return;
+    e.preventDefault();
+    btn.click();
+  } else {
+    e.preventDefault();
+    location.hash = `#play?id=${encodeURIComponent(cardEl.dataset.id)}`;
+  }
 }
 
 export function show(params) {
   const p = params || new URLSearchParams();
   target = p.get('target') || stored(TARGET_KEY);
   filter = parseFilter(p);
+  setScreenKeys('songs', SCREEN_KEYS);
   syncControls();
   syncHash();
   load();
