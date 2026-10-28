@@ -78,3 +78,23 @@
 
 ## Что построили законченные таски
 <!-- дописывается после каждого таска -->
+
+### T01 (пульт) — построено
+- `remote-logic.js`: `pickNeighbor(fromRect|null, dir, [{rect,id}]) → id|null`, `keyCommand(e, {inText,inMultiline,inSelect,view}) → command|null` (back → null на вкладках), `GLOBAL_KEYS`, `TAB_VIEWS = ['queue','import','songs','trash','settings']`.
+- `remote.js`: `initRemote({views})`, `setScreenKeys(view, list)`, `openRemoteHelp()` (повторный вызов закрывает), `setMediaHandlers(handlers|null)`. Любая `button.remote-help` открывает справку (делегирование на document); диалог `dialog.remote-help-dlg`; `body.kbd` — keydown ставит, pointerdown снимает. В модальном диалоге пульт обрабатывает только стрелки. Нет соседа по вертикали — прокрутка на 40 % экрана. Назад: `history.back()`, если был переход внутри сервиса, иначе song/check → `#songs`, new → `#queue`, play → `#song?id=`.
+
+### T03 (тексты, очередь) — построено
+- `LyricsHit(id "source:id", artist, title, album|None, duration, text, synced, source, url)`; `NeteaseProvider(http)`, `GeniusProvider(http)`, `PROVIDERS`, `make_providers(http)`, `search_all(providers, artist, title) -> (hits, [{id,name,ok,error?}])`.
+- `GET /api/lyrics/search?artist&title&source` → `{items, sources}`; 400 `field=source`; 503 «<Имя> не ответил» / «Сервисы текстов недоступны, попробуйте позже».
+- `Jobs.list(limit)` — все queued/running/publishing + `limit` новейших прочих.
+- Фронт: `api.lyricsSearch(artist, title, source?)`; `lyrics-search.js`: `SOURCE_LABELS`, `GENIUS_HINT`, `sortHits`, `mergeHits`, `isLinkHit`, `hitLines`, `usableHits` (оставляет ссылки, сортирует, ≤10); `lyrics-dialog.js`: `openLyricsDialog` (прежняя сигнатура), `ALL_DOWN`. Вставленный текст Genius возвращается обычным вариантом (synced=null, url=null).
+
+### T02 (звук) — построено
+- `tone.js`: `toneSequence(notes, fromMs, {gain, rate})`, `closeTone()`, `pitchName(pitch)` → «ля 4 · A4».
+- `melody.js`: `MELODY_AHEAD_MS`, `nextChunk`, `stateMelody(stateNotes, msOf)`, `createMelody({notes, rate}) → {tick, stop, invalidate}`.
+- `vocals-logic.js`: `vocalsState`, `NO_INSTRUMENTAL`, `PREPARING`, `LOAD_FAILED`, `readVocalsPref/saveVocalsPref` (`audio.vocals`), `requestOutcome(err)`; `vocals.js`: `switchSource(audio, url, {at, rate, playing})`, `createVocalsToggle({songId, audio, instrumental, variant, onChange, onReady, toast})`.
+- `play-logic.js`: `lineStarts(tl)`, `lineJump(starts, ms, dir)`. Стили «Прогона» не менялись (переключатель — `display: contents` в `.pv-row`). Медиаклавиша, пришедшая дважды (keydown + Media Session) за 0,4 с, учитывается один раз.
+
+### F2 — построено
+- `pickNeighbor(fromRect|null, dir, [{rect, id, fallback?, head?}])` — `fallback` (`#fab-new`) берётся, только если в эту сторону никого нет; `head` (шапки раздела, `SECTION_HEAD`) пропускается при старте без фокуса.
+- `keyCommand(e, {inText, inMultiline, inSelect, inRange, view})` — `{type:'open'}` (Enter/пробел на select → `showPicker`); у закрытого select все стрелки уводят фокус.
