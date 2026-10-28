@@ -46,21 +46,18 @@ function measure(from, rc, dir, strict) {
   return axis + 2 * cross;
 }
 
-/**
- * Ближайший элемент в сторону dir: вес — расстояние по оси + 2 × смещение поперёк.
- * fromRect null (фокуса нет) — первый сверху-слева. → id | null
- */
-export function pickNeighbor(fromRect, dir, candidates) {
-  const list = candidates || [];
-  if (!list.length) return null;
-  if (!fromRect) {
-    let best = null;
-    for (const c of list) {
-      if (!best || c.rect.top < best.rect.top - EDGE_EPS
-        || (Math.abs(c.rect.top - best.rect.top) <= EDGE_EPS && c.rect.left < best.rect.left)) best = c;
-    }
-    return best.id;
+/** Первый сверху-слева из списка или null. */
+function topLeft(list) {
+  let best = null;
+  for (const c of list) {
+    if (!best || c.rect.top < best.rect.top - EDGE_EPS
+      || (Math.abs(c.rect.top - best.rect.top) <= EDGE_EPS && c.rect.left < best.rect.left)) best = c;
   }
+  return best;
+}
+
+/** Ближайший в сторону dir среди list (сначала целиком за краем, потом по центрам) или null. */
+function nearest(fromRect, dir, list) {
   for (const strict of [true, false]) {
     let best = null;
     let bestW = Infinity;
@@ -68,27 +65,50 @@ export function pickNeighbor(fromRect, dir, candidates) {
       const w = measure(fromRect, c.rect, dir, strict);
       if (w !== null && w < bestW) { best = c; bestW = w; }
     }
-    if (best) return best.id;
+    if (best) return best;
   }
   return null;
+}
+
+/**
+ * Ближайший элемент в сторону dir: вес — расстояние по оси + 2 × смещение поперёк.
+ * Кандидат {rect, id, fallback?, head?}: fallback (плавающая «+») берётся, только если
+ * в эту сторону больше никого; head (шапка раздела) — только для старта без фокуса.
+ * fromRect null (фокуса нет) — первый сверху-слева из содержимого, без него — из шапки. → id | null
+ */
+export function pickNeighbor(fromRect, dir, candidates) {
+  const list = candidates || [];
+  if (!list.length) return null;
+  const main = list.filter((c) => !c.fallback);
+  const spare = list.filter((c) => c.fallback);
+  if (!fromRect) {
+    const body = main.filter((c) => !c.head);
+    const best = topLeft(body) || topLeft(main) || topLeft(spare);
+    return best ? best.id : null;
+  }
+  const best = nearest(fromRect, dir, main) || nearest(fromRect, dir, spare);
+  return best ? best.id : null;
 }
 
 const ARROWS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
 
 /**
  * Клавиша → команда пульта или null (клавиша не пульта или остаётся полю/браузеру).
- * ctx: {inText, inMultiline, inSelect, view}
+ * ctx: {inText, inMultiline, inSelect, inRange, view}. Закрытый список стрелками не меняется —
+ * они уводят фокус, Enter/пробел его открывают ({type:'open'}); стрелки остаются только
+ * многострочному полю, ←/→ — ещё текстовому полю и ползунку.
  */
 export function keyCommand(e, ctx) {
   if (e.ctrlKey || e.altKey || e.metaKey) return null;
-  const { inText = false, inMultiline = false, inSelect = false, view = '' } = ctx || {};
-  const inField = inText || inMultiline || inSelect;
+  const { inText = false, inMultiline = false, inSelect = false, inRange = false, view = '' } = ctx || {};
+  const inField = inText || inMultiline || inSelect || inRange;
   const dir = ARROWS[e.key];
   if (dir) {
-    if (inMultiline || inSelect) return null;
-    if (inText && (dir === 'left' || dir === 'right')) return null; // курсор в поле
+    if (inMultiline) return null;
+    if ((inText || inRange) && (dir === 'left' || dir === 'right')) return null; // курсор / значение
     return { type: 'move', dir };
   }
+  if (inSelect && (e.key === 'Enter' || e.key === ' ')) return { type: 'open' };
   if (e.key === 'F1') return { type: 'help' };
   if (e.key === 'Escape') {
     if (inField) return { type: 'blur' };

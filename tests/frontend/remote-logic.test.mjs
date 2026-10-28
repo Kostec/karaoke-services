@@ -50,6 +50,34 @@ test('pickNeighbor: без фокуса — первый сверху-слева
   assert.equal(pickNeighbor(null, 'right', []), null);
 });
 
+test('pickNeighbor: запасной кандидат (плавающая «+») — только если в эту сторону больше никого', () => {
+  // Форма «Настроек»: поле, ниже далеко сбоку — следующее поле; «+» ближе по весу, но запасная.
+  const field = r(0, 0, 300);
+  const cands = [
+    { id: 'next', rect: r(0, 400, 300) },
+    { id: 'fab', rect: r(250, 60, 50, 50), fallback: true },
+  ];
+  assert.equal(pickNeighbor(field, 'down', cands), 'next');
+  // Ниже никого (последнее поле страницы) — тогда «+».
+  const end = [{ id: 'prev', rect: r(0, 0, 300) }, { id: 'fab', rect: r(250, 600, 50, 50), fallback: true }];
+  assert.equal(pickNeighbor(r(0, 500, 300), 'down', end), 'fab');
+  // Без фокуса запасная не выбирается, пока есть другие.
+  assert.equal(pickNeighbor(null, 'down', [{ id: 'fab', rect: r(0, 0), fallback: true }, { id: 'x', rect: r(0, 300) }]), 'x');
+});
+
+test('pickNeighbor: без фокуса — первый элемент содержимого, не шапки раздела', () => {
+  // «Песни»: хранилище и поиск в шапке, ниже — карточки.
+  const cands = [
+    { id: 'target', rect: r(0, 50), head: true },
+    { id: 'search', rect: r(120, 50), head: true },
+    { id: 'card1', rect: r(0, 200) },
+    { id: 'card2', rect: r(0, 300) },
+  ];
+  assert.equal(pickNeighbor(null, 'down', cands), 'card1');
+  // Содержимого нет (песен нет) — шапка.
+  assert.equal(pickNeighbor(null, 'down', cands.slice(0, 2)), 'target');
+});
+
 // ---------------------------------------------------------------- keyCommand
 
 const key = (k, extra = {}) => ({ key: k, code: '', ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, ...extra });
@@ -73,10 +101,30 @@ test('keyCommand: в текстовом поле ←/→ — курсор, ↑/�
   assert.deepEqual(keyCommand(key('ArrowDown'), inText), { type: 'move', dir: 'down' });
 });
 
-test('keyCommand: многострочное поле и список — стрелки остаются полю', () => {
-  for (const ctx of [inArea, inSelect]) {
-    for (const k of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) assert.equal(keyCommand(key(k), ctx), null);
-  }
+test('keyCommand: многострочное поле — стрелки остаются полю', () => {
+  for (const k of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) assert.equal(keyCommand(key(k), inArea), null);
+});
+
+test('keyCommand: закрытый список — стрелки уводят фокус, значение не меняют', () => {
+  assert.deepEqual(keyCommand(key('ArrowUp'), inSelect), { type: 'move', dir: 'up' });
+  assert.deepEqual(keyCommand(key('ArrowDown'), inSelect), { type: 'move', dir: 'down' });
+  assert.deepEqual(keyCommand(key('ArrowLeft'), inSelect), { type: 'move', dir: 'left' });
+  assert.deepEqual(keyCommand(key('ArrowRight'), inSelect), { type: 'move', dir: 'right' });
+});
+
+test('keyCommand: Enter и пробел на списке — открыть его', () => {
+  assert.deepEqual(keyCommand(key('Enter'), inSelect), { type: 'open' });
+  assert.deepEqual(keyCommand(key(' ', { code: 'Space' }), inSelect), { type: 'open' });
+  assert.equal(keyCommand(key(' ', { code: 'Space' }), plain), null);
+});
+
+test('keyCommand: ползунок — ←/→ остаются ему, ↑/↓ — переход', () => {
+  const inRange = { ...plain, inRange: true };
+  assert.equal(keyCommand(key('ArrowLeft'), inRange), null);
+  assert.equal(keyCommand(key('ArrowRight'), inRange), null);
+  assert.deepEqual(keyCommand(key('ArrowUp'), inRange), { type: 'move', dir: 'up' });
+  assert.deepEqual(keyCommand(key('ArrowDown'), inRange), { type: 'move', dir: 'down' });
+  assert.deepEqual(keyCommand(key('Escape'), inRange), { type: 'blur' });
 });
 
 test('keyCommand: Esc в поле — снять фокус', () => {

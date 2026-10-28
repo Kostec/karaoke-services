@@ -17,6 +17,9 @@ const TEXT_TYPES = new Set(['', 'text', 'search', 'email', 'url', 'tel', 'passwo
 // Куда «назад», если внутри сервиса ещё не переходили (страницу открыли по ссылке).
 const BACK_TO = { song: '#songs', check: '#songs', new: '#queue' };
 const MEDIA_ACTIONS = ['play', 'pause', 'previoustrack', 'nexttrack'];
+// Шапка раздела (заголовок, хранилище, поиск, фильтры): без фокуса первая стрелка ведёт мимо неё —
+// к списку/форме, если они есть.
+const SECTION_HEAD = '.view-head, .songs-tools, .songs-filters, .songs-summary';
 
 let views = TAB_VIEWS;
 let started = false;
@@ -117,8 +120,8 @@ function fieldState(el) {
   return {
     inText: isInput && TEXT_TYPES.has(type),
     inMultiline: tag === 'TEXTAREA' || editable,
-    // range, как и список, сам меняет значение стрелками
-    inSelect: tag === 'SELECT' || (isInput && type === 'range'),
+    inSelect: tag === 'SELECT',
+    inRange: isInput && type === 'range', // ←/→ меняют значение ползунка
   };
 }
 
@@ -139,7 +142,13 @@ function move(dir, dlg) {
     list = candidatesIn(dlg ? [dlg] : [section]);
     if (!list.length) list = candidatesIn(roots);
   }
-  const id = pickNeighbor(from, dir, list.map((el, i) => ({ id: i, rect: el.getBoundingClientRect() })));
+  const fab = document.getElementById('fab-new');
+  const id = pickNeighbor(from, dir, list.map((el, i) => ({
+    id: i,
+    rect: el.getBoundingClientRect(),
+    fallback: el === fab, // плавающая «+» — только если в эту сторону больше некуда
+    head: !!el.closest(SECTION_HEAD),
+  })));
   if (id === null) {
     // некуда — докрутить страницу, вдруг ниже/выше ещё есть элементы
     if (!dlg && (dir === 'up' || dir === 'down')) {
@@ -154,6 +163,11 @@ function move(dir, dlg) {
     storeSet(HINT_KEY, '1');
     toast(HINT_TEXT);
   }
+}
+
+/** Открыть список браузера у закрытого select (Enter/пробел с пульта). */
+function openSelect(el) {
+  try { el.showPicker?.(); } catch { /* без жеста или старый браузер — список остаётся закрытым */ }
 }
 
 function back(view) {
@@ -190,12 +204,14 @@ function onKeyDown(e) {
   if (dlg) {
     // в окне — только переходы и подсказка; Esc закрывает окно, как раньше
     if (cmd.type === 'move') { e.preventDefault(); move(cmd.dir, dlg); }
+    if (cmd.type === 'open') { e.preventDefault(); openSelect(document.activeElement); }
     return;
   }
   e.preventDefault();
   switch (cmd.type) {
     case 'move': move(cmd.dir, null); break;
     case 'blur': document.activeElement?.blur(); break;
+    case 'open': openSelect(document.activeElement); break;
     case 'back': back(view); break;
     case 'tab': if (views[cmd.index]) location.hash = `#${views[cmd.index]}`; break;
     case 'new': location.hash = '#new'; break;

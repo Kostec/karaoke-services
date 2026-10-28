@@ -76,7 +76,7 @@ function openPreview(d, hit, onPick) {
   d.preview.append(
     h('div', {}, h('strong', {}, songName(hit.artist, hit.title))),
     h('div', { class: 'small muted' }, metaLine(hit), ' ', lines),
-    link ? h('p', { class: 'small' }, sourceLink(hit), ' · ', PASTE_LABEL.replace('Вставьте', 'вставьте')) : null,
+    ...(link ? [h('p', { class: 'small' }, sourceLink(hit), ' · ', PASTE_LABEL.replace('Вставьте', 'вставьте'))] : []),
     body,
     h('div', { class: 'actions' },
       h('button', { type: 'button', onclick: () => showList(d) }, '← К списку'), pick));
