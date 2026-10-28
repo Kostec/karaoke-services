@@ -18,7 +18,7 @@ function videoBlock({ source = '', pack = false, label, gap, onChange }) {
 }
 import { h, clear, toast, field, debounce, songName } from './ui.js';
 import { readId3 } from './id3.js';
-import { usableHits, isLinkHit, fmtSeconds, LRC_TIMING_LABEL } from './lyrics-search.js';
+import { usableHits, mergeHits, isLinkHit, fmtSeconds, LRC_TIMING_LABEL } from './lyrics-search.js';
 import { openLyricsDialog } from './lyrics-dialog.js';
 import { publishLine } from './songs-filter.js';
 import {
@@ -799,6 +799,8 @@ function stopLyrics(g) {
   for (const row of g.rows) if (row.state.lyrics === 'searching') setTrack(g, row, { lyrics: 'queued' });
 }
 
+const AUTO_LYRICS_SOURCES = ['lrclib', 'netease']; // авто-поиск «Папки»: без Genius (только ссылки)
+
 async function runLyricsQueue(g) {
   if (g.searching || !shown || tab !== g.tab) return;
   g.searching = true;
@@ -816,10 +818,12 @@ async function runLyricsQueue(g) {
         if (my !== g.lyricsSeq) return;
         Object.assign(state, withDuration(state, sec));
       }
-      let hits = null;
-      try {
-        hits = usableHits((await api.lyricsSearch(artist, title)).items).filter((x) => !isLinkHit(x)); // все источники, без ссылок Genius
-      } catch { /* сервис текстов недоступен — без текста */ }
+      // только источники с текстом (LRCLIB и NetEase) — параллельно; Genius даёт лишь ссылки и отвечает до 15 с
+      const answers = await Promise.allSettled(AUTO_LYRICS_SOURCES.map((id) => api.lyricsSearch(artist, title, id)));
+      let hits = null; // null — ни один источник не ответил
+      for (const a of answers) {
+        if (a.status === 'fulfilled') hits = mergeHits(hits || [], usableHits(a.value?.items).filter((x) => !isLinkHit(x)));
+      }
       if (my !== g.lyricsSeq) return;
       if (state.lyrics !== 'searching') continue; // правка вернула строку в очередь или выбрали вручную
       if (state.artist.trim() !== artist || state.title.trim() !== title) { state.lyrics = 'queued'; continue; }

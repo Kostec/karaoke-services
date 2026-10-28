@@ -36,7 +36,14 @@ function showList(d) {
   d.listView.hidden = false;
 }
 
+// адрес варианта приходит из внешнего API: в href попадает только страница Genius (не javascript:…)
+const SAFE_LINK_PREFIX = 'https://genius.com/';
+const safeUrl = (url) => typeof url === 'string' && url.startsWith(SAFE_LINK_PREFIX);
+/** Варианты для показа: ссылка с чужим адресом отбрасывается. */
+const shownHits = (list) => usableHits(list).filter((x) => !isLinkHit(x) || safeUrl(x.url));
+
 function sourceLink(hit) {
+  if (!safeUrl(hit.url)) return null;
   const name = SOURCE_LABELS[hit.source] || 'источнике';
   return h('a', { href: hit.url, target: '_blank', rel: 'noopener noreferrer' }, `Открыть на ${name} ↗`);
 }
@@ -139,7 +146,7 @@ export async function openLyricsDialog({ artist, title, onPick, onSettled, hint,
     }
   };
   if (known) {
-    hits = known;
+    hits = known.filter((x) => !isLinkHit(x) || safeUrl(x.url));
     onSettled?.();
     render();
     finish();
@@ -151,7 +158,7 @@ export async function openLyricsDialog({ artist, title, onPick, onSettled, hint,
       try {
         const res = await api.lyricsSearch(artist, title, id);
         if (my !== seq) return;
-        hits = mergeHits(hits, usableHits(res.items));
+        hits = mergeHits(hits, shownHits(res.items));
         if (hits.length) d.status.textContent = `Найдено вариантов: ${hits.length}…`;
       } catch (e) {
         if (my !== seq) return;

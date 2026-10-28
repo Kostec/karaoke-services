@@ -60,3 +60,11 @@ test('ответ на «Сделать минусовку»: 409 — уже го
   assert.equal(requestOutcome({ status: 400, detail: 'У песни нет аудиофайла' }), 'error');
   assert.equal(requestOutcome(new Error('сеть')), 'error');
 });
+
+test('ответ на «Сделать минусовку»: прочие 409 — ошибка, а не «готовится»', () => {
+  assert.equal(requestOutcome({ status: 409, detail: 'У песни нет аудиофайла (#AUDIO или #MP3)' }), 'error');
+  assert.equal(requestOutcome({ status: 409, detail: 'Задание уже завершено' }), 'error');
+  assert.equal(requestOutcome({ status: 409 }), 'error');
+  // «уже есть» — минусовка готова: перечитать карточку сразу (тот же путь, что у «готовится»)
+  assert.equal(requestOutcome({ status: 409, detail: 'Минусовка уже есть — подтвердите пересоздание' }), 'pending');
+});

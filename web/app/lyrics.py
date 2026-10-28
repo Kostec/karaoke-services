@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from typing import Protocol
 
@@ -23,9 +24,11 @@ TIMEOUT_S = 10
 NETEASE_SEARCH = "https://music.163.com/api/search/get"
 NETEASE_LYRIC = "https://music.163.com/api/song/lyric"
 NETEASE_HITS = 5
+NETEASE_BUDGET_S = 15  # общий предел NetEase: поиск + тексты (параллельно), не успевшие отбрасываются
 GENIUS_SEARCH = "https://genius.com/api/search/song"
 GENIUS_HITS = 5
 GENIUS_TIMEOUT_S = 15  # Genius отвечает медленно (~12 с)
+GENIUS_URL_PREFIX = "https://genius.com/"  # ссылка уходит в <a href>: прочие адреса (javascript:…) отбрасываются
 PROVIDERS = ("lrclib", "netease", "genius")
 
 _TIME_TAG = re.compile(r"\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]")
@@ -144,10 +147,11 @@ class NeteaseProvider:
         self.http = http
 
     def search(self, artist: str, title: str) -> list[LyricsHit]:
+        deadline = time.monotonic() + NETEASE_BUDGET_S
         try:
             resp = self.http.request("GET", NETEASE_SEARCH,
                                      params={"s": f"{artist} {title}".strip(), "type": 1, "limit": 10},
-                                     timeout=TIMEOUT_S, headers={"Accept": "application/json"})
+                                     timeout=min(TIMEOUT_S, NETEASE_BUDGET_S), headers={"Accept": "application/json"})
         except HttpError as e:
             raise LyricsUnavailable(str(e)) from None
         raw = _json_body(resp)
@@ -155,28 +159,38 @@ class NeteaseProvider:
         songs = result.get("songs") if isinstance(result, dict) else None
         if not isinstance(songs, list):
             return []
+        found = [s for s in songs if isinstance(s, dict) and s.get("id") is not None]
+        if not found:
+            return []
+        # тексты — параллельно и в общем пределе времени: не успевшие к сроку отбрасываются, их не ждём
+        pool = ThreadPoolExecutor(max_workers=len(found))
+        try:
+            futures = [pool.submit(self._hit, song, deadline) for song in found]
+            wait(futures, timeout=max(deadline - time.monotonic(), 0))
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         hits: list[LyricsHit] = []
-        tried = failures = 0
-        for song in songs:
-            if len(hits) >= NETEASE_HITS:
-                break
-            if not isinstance(song, dict) or song.get("id") is None:
+        answered = False
+        for f in futures:
+            if not f.done() or f.cancelled():
                 continue
-            tried += 1
-            try:
-                hit = self._hit(song)
-            except LyricsUnavailable:
-                failures += 1
+            error = f.exception()
+            if isinstance(error, LyricsUnavailable):
                 continue
+            if error is not None:
+                raise error
+            answered = True
+            hit = f.result()
             if hit is not None:
                 hits.append(hit)
-        if tried and failures == tried:
+        if not answered:
             raise LyricsUnavailable("NetEase не отдал тексты")
-        return hits
+        return hits[:NETEASE_HITS]
 
-    def _hit(self, song: dict) -> LyricsHit | None:
+    def _hit(self, song: dict, deadline: float) -> LyricsHit | None:
+        timeout = min(TIMEOUT_S, max(deadline - time.monotonic(), 0.1))
         try:
-            resp = self.http.request("GET", NETEASE_LYRIC, params={"id": song["id"], "lv": 1}, timeout=TIMEOUT_S,
+            resp = self.http.request("GET", NETEASE_LYRIC, params={"id": song["id"], "lv": 1}, timeout=timeout,
                                      headers={"Accept": "application/json"})
         except HttpError as e:
             raise LyricsUnavailable(str(e)) from None
@@ -227,7 +241,9 @@ class GeniusProvider:
                 continue
             for item in section.get("hits") or []:
                 r = item.get("result") if isinstance(item, dict) else None
-                if not isinstance(r, dict) or not r.get("url") or r.get("id") is None:
+                if not isinstance(r, dict) or r.get("id") is None:
+                    continue
+                if not isinstance(r.get("url"), str) or not r["url"].startswith(GENIUS_URL_PREFIX):
                     continue
                 hits.append(LyricsHit(id=f"genius:{r['id']}", artist=str(r.get("artist_names") or ""),
                                       title=str(r.get("title") or ""), album=None, duration=None, text="",

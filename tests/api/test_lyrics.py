@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fakes_http import FakeHttp
 
-from karaoke_core.http import HttpError
+from karaoke_core.http import HttpError, HttpResponse
 
 LRCLIB = "https://lrclib.net/api/search"
 BY_FIELDS = LRCLIB + "?track_name="
@@ -213,3 +215,60 @@ def test_all_sources_nothing_found_is_empty_200(lc, http):
     http.route("GET", GENIUS, json=genius_body(0))
     r = search(lc, source=None)
     assert r.status_code == 200 and r.json()["items"] == []
+
+
+# ---------------------------------------------------------------- правки ревью: безопасные ссылки, предел времени
+
+
+def test_genius_drops_non_genius_urls(lc, http):
+    body = genius_body(4)
+    results = [h["result"] for h in body["response"]["sections"][0]["hits"]]
+    results[0]["url"] = "javascript:alert(document.cookie)"
+    results[1]["url"] = "http://genius.com/kino-1"
+    results[2]["url"] = "https://genius.com.evil.example/kino-2"
+    http.route("GET", GENIUS, json=body)
+    items = search(lc, source="genius").json()["items"]
+    assert [(i["id"], i["url"]) for i in items] == [("genius:3", "https://genius.com/kino-3")]
+
+
+def test_netease_lyrics_in_parallel_with_time_limit(lc, http, monkeypatch):
+    import time
+
+    from app import lyrics
+
+    monkeypatch.setattr(lyrics, "NETEASE_BUDGET_S", 1.0)
+
+    def slow(req):
+        time.sleep(0.6)
+        return HttpResponse(200, "", {}, json.dumps(ne_lyric()).encode())
+
+    def stuck(req):
+        time.sleep(3)
+        return HttpResponse(200, "", {}, json.dumps(ne_lyric()).encode())
+
+    http.route("GET", NE_SEARCH, json={"result": {"songs": [ne_song(i) for i in range(1, 6)]}})
+    http.route("GET", NE_LYRIC, slow)
+    http.route("GET", NE_LYRIC + "?id=3&", stuck)
+    started = time.monotonic()
+    r = search(lc, source="netease")
+    elapsed = time.monotonic() - started
+    assert r.status_code == 200
+    assert [i["id"] for i in r.json()["items"]] == ["netease:1", "netease:2", "netease:4", "netease:5"]
+    assert elapsed < 2, f"тексты качаются параллельно, зависший не ждём: {elapsed:.1f} с"
+
+
+def test_netease_all_lyrics_too_slow_is_503(lc, http, monkeypatch):
+    import time
+
+    from app import lyrics
+
+    monkeypatch.setattr(lyrics, "NETEASE_BUDGET_S", 0.3)
+
+    def stuck(req):
+        time.sleep(1.5)
+        return HttpResponse(200, "", {}, json.dumps(ne_lyric()).encode())
+
+    http.route("GET", NE_SEARCH, json={"result": {"songs": [ne_song(1), ne_song(2)]}})
+    http.route("GET", NE_LYRIC, stuck)
+    r = search(lc, source="netease")
+    assert (r.status_code, r.json()["detail"]) == (503, "NetEase не ответил")

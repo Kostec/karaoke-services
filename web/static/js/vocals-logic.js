@@ -24,7 +24,12 @@ export function saveVocalsPref(on) {
   try { globalThis.localStorage?.setItem(PREF_KEY, on ? '1' : '0'); } catch { /* приватный режим */ }
 }
 
-/** Ошибка постановки минусовки: 409 (уже в очереди / уже есть) — ждать её, иначе — показать ошибку. */
+/**
+ * Ошибка постановки минусовки → 'pending' | 'error'. 'pending' (ждать, сразу перечитав карточку) — только
+ * 409 «уже в очереди» и «Минусовка уже есть» (карточка устарела); прочие 409 («нет аудиофайла»…) — ошибка.
+ */
 export function requestOutcome(error) {
-  return error?.status === 409 ? 'pending' : 'error';
+  if (error?.status !== 409) return 'error';
+  const detail = String(error.detail ?? error.message ?? '');
+  return /уже в очереди|уже есть/i.test(detail) ? 'pending' : 'error';
 }

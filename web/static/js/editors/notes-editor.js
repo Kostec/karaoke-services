@@ -1068,6 +1068,8 @@ export async function openNotesEditor(song, { reload } = {}) {
   const KEYS = [
     { code: 'Space', fn: () => play() },
     { code: 'MediaPlayPause', fn: () => mediaKey(() => play()) },
+    { code: 'MediaTrackPrevious', fn: () => mediaKey(() => jumpLine(-1)) },
+    { code: 'MediaTrackNext', fn: () => mediaKey(() => jumpLine(1)) },
     { code: 'KeyM', ctrl: false, shift: false, fn: toggleMelody },
     { code: 'KeyV', ctrl: false, shift: false, fn: toggleVocals },
     { code: 'KeyZ', ctrl: true, shift: false, fn: undo },
@@ -1091,7 +1093,8 @@ export async function openNotesEditor(song, { reload } = {}) {
     { code: 'NumpadSubtract', ctrl: false, fn: () => zoom(0.8) },
   ];
 
-  const matches = (k, e) => k.code === e.code
+  // медиаклавиши пульта часто приходят без code — только с key ('MediaTrackNext' и т. п.)
+  const matches = (k, e) => (k.code === e.code || (k.code.startsWith('Media') && k.code === e.key))
     && (k.ctrl === undefined || k.ctrl === (e.ctrlKey || e.metaKey))
     && (k.shift === undefined || k.shift === e.shiftKey)
     && (k.alt === undefined ? !e.altKey : k.alt === e.altKey);
@@ -1173,8 +1176,8 @@ export async function openNotesEditor(song, { reload } = {}) {
   setMediaHandlers({
     play: () => mediaKey(() => { if (!playing) play(); }),
     pause: () => mediaKey(() => stopPlay()),
-    previoustrack: () => jumpLine(-1),
-    nexttrack: () => jumpLine(1),
+    previoustrack: () => mediaKey(() => jumpLine(-1)),
+    nexttrack: () => mediaKey(() => jumpLine(1)),
   });
 
   dlg.addEventListener('editor-close', () => {

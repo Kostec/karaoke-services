@@ -4,7 +4,7 @@
 // клавиши пульта и медиаклавиши (Media Session). Микрофона нет. Чистая логика — play-logic.js.
 
 import { api } from './api.js';
-import { h, clear, toast } from './ui.js';
+import { h, clear } from './ui.js';
 import { timeline, frameAt, playProblem, melodyNotes, laneY, fmtClock, lineStarts, lineJump } from './play-logic.js';
 import { toneSequence, toneSupported, closeTone } from './tone.js';
 import { createMelody } from './melody.js';
@@ -227,14 +227,17 @@ function build(id, details, payload) {
     variant: 'play',
     onReady: (name) => { instName = name; },
     onChange: (useInst) => applySource(useInst),
+    toast: (text, kind) => notice(text, kind),
   });
   const errBox = h('div', { class: 'banner err', role: 'alert', hidden: true });
+  // сообщения «Прогона» — внутри .pv: тост страницы в полноэкранном режиме не виден
+  const noteBox = h('div', { class: 'banner warn pv-note', role: 'status', hidden: true });
   const ctl = h('div', { class: 'pv-ctl' },
     h('div', { class: 'pv-row pv-main' }, playBtn, back5, fwd5, tmCur, seek, tmAll),
     h('div', { class: 'pv-row' }, melodyLabel, vocals.el,
       h('span', { class: 'small pv-hint' }, 'ноты звучат тем же синтезатором, что кнопка «♪» в редакторе')));
 
-  const el = h('div', { class: 'pv' }, bg, top, ...lanes.map((l) => l.el), lyr, errBox, ctl);
+  const el = h('div', { class: 'pv' }, bg, top, ...lanes.map((l) => l.el), lyr, errBox, noteBox, ctl);
   clear(root).append(el);
   document.title = `Прогон: ${song.artist ? `${song.artist} — ` : ''}${song.title || song.txt_name} · Караоке`;
 
@@ -332,7 +335,7 @@ function build(id, details, payload) {
       if (my !== switchSeq || dead) return;
       switching = false;
       if (srcInst) {
-        toast(LOAD_FAILED, 'err');
+        notice(LOAD_FAILED, 'err');
         vocals.revert();
         applySource(false, { at, resume });
       } else {
@@ -352,6 +355,16 @@ function build(id, details, payload) {
     errBox.hidden = false;
   }
 
+  let noteTimer = 0;
+  /** Короткое сообщение внутри «Прогона» (видно и во весь экран); ошибка держится дольше. */
+  function notice(text, kind = '') {
+    clearTimeout(noteTimer);
+    noteBox.className = `banner ${kind === 'err' ? 'err' : 'warn'} pv-note`;
+    noteBox.textContent = text;
+    noteBox.hidden = false;
+    noteTimer = setTimeout(() => { noteBox.hidden = true; }, kind === 'err' ? 5000 : 3000);
+  }
+
   function toggleFullscreen() {
     if (!document.fullscreenEnabled) return;
     if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
@@ -365,7 +378,7 @@ function build(id, details, payload) {
   }
 
   function toggleVocals() {
-    if (!vocals.available) { toast(NO_INSTRUMENTAL, 'err'); return; }
+    if (!vocals.available) { notice(NO_INSTRUMENTAL, 'err'); return; }
     vocals.toggle();
   }
 
@@ -419,7 +432,7 @@ function build(id, details, payload) {
   audio.addEventListener('error', () => {
     if (!audio.getAttribute('src') || switching || dead) return; // освобождение в teardown, смена источника
     if (srcInst) { // минусовка оборвалась на ходу — к исходному треку
-      toast(LOAD_FAILED, 'err');
+      notice(LOAD_FAILED, 'err');
       vocals.revert();
       applySource(false, { at: lastMs, resume: playing });
       return;
@@ -454,6 +467,7 @@ function build(id, details, payload) {
       document.removeEventListener('keydown', onKey);
       setMediaHandlers(null);
       vocals.dispose();
+      clearTimeout(noteTimer);
       playing = false;
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
