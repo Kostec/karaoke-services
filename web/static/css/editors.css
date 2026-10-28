@@ -110,6 +110,11 @@ dialog.editor.wide > .banner { margin: 6px 14px 0; }
 .ne-keys-in > div { position: absolute; left: 0; right: 0; font: 10px ui-monospace, monospace; color: var(--muted);
   padding-right: 4px; line-height: 1; display: flex; align-items: center; justify-content: flex-end; }
 .ne-keys-in > .blk { background: var(--surface-2); }
+/* «пианино» кликабельно: клавиша звучит, пока держат; touch-action — проведение пальцем не прокручивает */
+.ne-keys { touch-action: none; user-select: none; }
+.ne-keys-in > div { cursor: pointer; }
+.ne-keys-in > div:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.ne-keys-in > div.on { background: var(--accent); color: var(--accent-text); }
 .ne-scroll { overflow: auto; position: relative; min-width: 0; outline: none; }
 .ne-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .ne-inner { position: relative; min-height: 100%; }
@@ -314,4 +319,11 @@ dialog.ne-help h3 { margin-top: 0; }
 .ne-bar .ne-sus.has { border-color: #f5c518; }
 .ne-bar .ne-sus-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: .85rem; }
 .ne-bar .ne-sus-toggle input { width: auto; min-height: 0; margin: 0; }
+
+/* «Вокал» (vocals.js, variant editor): переключатель, «Нет минусовки», «Сделать минусовку» */
+.ne-bar .vocals-tg { display: inline-flex; align-items: center; gap: 6px; }
+.ne-bar .vocals-tg label.check { min-height: 0; gap: 4px; font-size: .85rem; }
+.ne-bar .vocals-tg label.check input { width: auto; height: auto; min-height: 0; margin: 0; }
+.ne-bar .vocals-tg label.off { opacity: .6; cursor: default; }
+.ne-bar .vocals-tg .vocals-note { white-space: nowrap; }
 .ne-sus-note { max-width: 24ch; }

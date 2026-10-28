@@ -148,3 +148,33 @@ test('fmtClock: м:сс', () => {
   assert.equal(fmtClock(5000), '0:05');
   assert.equal(fmtClock(NaN), '0:00');
 });
+
+// ---------------------------------------------------------------- ↑/↓ и ⏮/⏭: к началу строки
+
+import { lineStarts, lineJump } from '../../web/static/js/play-logic.js';
+
+test('lineStarts: начала строк обеих партий по времени, без повторов', () => {
+  const tl = { lines: [
+    { player: 1, startMs: 1000 }, { player: 2, startMs: 1500 }, { player: 1, startMs: 4000 },
+    { player: 2, startMs: 1000 }, { player: 2, startMs: 3000 },
+  ] };
+  assert.deepEqual(lineStarts(tl), [1000, 1500, 3000, 4000]);
+});
+
+test('lineJump: следующая — первое начало позже момента; после последней — null', () => {
+  const starts = [1000, 5000, 9000];
+  assert.equal(lineJump(starts, 0, 1), 1000);
+  assert.equal(lineJump(starts, 1000, 1), 5000);
+  assert.equal(lineJump(starts, 6000, 1), 9000);
+  assert.equal(lineJump(starts, 9500, 1), null);
+});
+
+test('lineJump: предыдущая — начало строки раньше момента больше чем на секунду; до первой — 0', () => {
+  const starts = [1000, 5000, 9000];
+  assert.equal(lineJump(starts, 7000, -1), 5000);
+  assert.equal(lineJump(starts, 5000, -1), 1000, 'с начала строки — к предыдущей');
+  assert.equal(lineJump(starts, 5600, -1), 1000, 'в первую секунду строки — к предыдущей');
+  assert.equal(lineJump(starts, 1500, -1), 0);
+  assert.equal(lineJump([], 3000, -1), 0);
+  assert.equal(lineJump([], 3000, 1), null);
+});

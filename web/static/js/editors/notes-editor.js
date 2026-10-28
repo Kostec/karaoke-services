@@ -17,11 +17,19 @@ import {
 } from './timeline-math.js';
 import { loadPeaks, drawWave } from './waveform.js';
 import { liveNotes } from './notes-panel-logic.js';
+import { playTone, toneSequence, toneSupported, closeTone, pitchName, TONE_MAX_MS } from '../tone.js';
+import { createMelody, stateMelody } from '../melody.js';
+import { createVocalsToggle, switchSource } from '../vocals.js';
+import { LOAD_FAILED, NO_INSTRUMENTAL } from '../vocals-logic.js';
+import { lineJump } from '../play-logic.js';
+import { setMediaHandlers } from '../remote.js';
 
 const RULER_H = 24;
 const WAVE_H = 44;
 const WAVE_OFF_H = 20;
 const ZOOM_KEY = 'notesEditor.ppb';
+const MELODY_KEY = 'notesEditor.melody';
+const NO_TONE = 'Браузер не умеет синтезировать звук';
 const VIEW_BPM = 300;
 const NO_BPM_PLAY = 'В песне нет #BPM — время нот неизвестно'; // без #BPM ноты всё равно рисуются (только просмотр)
 
@@ -42,6 +50,14 @@ function loadZoom() {
 
 function saveZoom(v) {
   try { localStorage.setItem(ZOOM_KEY, String(v)); } catch { /* хранилище недоступно */ }
+}
+
+function loadMelody() {
+  try { return localStorage.getItem(MELODY_KEY) === '1'; } catch { return false; }
+}
+
+function saveMelody(on) {
+  try { localStorage.setItem(MELODY_KEY, on ? '1' : '0'); } catch { /* хранилище недоступно */ }
 }
 
 const isRap = (t) => t === 'R' || t === 'G';
@@ -92,6 +108,22 @@ export async function openNotesEditor(song, { reload } = {}) {
   const rateSel = h('select', { title: 'Скорость проигрывания — медленнее удобнее расставлять', 'aria-label': 'Скорость' },
     h('option', { value: '0.5' }, '0.5×'), h('option', { value: '0.75' }, '0.75×'), h('option', { value: '1', selected: true }, '1×'));
   const followBtn = btn('Следовать', 'Таймлайн едет за курсором', { class: 'on', 'aria-pressed': 'true' });
+  // «Мелодия нот» (M): при воспроизведении ноты звучат синтезатором tone.js
+  const canTone = toneSupported();
+  let melodyOn = canTone && loadMelody();
+  const melodyBtn = btn('♫ Мелодия', canTone ? 'Мелодия нот: ноты звучат при воспроизведении (M)' : NO_TONE,
+    { class: melodyOn ? 'on' : '', 'aria-pressed': String(melodyOn), disabled: !canTone, aria: 'Мелодия нот' });
+  // «Вокал» (V): выключен — тот же плеер играет минусовку с той же секунды
+  let instName = song.instrumental || null;
+  const vocals = createVocalsToggle({
+    songId: song.song_id,
+    audio: !!song.audio,
+    instrumental: instName,
+    variant: 'editor',
+    toast: (text, kind) => toast(text, kind),
+    onReady: (name) => { instName = name; },
+    onChange: (useInst) => applySource(useInst),
+  });
   const zoutBtn = btn('−', 'Отдалить (−, Ctrl+колесо)', { class: 'icon', aria: 'Отдалить' });
   const zinBtn = btn('+', 'Приблизить (+, Ctrl+колесо)', { class: 'icon', aria: 'Приблизить' });
   const selAllBtn = btn('Выделить всё', 'Выделить все ноты (Ctrl+A) — сдвинуть песню по времени или тональность');
@@ -106,11 +138,11 @@ export async function openNotesEditor(song, { reload } = {}) {
   const sep = () => h('span', { class: 'ne-sep' });
 
   const bar = h('div', { class: 'ne-bar', role: 'toolbar', 'aria-label': 'Проигрывание и правка' },
-    playBtn, lineBtn, timeEl, rateSel, followBtn, sep(), zoutBtn, zinBtn, sep(), slotPlay,
+    playBtn, lineBtn, timeEl, rateSel, followBtn, melodyBtn, vocals.el, sep(), zoutBtn, zinBtn, sep(), slotPlay,
     h('span', { class: 'ne-grow' }), selAllBtn, selInfo, textBtn, slotTools, goldBtn, delBtn, slotEnd);
 
   const keysIn = h('div', { class: 'ne-keys-in' });
-  const keys = h('div', { class: 'ne-keys', 'aria-hidden': 'true' }, keysIn);
+  const keys = h('div', { class: 'ne-keys', 'aria-hidden': 'true', title: 'Клик — сыграть ноту этой высоты' }, keysIn);
   const ruler = h('div', { class: 'ne-ruler', title: 'Клик — перейти сюда' });
   const canvas = h('canvas', { class: 'ne-wave-cv' });
   const waveLabel = h('span', { class: 'ne-wave-label small muted' });
@@ -222,6 +254,9 @@ export async function openNotesEditor(song, { reload } = {}) {
       d.style.top = `${top + (pr.max - p) * row}px`;
       d.style.height = `${row}px`;
       if ([1, 3, 6, 8, 10].includes(((p % 12) + 12) % 12)) d.className = 'blk';
+      d.dataset.pitch = String(p);
+      d.title = pitchName(p);
+      if (p === pianoPitch && pianoStop) d.classList.add('on');
       const lbl = octaveLabel(p);
       if (lbl) d.textContent = lbl;
       frag.append(d);
@@ -317,6 +352,7 @@ export async function openNotesEditor(song, { reload } = {}) {
 
   function render() {
     if (!state) return;
+    melody.invalidate();
     noteMap = new Map(state.notes.map((x) => [x.id, x]));
     calcEnd();
     pr = pitchRange(state.notes, 4);
@@ -409,13 +445,66 @@ export async function openNotesEditor(song, { reload } = {}) {
   audio.mozPreservesPitch = true;
   audio.webkitPreservesPitch = true;
   let audioError = song.audio ? '' : 'У песни нет аудиофайла — правка работает без звука';
-  if (song.audio) audio.src = api.audioUrl(song.song_id);
+  let closed = false;
+  let srcInst = false; // играет минусовка
+  let switching = false; // меняется источник звука
+  let switchSeq = 0;
+  const origUrl = api.audioUrl(song.song_id);
+  if (song.audio) {
+    if (vocals.useInstrumental) applySource(true);
+    else audio.src = origUrl;
+  }
   audio.addEventListener('error', () => {
-    if (!song.audio) return;
+    if (!song.audio || switching || closed || !audio.getAttribute('src')) return;
+    if (srcInst) { // минусовка оборвалась — к исходному треку
+      toast(LOAD_FAILED, 'err');
+      vocals.revert();
+      applySource(false, { resume: playing });
+      return;
+    }
     audioError = 'Аудио не загрузилось — правка работает без звука';
     stopPlay();
     updateTools();
   });
+
+  // ноты для «Мелодии нот» берутся из текущего состояния; правка — invalidate() в render()
+  const melody = createMelody({
+    notes: () => (state && Number(state.bpm) > 0 ? stateMelody(state.notes, msOf) : []),
+    rate: () => Number(rateSel.value),
+  });
+
+  /**
+   * «Вокал»: тот же <audio> переходит на минусовку (useInst) или исходный трек с той же позиции,
+   * играло — играет дальше; минусовка не загрузилась — тост и возврат к исходному.
+   */
+  async function applySource(useInst, { resume = playing } = {}) {
+    if (!song.audio) return;
+    const my = ++switchSeq;
+    const until = stopAt;
+    stopPlay();
+    switching = true;
+    srcInst = !!useInst && !!instName;
+    const url = srcInst ? api.fileUrl(song.song_id, instName) : origUrl;
+    try {
+      await switchSource(audio, url, { at: posMs / 1000, playing: false, rate: Number(rateSel.value) });
+    } catch {
+      if (my !== switchSeq || closed) return;
+      switching = false;
+      if (srcInst) {
+        toast(LOAD_FAILED, 'err');
+        vocals.revert();
+        applySource(false, { resume });
+      } else {
+        audioError = 'Аудио не загрузилось — правка работает без звука';
+        updateTools();
+      }
+      return;
+    }
+    if (my !== switchSeq || closed) return;
+    switching = false;
+    try { audio.currentTime = posMs / 1000; } catch { /* позиция за концом файла */ }
+    if (resume) play(posMs, until ?? undefined);
+  }
   audio.addEventListener('loadedmetadata', () => {
     if (Number.isFinite(audio.duration)) duration = audio.duration;
     render();
@@ -424,6 +513,7 @@ export async function openNotesEditor(song, { reload } = {}) {
 
   function playReason() {
     if (audioError) return audioError;
+    if (switching) return 'Звук переключается…';
     if (state && !(Number(state.bpm) > 0)) return NO_BPM_PLAY;
     return '';
   }
@@ -444,6 +534,7 @@ export async function openNotesEditor(song, { reload } = {}) {
     if (playing && fromMs === undefined) { stopPlay(); return; }
     stopPlay();
     if (fromMs !== undefined) posMs = Math.max(0, fromMs);
+    if (melodyOn) toneSequence([], 0); // AudioContext — в жесте пользователя
     audio.playbackRate = Number(rateSel.value);
     try {
       audio.currentTime = posMs / 1000;
@@ -475,6 +566,7 @@ export async function openNotesEditor(song, { reload } = {}) {
     if (!audioError) {
       try { audio.currentTime = posMs / 1000; } catch { /* метаданные ещё не пришли */ }
     }
+    melody.stop();
     updatePlayhead();
     if (reveal) scroll.scrollLeft = Math.max(0, bx(beatOf(posMs)) - scroll.clientWidth / 4);
   }
@@ -497,6 +589,7 @@ export async function openNotesEditor(song, { reload } = {}) {
       }
       liveIds = now;
     }
+    melody.tick(posMs, playing && melodyOn);
     hooks.tick.forEach((f) => f(posMs, playing));
   }
 
@@ -870,7 +963,74 @@ export async function openNotesEditor(song, { reload } = {}) {
 
   playBtn.addEventListener('click', () => play());
   lineBtn.addEventListener('click', () => playLine());
-  rateSel.addEventListener('change', () => { audio.playbackRate = Number(rateSel.value); });
+  rateSel.addEventListener('change', () => {
+    audio.playbackRate = Number(rateSel.value);
+    melody.stop(); // следующий кадр перепланирует с новой скоростью
+  });
+  function toggleMelody() {
+    if (!canTone) { toast(NO_TONE, 'err'); return; }
+    melodyOn = !melodyOn;
+    saveMelody(melodyOn);
+    melodyBtn.classList.toggle('on', melodyOn);
+    melodyBtn.setAttribute('aria-pressed', String(melodyOn));
+    if (melodyOn) toneSequence([], 0); // AudioContext — в жесте пользователя
+    else melody.stop();
+    toast(melodyOn ? 'Мелодия нот включена' : 'Мелодия нот выключена');
+  }
+  function toggleVocals() {
+    if (!vocals.available) { toast(song.audio ? NO_INSTRUMENTAL : 'У песни нет аудиофайла', 'err'); return; }
+    vocals.toggle();
+    toast(vocals.vocals ? 'Вокал включён' : 'Вокал выключен — играет минусовка');
+  }
+  melodyBtn.addEventListener('click', toggleMelody);
+  // после щелчка по «Вокалу» клавиши снова у таймлайна (из поля ввода редактор их не берёт)
+  vocals.el.addEventListener('change', () => scroll.focus({ preventScroll: true }));
+
+  // ------------------------------------------------------------ «пианино» слева: клик — нота этой высоты
+
+  let pianoDown = false;
+  let pianoPitch = null;
+  let pianoStop = null;
+  let pianoTimer = 0;
+  function pianoOff() {
+    clearTimeout(pianoTimer);
+    pianoStop?.();
+    pianoStop = null;
+    keysIn.querySelectorAll('.on').forEach((k) => k.classList.remove('on'));
+  }
+  function pianoKey(el) {
+    const p = Number(el.dataset.pitch);
+    if (p === pianoPitch) return;
+    pianoOff();
+    pianoPitch = p;
+    if (!canTone) { toast(NO_TONE, 'err'); return; }
+    pianoStop = playTone(p, TONE_MAX_MS); // звучит, пока держат, но не дольше 2 с
+    el.classList.add('on');
+    pianoTimer = setTimeout(pianoOff, TONE_MAX_MS);
+  }
+  keys.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const k = e.target.closest?.('[data-pitch]');
+    if (!k) return;
+    e.preventDefault();
+    pianoDown = true;
+    pianoPitch = null;
+    pianoKey(k);
+  });
+  // проведение с зажатой кнопкой: клавиша под указателем (у касания события идут к первой клавише)
+  keys.addEventListener('pointermove', (e) => {
+    if (!pianoDown) return;
+    const k = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('.ne-keys-in > [data-pitch]');
+    if (k) pianoKey(k);
+  });
+  const pianoUp = () => {
+    if (!pianoDown) return;
+    pianoDown = false;
+    pianoPitch = null;
+    pianoOff();
+  };
+  dlg.addEventListener('pointerup', pianoUp);
+  dlg.addEventListener('pointercancel', pianoUp);
   followBtn.addEventListener('click', () => {
     const on = followBtn.classList.toggle('on');
     followBtn.setAttribute('aria-pressed', String(on));
@@ -907,6 +1067,9 @@ export async function openNotesEditor(song, { reload } = {}) {
 
   const KEYS = [
     { code: 'Space', fn: () => play() },
+    { code: 'MediaPlayPause', fn: () => mediaKey(() => play()) },
+    { code: 'KeyM', ctrl: false, shift: false, fn: toggleMelody },
+    { code: 'KeyV', ctrl: false, shift: false, fn: toggleVocals },
     { code: 'KeyZ', ctrl: true, shift: false, fn: undo },
     { code: 'KeyZ', ctrl: true, shift: true, fn: redo },
     { code: 'KeyY', ctrl: true, fn: redo },
@@ -992,8 +1155,36 @@ export async function openNotesEditor(song, { reload } = {}) {
   });
   ro.observe(scroll);
 
+  // медиаклавиши пульта, которые браузер отдаёт через Media Session
+  const lineStartsMs = () => (state ? M.lines(state).map((l) => msOf(l[0].start)).sort((a, b) => a - b) : []);
+  const jumpLine = (dir) => {
+    const t = lineJump(lineStartsMs(), posMs, dir);
+    if (t == null) return;
+    if (playing) play(t); else seekMs(t, true);
+  };
+  // одна медиаклавиша может прийти дважды (keydown и Media Session) — второе нажатие в 0,4 с не считается
+  let mediaAt = 0;
+  function mediaKey(fn) {
+    const t = performance.now();
+    if (t - mediaAt < 400) return;
+    mediaAt = t;
+    fn();
+  }
+  setMediaHandlers({
+    play: () => mediaKey(() => { if (!playing) play(); }),
+    pause: () => mediaKey(() => stopPlay()),
+    previoustrack: () => jumpLine(-1),
+    nexttrack: () => jumpLine(1),
+  });
+
   dlg.addEventListener('editor-close', () => {
+    closed = true;
     stopPlay();
+    melody.stop();
+    pianoOff();
+    closeTone();
+    vocals.dispose();
+    setMediaHandlers(null);
     audio.removeAttribute('src');
     audio.load();
     waveAbort.abort();

@@ -120,6 +120,24 @@ export function melodySlice(notes, fromMs, untilMs, first = false) {
     && (first ? x.startMs + x.ms > fromMs : x.startMs >= fromMs));
 }
 
+const PREV_GRACE_MS = 1000; // в первую секунду строки «назад» ведёт к предыдущей строке
+
+/** Начала строк (обеих партий у дуэта) по времени, без повторов — для ↑/↓ и ⏮/⏭. */
+export function lineStarts(tl) {
+  return [...new Set((tl.lines || []).map((l) => l.startMs))].sort((a, b) => a - b);
+}
+
+/**
+ * Куда перейти из момента ms к началу соседней строки: dir > 0 — следующей (после последней — null),
+ * dir < 0 — предыдущей (из первой секунды строки — ещё на одну назад; раньше первой — 0).
+ */
+export function lineJump(starts, ms, dir) {
+  if (dir > 0) return starts.find((s) => s > ms + 1) ?? null;
+  let out = 0;
+  for (const s of starts) if (s < ms - PREV_GRACE_MS) out = s;
+  return out;
+}
+
 /** Вертикаль ноты на дорожке, % сверху: выше нота — выше на дорожке; поля 8 % сверху и снизу. */
 export function laneY(pitch, range) {
   const lo = range.min - 1;
