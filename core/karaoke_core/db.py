@@ -431,7 +431,11 @@ class Jobs:
         return Job.from_row(row) if row else None
 
     def list(self, limit: int = 50) -> list[Job]:
-        rows = self.conn.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,))
+        """Все queued/running/publishing + ``limit`` новейших прочих, новые первыми."""
+        rows = self.conn.execute(
+            "SELECT * FROM jobs WHERE state IN ('queued','running','publishing') OR id IN "
+            "(SELECT id FROM jobs WHERE state NOT IN ('queued','running','publishing') "
+            "ORDER BY id DESC LIMIT ?) ORDER BY id DESC", (limit,))
         return [Job.from_row(r) for r in rows]
 
     def update(self, id: int, **fields_: Any) -> Job | None:

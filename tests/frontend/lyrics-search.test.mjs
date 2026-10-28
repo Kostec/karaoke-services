@@ -5,6 +5,7 @@ import {
   stripLrc, usableHits, previewLines, fmtSeconds, searchBlocker, needsReplaceConfirm,
   lrcPlainText, lrcTimingDefault, lrcAfterEdit, DURATION_MISMATCH,
   lrcFormPart, lrcForNewText, LRC_SAVED,
+  SOURCE_LABELS, sortHits, isLinkHit, hitLines, mergeHits,
 } from '../../web/static/js/lyrics-search.js';
 
 test('lrcPlainText: строка с N метками — N раз, по порядку времени (как --lyrics_timing форка)', () => {
@@ -112,4 +113,44 @@ test('needsReplaceConfirm: только если в поле уже есть т�
   assert.equal(needsReplaceConfirm(''), false);
   assert.equal(needsReplaceConfirm(' \n '), false);
   assert.equal(needsReplaceConfirm('мой текст'), true);
+});
+
+test('usableHits: вариант Genius (url без текста) остаётся, пустой без url — нет', () => {
+  const link = { id: 'genius:1', source: 'genius', text: '', url: 'https://genius.com/x' };
+  const hits = usableHits([link, { id: 'x', text: '', url: null }]);
+  assert.deepEqual(hits.map((h) => h.id), ['genius:1']);
+  assert.equal(hits[0].url, 'https://genius.com/x');
+});
+
+test('isLinkHit: только url и пустой текст', () => {
+  assert.equal(isLinkHit({ text: '', url: 'https://g/x' }), true);
+  assert.equal(isLinkHit({ text: 'Строка', url: 'https://g/x' }), false);
+  assert.equal(isLinkHit({ text: 'Строка' }), false);
+});
+
+test('SOURCE_LABELS: подписи источников', () => {
+  assert.deepEqual(SOURCE_LABELS, { lrclib: 'LRCLIB', netease: 'NetEase', genius: 'Genius' });
+});
+
+test('sortHits: синхронные первыми, внутри — порядок источников lrclib, netease, genius', () => {
+  const list = [
+    { id: 'genius:1', source: 'genius', text: '', url: 'u' },
+    { id: 'netease:1', source: 'netease', text: 'a' },
+    { id: 'lrclib:1', source: 'lrclib', text: 'a' },
+    { id: 'netease:2', source: 'netease', text: 'a', synced: '[00:01.00]a' },
+    { id: 'lrclib:2', source: 'lrclib', text: 'a', synced: '[00:01.00]a' },
+  ];
+  assert.deepEqual(sortHits(list).map((h) => h.id), ['lrclib:2', 'netease:2', 'lrclib:1', 'netease:1', 'genius:1']);
+});
+
+test('mergeHits: новые добавляются, повтор по id не дублируется, порядок как у sortHits', () => {
+  const a = [{ id: 'lrclib:1', source: 'lrclib', text: 'a' }];
+  const b = [{ id: 'netease:1', source: 'netease', text: 'a', synced: '[00:01.00]a' }, { id: 'lrclib:1', source: 'lrclib', text: 'a' }];
+  assert.deepEqual(mergeHits(a, b).map((h) => h.id), ['netease:1', 'lrclib:1']);
+  assert.deepEqual(mergeHits(null, a).map((h) => h.id), ['lrclib:1']);
+});
+
+test('hitLines: число непустых строк', () => {
+  assert.equal(hitLines(['Раз', '', 'Два', '  ', 'Три'].join('\n')), 3);
+  assert.equal(hitLines(''), 0);
 });

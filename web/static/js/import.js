@@ -18,7 +18,7 @@ function videoBlock({ source = '', pack = false, label, gap, onChange }) {
 }
 import { h, clear, toast, field, debounce, songName } from './ui.js';
 import { readId3 } from './id3.js';
-import { usableHits, fmtSeconds, LRC_TIMING_LABEL } from './lyrics-search.js';
+import { usableHits, isLinkHit, fmtSeconds, LRC_TIMING_LABEL } from './lyrics-search.js';
 import { openLyricsDialog } from './lyrics-dialog.js';
 import { publishLine } from './songs-filter.js';
 import {
@@ -818,7 +818,7 @@ async function runLyricsQueue(g) {
       }
       let hits = null;
       try {
-        hits = usableHits((await api.lyricsSearch(artist, title)).items);
+        hits = usableHits((await api.lyricsSearch(artist, title)).items).filter((x) => !isLinkHit(x)); // все источники, без ссылок Genius
       } catch { /* сервис текстов недоступен — без текста */ }
       if (my !== g.lyricsSeq) return;
       if (state.lyrics !== 'searching') continue; // правка вернула строку в очередь или выбрали вручную

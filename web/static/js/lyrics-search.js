@@ -32,18 +32,47 @@ export function stripLrc(text) {
   return tidy(out);
 }
 
-/** Варианты, которые можно показать: с текстом, не инструменталы, текст очищен от LRC, до 10. */
+export const SOURCE_LABELS = { lrclib: 'LRCLIB', netease: 'NetEase', genius: 'Genius' };
+const SOURCE_ORDER = Object.keys(SOURCE_LABELS);
+export const GENIUS_HINT = 'Genius отдаёт текст только браузеру: откройте страницу, скопируйте текст и вставьте в поле вручную';
+
+/** Вариант-ссылка (Genius): есть адрес страницы, текста нет — «Вставить» недоступно. */
+export function isLinkHit(hit) {
+  return !!hit && !String(hit.text ?? '').trim() && !!hit.url;
+}
+
+/** Синхронные первыми, затем порядок источников; остальное — как пришло. */
+export function sortHits(list) {
+  const rank = (h) => { const i = SOURCE_ORDER.indexOf(h?.source ?? 'lrclib'); return i < 0 ? SOURCE_ORDER.length : i; };
+  return [...list]
+    .map((h, i) => [h, i])
+    .sort((a, b) => (!!b[0].synced - !!a[0].synced) || (rank(a[0]) - rank(b[0])) || (a[1] - b[1]))
+    .map(([h]) => h);
+}
+
+/** Добавить варианты очередного источника к уже показанным (повтор по id отбрасывается), отсортировать. */
+export function mergeHits(prev, next) {
+  const seen = new Set((prev || []).map((h) => h.id));
+  const fresh = (next || []).filter((h) => !seen.has(h.id));
+  return sortHits([...(prev || []), ...fresh]);
+}
+
+/** Число непустых строк текста. */
+export function hitLines(text) {
+  return String(text ?? '').split('\n').filter((l) => l.trim()).length;
+}
+
+/** Варианты, которые можно показать: с текстом (или ссылкой Genius), не инструменталы, LRC очищен, до 10. */
 export function usableHits(list) {
   if (!Array.isArray(list)) return [];
   const out = [];
   for (const hit of list) {
     if (!hit || hit.instrumental) continue;
     const text = stripLrc(hit.text);
-    if (!text) continue;
+    if (!text && !hit.url) continue;
     out.push({ ...hit, text, synced: typeof hit.synced === 'string' && hit.synced.trim() ? hit.synced : null });
-    if (out.length >= MAX_HITS) break;
   }
-  return out;
+  return sortHits(out).slice(0, MAX_HITS);
 }
 
 /** Первые n непустых строк текста — превью варианта. */

@@ -162,8 +162,9 @@ export const api = {
   setSongTags: (songId, tagIds) =>
     request('PUT', `/api/songs/${encodeURIComponent(songId)}/tags`, { tag_ids: tagIds }),
 
-  lyricsSearch: (artist, title) =>
-    request('GET', `/api/lyrics/search?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`),
+  lyricsSearch: (artist, title, source) =>
+    request('GET', `/api/lyrics/search?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`
+      + (source ? `&source=${encodeURIComponent(source)}` : '')),
 
   trash: () => request('GET', '/api/trash'),
   restore: (id) => request('POST', `/api/trash/${encodeURIComponent(id)}/restore`),

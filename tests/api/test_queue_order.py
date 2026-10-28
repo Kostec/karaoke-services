@@ -94,3 +94,15 @@ def test_time_without_zone_is_rejected(env, client):
     r = client.post(f"/api/jobs/{a.id}/schedule", json={"start_at": naive})
     assert r.status_code == 400 and r.json() == {"detail": "Неверное время", "field": "start_at"}
     assert client.post("/api/jobs/schedule", json={"start_at": naive}).status_code == 400
+
+
+def test_list_shows_every_active_job_beyond_limit(env, client):
+    jobs = _jobs(env)
+    queued = [jobs.enqueue("instrumental", {**REF, "title": f"П{i}"}, {}).id for i in range(120)]
+    done = [jobs.enqueue("instrumental", {**REF, "title": f"Г{i}"}, {}).id for i in range(60)]
+    for i in done:
+        jobs.update(i, state="done")
+    listed = [j["id"] for j in client.get("/api/jobs").json()]
+    assert set(queued) <= set(listed), "все 120 ожидающих видны"
+    assert [i for i in listed if i in set(done)] == sorted(done, reverse=True)[:50], "прочих — 50 новейших"
+    assert listed == sorted(listed, reverse=True)
