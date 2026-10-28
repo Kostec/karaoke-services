@@ -29,6 +29,18 @@ def _ntstatus(exc: BaseException) -> int | None:
     return None
 
 
+def _out_of_credits(exc: BaseException) -> bool:
+    """Соединение исчерпало кредиты SMB2 — само уже не оживёт, нужно новое.
+
+    smbprotocol проверяет кредиты до отправки, так что запрос на шару не ушёл
+    и его можно безопасно повторить.
+    """
+    try:
+        return "credits are available" in str(exc)
+    except Exception:  # str() ответных исключений разбирает заголовок и может упасть
+        return False
+
+
 class SmbStorage(Storage):
     def __init__(self, host: str, share: str, base_path: str = "", user: str = "",
                  password: str | None = None, *, port: int = 445, target_id: str | None = None,
@@ -75,7 +87,18 @@ class SmbStorage(Storage):
                                      connection_cache=self._cache)
         self._registered = True
 
-    def close(self) -> None:
+    def close(self, *, drop: bool = False) -> None:
+        """Закрыть соединения; ``drop`` — без выхода из сессий, только сокет.
+
+        Вежливый выход сам шлёт запросы, а на сломанном соединении он падает,
+        не закрыв сокет и поток чтения.
+        """
+        if drop:
+            for key in list(self._cache):
+                try:
+                    self._cache.pop(key).disconnect(close=False)
+                except Exception:
+                    pass
         reset = getattr(self._c, "reset_connection_cache", None)
         if reset is not None:
             try:
@@ -118,6 +141,9 @@ class SmbStorage(Storage):
             return StorageBusy(f"Нет доступа на шаре {where}: {rel or '/'}")
         if status in codes("STATUS_OBJECT_NAME_COLLISION"):
             return StorageError(f"Уже существует на шаре {where}: {rel}")
+        if _out_of_credits(exc):
+            self.close(drop=True)
+            return StorageError(f"Соединение с {self.host} сбилось, повторите попытку")
         if isinstance(exc, SMBConnectionClosed):
             self.close()
             return StorageError(f"Соединение с {self.host} прервано")
@@ -145,6 +171,14 @@ class SmbStorage(Storage):
     def _call(self, rel: str, fn, *args, **kw):
         self._connect()
         with self._errors(rel):
+            try:
+                return fn(*args, **kw, **self._kw)
+            except Exception as exc:
+                if not _out_of_credits(exc):
+                    raise
+            log.info("SMB %s: соединение без кредитов, переподключение", self.label)
+            self.close(drop=True)
+            self._connect()
             return fn(*args, **kw, **self._kw)
 
     def _scandir(self, rel):

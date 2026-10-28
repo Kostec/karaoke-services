@@ -11,7 +11,7 @@ Docker — только Linux-движок: `docker --context desktop-linux comp
 - Проверка GPU и правок UltraSinger: `./scripts/compose.ps1 run --rm worker gpucheck` (успех — RC=0, последняя строка `gpucheck: OK …`).
 - Только образ worker (15–30 мин с нуля): `./scripts/compose.ps1 build worker`.
 - Логи: `./scripts/compose.ps1 logs --tail 100 worker` (или `web`).
-- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 1083 passed, 2 skipped (после смены зависимостей — `run --build`).
+- Python-тесты (pytest в Linux-контейнере): `docker --context desktop-linux compose --profile test run --rm tests` → 1085 passed, 2 skipped (после смены зависимостей — `run --build`).
 - Подмножество: `docker --context desktop-linux compose --profile test run --rm tests pytest -q tests/worker/test_runner_queue.py`.
 - Фронт-тесты (Node 24, встроенный node:test): `node --test tests/frontend/` → 290 pass.
 - Бэкап патча UltraSinger в `patches/karaoke-local.patch`: `./scripts/export-ultrasinger-patch.ps1` (читает `D:/Projects/UltraSinger`).

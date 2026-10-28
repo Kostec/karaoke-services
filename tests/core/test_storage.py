@@ -480,6 +480,42 @@ def test_smb_passes_credentials_to_session(tmp_path):
     assert fake.sessions == [("pi", "user", 445)]
 
 
+def _no_credits():
+    from smbprotocol.exceptions import SMBException
+    return SMBException("Request requires 1 credits but only 0 credits are available")
+
+
+def test_smb_out_of_credits_reconnects_and_retries(tmp_path):
+    fake = FakeSmbClient(tmp_path)
+    put(tmp_path, "A/A - B/A - B.txt", SOLO)
+    st = SmbStorage("pi", "karaoke", "", "user", PW, client=fake)
+    st.probe()
+    resets = []
+    fake.reset_connection_cache = lambda **kw: resets.append(kw)
+    real = fake.scandir
+    calls = []
+
+    def scandir(path, **kw):
+        calls.append(path)
+        if len(calls) == 1:
+            raise _no_credits()
+        return real(path, **kw)
+
+    fake.scandir = scandir
+    assert [s.rel_dir for s in st.list_songs()] == ["A/A - B"]
+    assert resets and len(fake.sessions) == 2  # соединение пересоздано
+
+
+def test_smb_out_of_credits_twice_is_storage_error(tmp_path):
+    fake = FakeSmbClient(tmp_path)
+    fake.fail["scandir"] = _no_credits()
+    st = SmbStorage("pi", "karaoke", "", "user", PW, client=fake)
+    with pytest.raises(StorageError) as e:
+        st.probe()
+    assert "сбилось" in str(e.value)
+    assert not st._registered  # следующий вызов откроет новое соединение
+
+
 def _resp(cls, status):
     from smbprotocol.header import SMB2HeaderResponse
     h = SMB2HeaderResponse()
